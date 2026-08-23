@@ -1,0 +1,1 @@
+Barrier resolution wiring ready: 15m execution, 5m high/low intrabar resolution, report observability and contract tests.
