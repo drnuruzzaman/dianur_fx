@@ -54,3 +54,17 @@ def test_event_runner_keyword_matches_fact_event_api():
     signature = inspect.signature(build_fact_events)
     assert "instrument" in signature.parameters
     assert "symbol" not in signature.parameters
+
+
+def test_mixed_naive_and_aware_bar_index_is_normalized_in_event_builder():
+    from sim.tl.events import _utc_index
+    mixed = pd.DatetimeIndex([
+        pd.Timestamp("2026-01-01 00:00:00"),
+        pd.Timestamp("2026-01-01 01:00:00", tz="UTC"),
+    ])
+    normalized = _utc_index(mixed)
+    assert str(normalized.tz) == "UTC"
+    assert list(normalized) == [
+        pd.Timestamp("2026-01-01 00:00:00", tz="UTC"),
+        pd.Timestamp("2026-01-01 01:00:00", tz="UTC"),
+    ]
