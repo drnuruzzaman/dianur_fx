@@ -1,0 +1,1 @@
+15m execution is unchanged. For the registered 5m_high_low research model, the adapter sets Simulator execution=intrabar and intrabar_tf=5m. Result files expose the effective model and ambiguity-resolution counters.

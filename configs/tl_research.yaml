@@ -19,9 +19,9 @@ strategies:
     retest_distance_atr: 0.40
     rejection_max_bars: 1
 
-# Execution/barrier model. Trade barriers are resolved using 5m_high_low/15m H/L as the
-# selected finer resolution for this project; structural trendline BREAK remains
-# the detector's registered structural definition.
+# Execution/barrier model. 15m remains the execution timeframe. Trade barriers
+# are resolved with validated 5m high/low sub-bars. Structural trendline BREAK
+# remains the detector's registered structural definition.
 barrier_resolution: 5m_high_low
 
 # Research splits. Fill with the project's actual available date ranges before

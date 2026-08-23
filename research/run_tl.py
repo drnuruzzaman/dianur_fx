@@ -45,7 +45,9 @@ def make_report(root: Path, rows: list[dict], *, title: str = "DiaNurFx Trendlin
     out.parent.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(rows)
     cols = [c for c in [
-        "symbol", "strategy", "confluence_mode", "trades", "avg_R",
+        "symbol", "timeframe", "strategy", "barrier_resolution", "execution_mode",
+        "intrabar_tf", "ambiguous_bars", "resolved_by_subbars",
+        "fallback_to_pessimistic", "confluence_mode", "trades", "avg_R",
         "profit_factor", "win_rate_pct", "max_drawdown_pct", "return_pct",
         "sharpe_daily_annualised", "signals_seen", "signals_taken", "run_id"
     ] if c in df.columns]
@@ -55,14 +57,14 @@ def make_report(root: Path, rows: list[dict], *, title: str = "DiaNurFx Trendlin
     html = f"""<!doctype html>
 <html><head><meta charset='utf-8'><title>{escape(title)}</title>
 <style>
-body{{font-family:system-ui,-apple-system,sans-serif;max-width:1400px;margin:32px auto;padding:0 20px}}
+body{{font-family:system-ui,-apple-system,sans-serif;max-width:1500px;margin:32px auto;padding:0 20px}}
 h1{{margin-bottom:4px}} .muted{{color:#666}} table{{width:100%;border-collapse:collapse}}
-th,td{{padding:7px 9px;border-bottom:1px solid #ddd;text-align:right}}
-th:first-child,td:first-child{{text-align:left}} .results{{font-size:14px}}
+th,td{{padding:7px 9px;border-bottom:1px solid #ddd;text-align:right;white-space:nowrap}}
+th:first-child,td:first-child{{text-align:left}} .results{{font-size:13px}}
 pre{{background:#f6f6f6;padding:16px;overflow:auto;max-height:500px}}
 </style></head><body>
 <h1>{escape(title)}</h1>
-<p class='muted'>15M execution; 1H / 4H / D1 context. Uses the repository's existing Simulator.</p>
+<p class='muted'>15M execution; 1H / 4H / D1 context. The report records the effective barrier-resolution model used by the existing Simulator.</p>
 <h2>Results</h2>{table}
 <h2>Machine-readable result</h2><pre>{json_text}</pre>
 </body></html>"""
@@ -85,6 +87,7 @@ def main(argv=None) -> int:
     p.add_argument("--carry-free", action="store_true")
     p.add_argument("--retest-bars", type=int, default=None)
     p.add_argument("--retest-atr", type=float, default=None)
+    p.add_argument("--barrier-resolution", choices=["5m_high_low", "15m_high_low"], default=None)
     p.add_argument("--contract-test", action="store_true")
     args = p.parse_args(argv)
 
@@ -118,6 +121,7 @@ def main(argv=None) -> int:
     else:
         hypotheses = [args.strategy]
 
+    barrier_resolution = args.barrier_resolution or str(config.get("barrier_resolution", "5m_high_low"))
     default_retest_bars = int(config.get("strategies", {}).get("breakout_retest", {}).get("retest_max_bars", 12))
     default_retest_atr = float(config.get("strategies", {}).get("breakout_retest", {}).get("retest_distance_atr", 0.40))
 
@@ -139,8 +143,12 @@ def main(argv=None) -> int:
                     confluence_mode=mode,
                     retest_bars=(args.retest_bars if args.retest_bars is not None else (default_retest_bars if is_retest else 0)),
                     retest_atr=(args.retest_atr if args.retest_atr is not None else default_retest_atr),
+                    barrier_resolution=barrier_resolution,
                 )
-                print(f"Running {symbol} / {hypothesis} / confluence={mode} ...")
+                print(
+                    f"Running {symbol} / {hypothesis} / confluence={mode} "
+                    f"/ barrier={barrier_resolution} ..."
+                )
                 try:
                     result = run_cell(root, cell)
                 except Exception as exc:  # CLI should point to the failed cell clearly.
@@ -148,7 +156,9 @@ def main(argv=None) -> int:
                 rows.append(result)
                 print(
                     f"  trades={result.get('trades', 0)} avg_R={result.get('avg_R')} "
-                    f"PF={result.get('profit_factor')} return={result.get('return_pct')}%"
+                    f"PF={result.get('profit_factor')} return={result.get('return_pct')}% "
+                    f"ambiguous={result.get('ambiguous_bars', 0)} "
+                    f"subbar_resolved={result.get('resolved_by_subbars', 0)}"
                 )
 
     summary_path = root / "research_runs" / "simulator_summary.csv"

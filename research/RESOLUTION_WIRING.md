@@ -1,0 +1,1 @@
+15m remains the execution timeframe. Registered barrier_resolution=5m_high_low maps to Simulator execution=intrabar and intrabar_tf=5m. The report records the effective settings and ambiguity resolution counters.

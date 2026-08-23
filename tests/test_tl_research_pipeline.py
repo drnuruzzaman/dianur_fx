@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 
+from research.adapters import SimulationCell, _execution_settings, build_config
 from research.tl_pipeline import event_funnel, run_edge_gates, validate_event_contract
 
 
@@ -49,3 +50,20 @@ def test_edge_gates_fail_small_sample_and_negative_expectancy():
     assert not all(g.passed for g in gates)
     assert any(g.name == "sample_floor" and not g.passed for g in gates)
     assert any(g.name == "avg_R" and not g.passed for g in gates)
+
+
+def test_registered_5m_resolution_maps_to_intrabar_5m():
+    assert _execution_settings("5m_high_low") == ("intrabar", "5m")
+    cell = SimulationCell(symbol="EURUSD", strategy="tl_bounce", start="2021-01-01")
+    cfg = build_config(cell)
+    assert cfg.execution == "intrabar"
+    assert cfg.intrabar_tf == "5m"
+
+
+def test_15m_resolution_does_not_claim_5m():
+    assert _execution_settings("15m_high_low") == ("pessimistic", None)
+
+
+def test_unknown_resolution_fails_closed():
+    with pytest.raises(ValueError, match="unsupported barrier_resolution"):
+        _execution_settings("4h_close")

@@ -1,0 +1,1 @@
+Research contract: execution timeframe 15m; barrier resolution 5m_high_low; effective Simulator settings execution=intrabar and intrabar_tf=5m. Run reports record these settings and ambiguity resolution counters.
