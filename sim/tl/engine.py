@@ -23,6 +23,7 @@ import numpy as np
 
 from ..indicators import atr as atr_series
 from .lines import Direction, Role, Status, Trendline, classify_direction
+from .mtf import to_ms
 from .pivots import find_pivots
 
 
@@ -82,12 +83,31 @@ class TrendlineEngine:
     """One instrument, one timeframe. Incremental, causal, strategy-agnostic."""
 
     def __init__(self, timeframe: str, tf_ms: int, params: Params = None,
-                 record_tradeable: bool = False):
+                 record_tradeable: bool = False, record_facts: bool = False):
         self.timeframe = timeframe
         self.tf_ms = tf_ms
         self.p = params or Params()
         self.record_tradeable = record_tradeable
+        # Raw facts, in the order they happened, for sim/tl/events.py to turn
+        # into a typed event store. Recording is append-only and reads nothing
+        # back, so it cannot change what the engine decides -- which is what
+        # keeps the JS parity tests meaningful.
+        self.record_facts = record_facts
+        self.facts = []
         self._seq = 0
+
+    def _fact(self, kind, i, t, line, price, value):
+        if not self.record_facts:
+            return
+        self.facts.append({
+            'kind': kind, 'bar': i, 't': t, 'line': line,
+            'price': float(price), 'line_price': float(value),
+            # frozen HERE, for the usual reason: the line keeps being updated
+            # on later bars, so reading these after the walk reports the value
+            # the line eventually reached, not the value at this bar.
+            'status_at': line.status.value, 'quality_at': line.quality_score,
+            'touches_at': line.touches,
+        })
 
     def _new_id(self, role):
         self._seq += 1
@@ -98,7 +118,7 @@ class TrendlineEngine:
         high = np.asarray(bars['high'], dtype=float)
         low = np.asarray(bars['low'], dtype=float)
         close = np.asarray(bars['close'], dtype=float)
-        times = np.asarray(bars.index.astype('int64') // 1_000_000)   # ms
+        times = to_ms(bars.index)
         atr = atr_series(bars, 14)
         n = len(close)
 
@@ -157,6 +177,9 @@ class TrendlineEngine:
                     line.age_bars = i - _index_of(line.pivot_1, times, i)
                     value = line.value_at(t)
                     if not np.isfinite(value) or value <= 0:
+                        if line.is_tradeable:
+                            self._fact('INVALIDATED', i, t, line, close[i],
+                                       close[i])
                         line.archive(t, 'degenerate')
                         live[role].remove(line)
                         continue
@@ -179,12 +202,26 @@ class TrendlineEngine:
                         if line.register_violation(t, self.p.max_violations):
                             if was_tradeable:
                                 broken_now.append(line)
+                                self._fact('BREAK', i, t, line, close[i], value)
                             else:
                                 line.archive(t, 'candidate_failed')
                                 live[role].remove(line)
                                 continue
                     elif grazed:
-                        line.register_touch(t, i, self.p.strength + 1)
+                        was_tradeable = line.is_tradeable
+                        if line.register_touch(t, i, self.p.strength + 1):
+                            # A touch on a line the market has not yet
+                            # acknowledged is what CONFIRMS it, not a retest of
+                            # something known. Only touches of an already
+                            # tradeable line are events a strategy may act on;
+                            # the promoting touch is emitted as CONFIRMED so the
+                            # lifecycle is reconstructible from the event store
+                            # alone.
+                            px = high[i] if role is Role.RESISTANCE else low[i]
+                            if was_tradeable:
+                                self._fact('TOUCH', i, t, line, px, value)
+                            elif line.is_tradeable:
+                                self._fact('CONFIRMED', i, t, line, px, value)
 
                     # 5. archive what no longer matters
                     if line.status is Status.BROKEN and line.broken_at is not None:
@@ -195,6 +232,8 @@ class TrendlineEngine:
                     if line.status is not Status.BROKEN:
                         line.score(i, self.p.window, float(close[i]), a)
                     if line.last_price_distance_atr > self.p.max_distance_atr:
+                        if line.is_tradeable:
+                            self._fact('INVALIDATED', i, t, line, close[i], value)
                         line.archive(t, 'too_far')
                         live[role].remove(line)
                         continue
@@ -203,6 +242,9 @@ class TrendlineEngine:
                 live[role].sort(key=lambda x: (-x.quality_score, x.created_at))
                 if len(live[role]) > self.p.max_live:
                     for extra in live[role][self.p.max_live:]:
+                        if extra.is_tradeable:
+                            self._fact('INVALIDATED', i, t, extra, close[i],
+                                       extra.value_at(t))
                         extra.archive(t, 'outranked')
                     live[role] = live[role][:self.p.max_live]
 

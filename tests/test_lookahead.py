@@ -26,7 +26,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sim.tl import build
-from sim.tl.mtf import TF_MS, LookAheadViolation, align_index
+from sim.tl.mtf import TF_MS, LookAheadViolation, align_index, to_ms
 from sim.tl.pivots import find_pivots, pivots_confirmed_by
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
@@ -54,8 +54,8 @@ def test_alignment_never_exposes_an_unclosed_higher_timeframe_bar():
     htf = synth(200, '4h').index
     pos = align_index(ex, '15m', htf, '4h')
 
-    ex_close = ex.astype('int64') // 10**6 + TF_MS['15m']
-    htf_close = htf.astype('int64') // 10**6 + TF_MS['4h']
+    ex_close = to_ms(ex) + TF_MS['15m']
+    htf_close = to_ms(htf) + TF_MS['4h']
     used = pos >= 0
     assert (htf_close[pos[used]] <= ex_close[used]).all(), \
         'an aligned 4H bar had not closed when the 15M bar closed'
@@ -83,8 +83,8 @@ def test_the_naive_open_time_alignment_is_caught():
     """
     ex = synth(500, '15m').index
     htf = synth(50, '4h').index
-    ex_ms = ex.astype('int64') // 10**6
-    htf_ms = htf.astype('int64') // 10**6
+    ex_ms = to_ms(ex)
+    htf_ms = to_ms(htf)
     naive = np.searchsorted(htf_ms, ex_ms, side='right') - 1     # open-time match
 
     correct = align_index(ex, '15m', htf, '4h')
@@ -135,8 +135,13 @@ def test_features_are_identical_when_the_future_is_removed(cut):
 
     # line ids are sequence numbers and legitimately differ; everything a
     # strategy actually reads must not
+    # `dtype != object` was the old way to spot the string columns, and pandas
+    # 3 gives them a dedicated `str` dtype instead, so regime and direction
+    # started arriving here and failing on float('up'). Ask what the column IS
+    # rather than what it is not.
     numeric = [c for c in full.columns
-               if not c.endswith('_trendline_id') and full[c].dtype != object]
+               if not c.endswith('_trendline_id')
+               and pd.api.types.is_numeric_dtype(full[c])]
     for col in numeric:
         x, y = float(a[col]) if a[col] is not None else np.nan, \
                float(b[col]) if b[col] is not None else np.nan

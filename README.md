@@ -111,6 +111,8 @@ sim/metrics.py        expectancy, drawdown, per-year breakdown, benchmark
 sim/indicators.py     Python mirror of js/chart/indicators.js (parity-tested)
 sim/divergence.py     RSI divergence detection (mirrored by js/chart/divergence.js)
 sim/tl/               multi-timeframe trendline engine (strategy-agnostic)
+sim/tl/events.py      the fact event store (TOUCH/BREAK/RETEST/...)
+tools/tl_events.py    build the event store, print the funnel and cell sizes
 js/chart/tlengine.js  the same engine, ported for the chart (parity-tested)
 sim/strategies/       donchian, ema_cross (baselines); tl_bounce, tl_breakout,
                       rsi_divergence (candidates)
@@ -212,6 +214,7 @@ sim/tl/engine.py    per-timeframe incremental walk -> one Snapshot per bar
 sim/tl/regime.py    trending_up / trending_down / sideways / transition
 sim/tl/mtf.py       closed-bar-only alignment + the confluence score
 sim/tl/features.py  the per-candle feature table
+sim/tl/events.py    the FACT layer: typed events with occurred_at / known_at
 ```
 
 **Lifecycle**: `CANDIDATE` (two pivots) -> `CONFIRMED` (a third distinct touch)
@@ -243,6 +246,78 @@ Mechanism 4 was found by `tests/test_lookahead.py`, which rebuilds the entire
 feature pipeline on truncated history and demands the row at bar k be identical
 to the row at bar k built from full history. It failed at 87.13 vs 86.37 — a real
 leak, in code that looked obviously fine.
+
+A fifth mechanism was added after a silent, version-dependent failure. Every
+timestamp in `sim/tl/` is milliseconds, and the conversion used to be
+`index.astype('int64') // 1_000_000` — correct only while a DatetimeIndex was
+always nanosecond-resolution. Since pandas 2.0 it is not: `tools/dataset.py`
+builds bar indexes with `to_datetime(..., unit='s')`, which yields
+`datetime64[s]`, and that expression then returns **seconds**. Every trendline
+slope came out 1000x wrong, MTF close times were compared against millisecond
+`TF_MS` constants, and the strict alignment guard checked a condition that could
+no longer be true, so it raised nothing. Nothing crashed; the lines were simply
+wrong, and only on pandas >= 2.
+
+`sim/tl/mtf.to_ms()` converts the unit before the cast, so the result no longer
+depends on how the bars happened to be loaded. The symptom that exposed it was
+the event funnel reporting 1021 breaks and **zero** retests — a number too
+absurd to explain away, which is the argument for reports that count facts.
+
+### The fact layer: three questions, three modules
+
+A trendline system fails when the three questions get answered in one place:
+
+    Detector   what happened?          sim/tl/engine.py   -> lines, lifecycle
+    Signal     is this an opportunity? sim/tl/events.py   -> typed events
+    Strategy   should I trade it?      sim/strategies/    -> side, stop, target
+
+`sim/tl/events.py` is the middle one, and the discipline is that it contains no
+trading decision at all — no side, no stop, no target, no size. A test asserts
+those column names are absent, because the value of an event store is that it
+can be replayed against a hypothesis you have not written yet, and it stops
+being replayable the moment a strategy's opinion is baked into it.
+
+```bash
+python tools/tl_events.py --fixtures            # no data/ needed
+python tools/tl_events.py --tfs 15m,1h,4h --tols 0.32,0.10
+```
+
+**Two clocks on every row.** `occurred_at` is the bar's open — when the thing
+happened. `known_at` is the bar's close — the first moment it could have been
+acted on. They differ by exactly one bar interval, a test asserts it on every
+row, and every consumer filters on `known_at`. Carrying only one timestamp is
+how a trendline backtest quietly trades on information it did not have.
+
+**Parameter-free, and where that stops being true.** TOUCH, BREAK, CONFIRMED
+and INVALIDATED carry one parameter, the engine's `tol_atr`, which is a property
+of the detector rather than of a trading idea. RETEST and REJECTION are *not*
+parameter-free — "came back" needs a distance and a patience, "rejected" needs a
+wick threshold — so their parameters are written into every row they produce and
+`param_free` is False. A sweep over them can then never be mistaken for a fact.
+
+BREAKOUT is deliberately **not** an event. "The break followed through by k ATR"
+is a hypothesis with a free parameter and a forward-looking window; it belongs
+in the strategy layer, built from a BREAK plus bars. Emitting it here would
+smuggle a strategy into the fact store.
+
+**The funnel is what saves the time.** Counting facts before writing a strategy
+answers the only question that matters first — is there a sample at all?
+
+```
+instrument timeframe  tol_atr  confirmed  touch  touch_rejected  break  retested  retest%  retest_rejected
+  USDJPY.a       15m     0.32       2352   1400             389   1433       574     40.1               56
+  XAUUSD.a        1h     0.32       1465    911             278   1021       392     38.4               40
+```
+
+Read the last column. A breakout-plus-retest-plus-rejection strategy has **40 to
+56 events** in these spans against a sample floor of 200. That strategy cannot
+be evaluated on this data no matter how it is coded, and finding that out costs
+one minute here instead of a week of tuning a curve fitted to fifty trades.
+
+Causality is enforced the same way the feature pipeline enforces it: the store
+is rebuilt on truncated history and every event must be identical to the one the
+full history produced, with the forward-looking retest window excluded rather
+than excused.
 
 ### RSI divergence, drawn and traded from one definition
 
@@ -308,8 +383,27 @@ exactly the trap the explicit SMA seeding in `sim/indicators.py` avoids.
 ## Strategies and the confluence question
 
 ```bash
+python tools/tl_diagnostics.py                  # gate 1+2.1, both tolerances
 python -m sim.run_tl --ab --carry-free --start 2021-01-01
 ```
+
+`tools/tl_diagnostics.py` runs **both registered tolerances** and keeps them as
+separate cells — 0.32 and 0.10 are two different detectors and a result at one
+says nothing about the other, so they are never pooled. It writes the
+per-approach rows, not just a summary: instrument, timeframe, trendline id,
+tolerance, both clocks, the distance at the approach, the real result, its
+placebo result, the effect and the z. A summary is a claim; the rows are the
+evidence, and `tests/test_events.py` recomputes the headline effect from the
+stored rows to prove they are sufficient.
+
+One correctness note that the paired export forced into the open: only the
+**approach** phase is a true paired comparison, where the same approach is
+measured at the real level and at a placebo 1.5 ATR away. Breakout and retest
+rows exist only for the arm whose approach broke, and a line can hold where its
+placebo breaks — so those arms are conditioned on different subsets and are
+reported with the wider unpaired error. Applying McNemar's paired error there
+(which uses only discordant pairs, and is roughly 40% tighter on this data)
+would manufacture significance out of bookkeeping.
 
 `tl_bounce` trades lines holding, `tl_breakout` trades them failing (running both
 over the same lines answers whether the detector finds levels that hold or levels

@@ -24,6 +24,23 @@ the PREVIOUS candle's. That lag is real in live trading too, which is the point.
 import numpy as np
 import pandas as pd
 
+def to_ms(index) -> np.ndarray:
+    """
+    A DatetimeIndex as integer milliseconds, at ANY pandas resolution.
+
+    `index.astype('int64')` returns the index's own unit, and since pandas 2.0
+    that unit is no longer always nanoseconds -- `read_csv(parse_dates=...)`
+    infers `datetime64[us]` (and pandas 3 does so by default), where the old
+    `astype('int64') // 1_000_000` silently yields SECONDS. Every trendline
+    slope is then 1000x wrong and every MTF close time is compared against
+    millisecond TF_MS constants, so the alignment guard checks a nonsense
+    condition and raises nothing. Converting the unit first is what makes the
+    result independent of how the bars happened to be loaded.
+    """
+    return np.asarray(index.astype('datetime64[ms]').astype('int64'),
+                      dtype=np.int64)
+
+
 TF_MS = {'1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
          '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000}
 
@@ -41,8 +58,8 @@ def align_index(exec_index: pd.DatetimeIndex, exec_tf: str,
     Both indexes are bar OPEN times (the MT5 convention), so a bar's close is
     open + duration.
     """
-    exec_ms = np.asarray(exec_index.astype('int64') // 1_000_000, dtype=np.int64)
-    htf_ms = np.asarray(htf_index.astype('int64') // 1_000_000, dtype=np.int64)
+    exec_ms = to_ms(exec_index)
+    htf_ms = to_ms(htf_index)
     exec_close = exec_ms + TF_MS[exec_tf]
     htf_close = htf_ms + TF_MS[htf_tf]
 
@@ -107,7 +124,7 @@ class MTFContext:
         guard. Reported so it can be sanity-checked rather than assumed.
         """
         pos = self.maps[tf]
-        exec_ms = np.asarray(self.exec_index.astype('int64') // 1_000_000)
+        exec_ms = to_ms(self.exec_index)
         htf_ms = np.full(len(pos), np.nan)
         return {
             'mean': float(np.mean(np.diff(np.where(np.diff(pos) != 0)[0]))

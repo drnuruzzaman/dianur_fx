@@ -126,20 +126,27 @@ def _resolve_bracket(bars_c, i, direction, target_px, stop_px, horizon, n):
     return CHOP, None
 
 
-def run(bars, tf, params: Params = None, dp: DiagParams = None):
+def run(bars, tf, params: Params = None, dp: DiagParams = None, instrument=''):
     """
     Returns (events DataFrame, summary DataFrame).
 
     One row per approach, per arm ('line', 'placebo', 'random'), with the
     outcome, the line's quality at that bar, and the ATR at that bar.
+
+    Rows carry everything needed to REPRODUCE the gate decision and nothing
+    that would let a reader skip reproducing it: the instrument, the timeframe,
+    the tolerance the engine ran at, the line's id, both clocks, and the bar the
+    outcome resolved on. A summary is a claim; this is the evidence.
     """
     dp = dp or DiagParams()
-    eng = TrendlineEngine(tf, TF_MS[tf], params or Params(), record_tradeable=True)
+    params = params or Params()
+    eng = TrendlineEngine(tf, TF_MS[tf], params, record_tradeable=True)
     snaps = eng.walk(bars)
 
     close = np.asarray(bars['close'], dtype=float)
     atr = atr_series(bars, 14)
     n = len(close)
+    step = pd.Timedelta(milliseconds=TF_MS[tf])
     rng = np.random.default_rng(dp.seed)
 
     # per-line state: has price been far enough away to allow a new approach?
@@ -191,9 +198,24 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None):
             # ask whether a hold-rate edge survives the geometry it is traded on.
             # occurred_at is recorded because a bar INDEX is not reproducible --
             # it shifts the moment the data start date changes.
-            common = dict(bar=i, occurred_at=bars.index[i], dist_atr=dist,
-                          line_id=line_id, role=role, quality=quality,
-                          touches=touches, atr=a, tf=tf)
+            # known_at is the bar CLOSE: the approach is decided on the close
+            # of bar i, so that is the first moment anything could have acted
+            # on it. Carrying only occurred_at is how a diagnostic quietly
+            # becomes a claim about information you did not have yet.
+            # `bar` is overwritten by the later phases (a breakout row is
+            # stamped with the break bar, not the approach bar), so it cannot
+            # identify a pair. approach_bar never moves: it is the identity of
+            # the approach that produced BOTH arms, which is the only key that
+            # keeps a line and its placebo on the same row.
+            common = dict(instrument=instrument, tf=tf, bar=i, approach_bar=i,
+                          occurred_at=bars.index[i],
+                          known_at=bars.index[i] + step,
+                          dist_atr=dist, line_id=line_id, role=role,
+                          quality=quality, touches=touches, atr=a,
+                          tol_atr=params.tol_atr,
+                          move_atr=dp.move_atr, horizon=dp.horizon,
+                          near_atr=dp.near_atr, far_atr=dp.far_atr,
+                          placebo_atr=dp.placebo_atr, seed=dp.seed)
             tgt_atr = dp.target_atr if dp.target_atr is not None else dp.move_atr
             stp_atr = dp.stop_atr if dp.stop_atr is not None else dp.move_atr
             off = dp.placebo_atr * a * (1 if rng.random() < 0.5 else -1)
@@ -207,7 +229,10 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None):
                                           dp.horizon, n, up_move, down_move)
                 if 'approach' in dp.phases:
                     rows.append({**common, 'arm': arm, 'phase': 'approach',
-                                 'outcome': outcome})
+                                 'outcome': outcome,
+                                 'resolved_bar': j_res,
+                                 'resolved_at': bars.index[j_res]
+                                 if j_res is not None else pd.NaT})
                 if outcome != BREAK or j_res is None:
                     continue
 
@@ -217,11 +242,15 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None):
                 tp = ent + bdir * tgt_atr * a
                 sl = ent - bdir * stp_atr * a
                 if 'breakout' in dp.phases:
-                    bo, _ = _resolve_bracket(close, j_res, bdir, tp, sl,
-                                             dp.horizon, n)
+                    bo, j_bo = _resolve_bracket(close, j_res, bdir, tp, sl,
+                                                dp.horizon, n)
                     rows.append({**common, 'arm': arm, 'phase': 'breakout',
                                  'bar': j_res, 'occurred_at': bars.index[j_res],
-                                 'dist_atr': 0.0, 'outcome': bo})
+                                 'known_at': bars.index[j_res] + step,
+                                 'dist_atr': 0.0, 'outcome': bo,
+                                 'resolved_bar': j_bo,
+                                 'resolved_at': bars.index[j_bo]
+                                 if j_bo is not None else pd.NaT})
 
                 if 'retest' in dp.phases:
                     # price must come back to the broken line before continuing
@@ -235,11 +264,15 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None):
                         ent2 = close[k]
                         tp2 = ent2 + bdir * tgt_atr * a
                         sl2 = ent2 - bdir * stp_atr * a
-                        rt, _ = _resolve_bracket(close, k, bdir, tp2, sl2,
-                                                 dp.horizon, n)
+                        rt, j_rt = _resolve_bracket(close, k, bdir, tp2, sl2,
+                                                     dp.horizon, n)
                         rows.append({**common, 'arm': arm, 'phase': 'retest',
                                      'bar': k, 'occurred_at': bars.index[k],
-                                     'dist_atr': 0.0, 'outcome': rt})
+                                     'known_at': bars.index[k] + step,
+                                     'dist_atr': 0.0, 'outcome': rt,
+                                     'resolved_bar': j_rt,
+                                     'resolved_at': bars.index[j_rt]
+                                     if j_rt is not None else pd.NaT})
 
             # random: same barrier width, arbitrary bar, no line at all
             rj = int(rng.integers(20, max(21, n - dp.horizon - 1)))
@@ -254,7 +287,9 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None):
                 # be offset from, so its bar/time/distance are its own
                 rows.append({**common, 'arm': 'random', 'phase': 'approach',
                              'bar': rj, 'occurred_at': bars.index[rj],
-                             'dist_atr': np.nan, 'outcome': r_out})
+                             'known_at': bars.index[rj] + step,
+                             'dist_atr': np.nan, 'outcome': r_out,
+                             'resolved_bar': None, 'resolved_at': pd.NaT})
 
     ev = pd.DataFrame(rows)
     return ev, summarise(ev)
@@ -320,3 +355,168 @@ def by_touches(ev: pd.DataFrame) -> pd.DataFrame:
                      'hold%': round(100 * (decided['outcome'] == HOLD).sum() / n, 1)
                      if n else np.nan})
     return pd.DataFrame(rows)
+
+
+#: the columns a persisted diagnostic row must carry. The rule is simple: from
+#: this file alone, and without rerunning anything, a reader must be able to
+#: recompute the gate decision and see which approach produced which half of it.
+#: A summary CSV cannot be audited, only believed.
+PAIRED_SCHEMA = (
+    'instrument', 'timeframe', 'trendline_id', 'tolerance', 'phase',
+    'occurred_at', 'known_at', 'resolved_at', 'distance_atr',
+    'real_result', 'placebo_result', 'is_paired', 'random_hold_rate',
+    'effect_pp', 'effect_se_pp', 'z_score', 'n_real', 'n_placebo', 'n_pairs',
+    # geometry, so a row can be reproduced without guessing the DiagParams
+    'role', 'quality', 'touches', 'atr', 'bar',
+    'move_atr', 'near_atr', 'far_atr', 'placebo_atr', 'horizon', 'seed',
+)
+
+#: only the approach phase is a true paired comparison. See `paired()`.
+PAIRED_PHASES = ('approach',)
+
+
+def _pivot(df, keys, value):
+    if value not in df.columns:
+        return pd.DataFrame(index=pd.MultiIndex.from_arrays(
+            [[]] * len(keys), names=keys))
+    return df.pivot_table(index=keys, columns='arm', values=value,
+                          aggfunc='first')
+
+
+def paired(ev: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per approach, with the real line's outcome and its placebo's beside
+    it, and the cell's effect stamped on every row.
+
+    WHY THE PAIRING IS CONDITIONAL
+
+    In the APPROACH phase the two arms are genuinely paired: the same approach
+    is measured at the real level and at a level 1.5 ATR away, so every approach
+    yields exactly one outcome per arm and the honest unit is the pair.
+
+    The BREAKOUT and RETEST phases are NOT paired and are not stored as if they
+    were. Those phases only exist for an arm whose approach ended in a break —
+    and the line can hold where its placebo breaks. The two arms are therefore
+    conditioned on different subsets of approaches, so putting them on one row
+    would invent a correspondence that does not exist. Those rows carry one
+    side, `is_paired` is False, and the effect is computed with the UNPAIRED
+    two-proportion error, which is wider and correctly so.
+
+    Getting this wrong is not cosmetic: McNemar's error uses only the
+    discordant pairs and is much tighter than the unpaired one. Applying it to
+    arms that were never paired manufactures significance out of bookkeeping.
+    """
+    if not len(ev):
+        return pd.DataFrame(columns=list(PAIRED_SCHEMA))
+
+    keys = ['instrument', 'tf', 'line_id', 'tol_atr', 'phase', 'approach_bar']
+    # The random arm fires at an unrelated bar against no line at all, so it is
+    # not the other half of any pair: it is an unconditional base rate, carried
+    # per cell rather than per row.
+    arms = ev[ev.arm.isin(['line', 'placebo'])]
+    wide = _pivot(arms, keys, 'outcome')
+    for arm in ('line', 'placebo'):
+        if arm not in wide.columns:
+            wide[arm] = None
+
+    # Per-arm timing: in the post-break phases the two arms broke on different
+    # bars, so there is no single 'when'. Prefer the real line's own bar and
+    # fall back to the placebo's, which is the arm that produced the row.
+    def coalesced(value):
+        pv = _pivot(arms, keys, value)
+        if 'line' not in pv.columns:
+            return pv.get('placebo')
+        if 'placebo' not in pv.columns:
+            return pv['line']
+        return pv['line'].where(pv['line'].notna(), pv['placebo'])
+
+    timing = {v: coalesced(v) for v in
+              ('occurred_at', 'known_at', 'resolved_at', 'bar')}
+    # line properties, identical across arms by construction
+    meta = (ev[ev.arm == 'line'].drop_duplicates(subset=keys).set_index(keys))
+    static = [c for c in ('dist_atr', 'role', 'quality', 'touches', 'atr',
+                          'move_atr', 'near_atr', 'far_atr', 'placebo_atr',
+                          'horizon', 'seed') if c in meta.columns]
+
+    out = pd.DataFrame(index=wide.index)
+    for v, col in timing.items():
+        out[v] = col
+    for c in static:
+        out[c] = meta[c]
+    out['line'] = wide['line']
+    out['placebo'] = wide['placebo']
+    out = out.reset_index()
+
+    # cell-level unconditional base rate from the random arm
+    rnd = ev[ev.arm == 'random']
+    base = {}
+    if len(rnd):
+        d = rnd[rnd.outcome != CHOP]
+        if len(d):
+            base = (d.assign(h=(d.outcome == HOLD))
+                     .groupby(['instrument', 'tf', 'tol_atr', 'phase'])['h']
+                     .mean().to_dict())
+
+    res = pd.DataFrame({
+        'instrument': out['instrument'], 'timeframe': out['tf'],
+        'trendline_id': out['line_id'], 'tolerance': out['tol_atr'],
+        'phase': out['phase'],
+        'occurred_at': out['occurred_at'], 'known_at': out['known_at'],
+        'resolved_at': out['resolved_at'], 'distance_atr': out.get('dist_atr'),
+        'real_result': out['line'], 'placebo_result': out['placebo'],
+        'is_paired': out['phase'].isin(PAIRED_PHASES),
+        'random_hold_rate': [
+            round(100 * base[k], 2) if k in base else np.nan
+            for k in zip(out['instrument'], out['tf'], out['tol_atr'],
+                         out['phase'])],
+        'role': out.get('role'), 'quality': out.get('quality'),
+        'touches': out.get('touches'), 'atr': out.get('atr'),
+        'bar': out['bar'], 'move_atr': out.get('move_atr'),
+        'near_atr': out.get('near_atr'), 'far_atr': out.get('far_atr'),
+        'placebo_atr': out.get('placebo_atr'), 'horizon': out.get('horizon'),
+        'seed': out.get('seed'),
+    })
+
+    for c in ('effect_pp', 'effect_se_pp', 'z_score'):
+        res[c] = np.nan
+    for c in ('n_real', 'n_placebo', 'n_pairs'):
+        res[c] = 0
+
+    cell_keys = ['instrument', 'timeframe', 'tolerance', 'phase']
+    for cell, g in res.groupby(cell_keys, dropna=False):
+        real = g.real_result[g.real_result.notna() & (g.real_result != CHOP)]
+        plac = g.placebo_result[g.placebo_result.notna()
+                                & (g.placebo_result != CHOP)]
+        n_r, n_p = len(real), len(plac)
+        if not n_r or not n_p:
+            continue
+        r = float((real == HOLD).mean())
+        p = float((plac == HOLD).mean())
+
+        both = g[(g.real_result.notna()) & (g.placebo_result.notna())
+                 & (g.real_result != CHOP) & (g.placebo_result != CHOP)]
+        is_paired = bool(cell[cell_keys.index('phase')] in PAIRED_PHASES)
+        n_pairs = len(both) if is_paired else 0
+        if is_paired and n_pairs:
+            # McNemar: only the DISCORDANT pairs -- the approaches where the
+            # line and its placebo disagreed -- say anything about a difference
+            # measured on the same events.
+            r = float((both.real_result == HOLD).mean())
+            p = float((both.placebo_result == HOLD).mean())
+            b = int(((both.real_result == HOLD)
+                     & (both.placebo_result != HOLD)).sum())
+            c_ = int(((both.real_result != HOLD)
+                      & (both.placebo_result == HOLD)).sum())
+            se = np.sqrt(b + c_) / n_pairs if (b + c_) else np.nan
+        else:
+            se = np.sqrt(r * (1 - r) / n_r + p * (1 - p) / n_p)
+
+        m = np.ones(len(res), bool)
+        for k, v in zip(cell_keys, cell):
+            m &= (res[k] == v)
+        res.loc[m, 'effect_pp'] = round(100 * (r - p), 3)
+        res.loc[m, 'effect_se_pp'] = round(100 * se, 3) if se == se else np.nan
+        res.loc[m, 'z_score'] = (round(float((r - p) / se), 3)
+                                 if se == se and se > 0 else np.nan)
+        res.loc[m, ['n_real', 'n_placebo', 'n_pairs']] = [n_r, n_p, n_pairs]
+    return res[list(PAIRED_SCHEMA)]
