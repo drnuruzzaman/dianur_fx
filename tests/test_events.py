@@ -264,3 +264,49 @@ def test_tolerance_is_on_every_diagnostic_row(diag):
     ev, pr = diag
     assert (ev.tol_atr == Params().tol_atr).all()
     assert (pr.tolerance == Params().tol_atr).all()
+
+
+# --------------------------------------------------------------------------- #
+# the millisecond conversion, at every resolution pandas can hand us            #
+# --------------------------------------------------------------------------- #
+from sim.tl.mtf import to_ms
+
+
+@pytest.mark.parametrize('unit', ['s', 'ms', 'us', 'ns'])
+def test_to_ms_is_independent_of_index_resolution(unit):
+    """
+    The regression guard for the bug that made every trendline slope 1000x
+    wrong on pandas 3.
+
+    `astype('int64')` returns the index's OWN unit, so the old
+    `// 1_000_000` was only ever correct while every DatetimeIndex happened to
+    be nanoseconds. pandas 3 made `to_datetime(..., unit='s')` preserve the
+    unit — which is what `tools/dataset.py` builds bar indexes with — and the
+    conversion silently started returning seconds. Nothing raised: the strict
+    MTF alignment guard was comparing seconds against millisecond TF_MS
+    constants, so its condition could no longer fire.
+
+    Parametrising over the resolution is the point. A test written against
+    whatever pandas happens to be installed today would have passed on the
+    broken code for years.
+    """
+    base = pd.DatetimeIndex(['2024-01-02 01:00:00', '2024-01-02 02:00:00'])
+    idx = base.astype('datetime64[%s]' % unit)
+    assert list(to_ms(idx)) == [1704157200000, 1704160800000]
+
+
+def test_engine_line_geometry_survives_a_coarse_index():
+    """
+    End to end: the same bars at second and nanosecond resolution must produce
+    the same events. This is what actually broke — not the helper in isolation,
+    but every slope computed from it.
+    """
+    b = bars('bars_XAUUSDa_1h.csv')
+    coarse = b.copy()
+    coarse.index = b.index.astype('datetime64[s]')
+    fine = b.copy()
+    fine.index = b.index.astype('datetime64[ns]')
+    a = build(coarse, '1h', 'XAUUSD.a', Params())
+    c = build(fine, '1h', 'XAUUSD.a', Params())
+    assert len(a) == len(c) and len(a) > 0
+    pd.testing.assert_frame_equal(a, c, check_dtype=False)

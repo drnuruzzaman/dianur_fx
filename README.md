@@ -250,13 +250,20 @@ leak, in code that looked obviously fine.
 A fifth mechanism was added after a silent, version-dependent failure. Every
 timestamp in `sim/tl/` is milliseconds, and the conversion used to be
 `index.astype('int64') // 1_000_000` — correct only while a DatetimeIndex was
-always nanosecond-resolution. Since pandas 2.0 it is not: `tools/dataset.py`
-builds bar indexes with `to_datetime(..., unit='s')`, which yields
-`datetime64[s]`, and that expression then returns **seconds**. Every trendline
-slope came out 1000x wrong, MTF close times were compared against millisecond
-`TF_MS` constants, and the strict alignment guard checked a condition that could
-no longer be true, so it raised nothing. Nothing crashed; the lines were simply
-wrong, and only on pandas >= 2.
+always nanosecond-resolution. On **pandas 3.0** it is not: `tools/dataset.py`
+builds bar indexes with `to_datetime(..., unit='s')`, which now preserves the
+unit and yields `datetime64[s]`, and that expression then returns **seconds**.
+Every trendline slope came out 1000x wrong, MTF close times were compared
+against millisecond `TF_MS` constants, and the strict alignment guard checked a
+condition that could no longer be true, so it raised nothing. Nothing crashed;
+the lines were simply wrong.
+
+The boundary is pandas 3.0 exactly, and it was measured rather than assumed —
+1.5.3, 2.0.3 and 2.2.3 all still return `datetime64[ns]` here, so a result
+produced on any of them is unaffected. pandas 2.0 introduced *support* for
+non-nanosecond resolutions; it did not start *returning* them from
+`to_datetime(unit=...)`. Guessing at "since 2.0" would have condemned a lot of
+correct history.
 
 `sim/tl/mtf.to_ms()` converts the unit before the cast, so the result no longer
 depends on how the bars happened to be loaded. The symptom that exposed it was
