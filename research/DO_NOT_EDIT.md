@@ -1,0 +1,1 @@
+The research simulator integration delegates to existing simulator semantics.
