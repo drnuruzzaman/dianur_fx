@@ -43,7 +43,7 @@ def main(argv=None) -> int:
         for tf in args.timeframes:
             print(f"Building events: {symbol} / {tf} ...")
             bars = load(symbol if symbol.endswith(".a") else symbol + ".a", tf, args.start, args.end)
-            events = build_fact_events(symbol=symbol, bars=bars, timeframe=tf, params=params)
+            events = build_fact_events(instrument=symbol, bars=bars, timeframe=tf, params=params)
             errors = validate_fact_events(events)
             if errors:
                 raise SystemExit(f"EVENT CORRECTNESS FAILURE {symbol}/{tf}: {'; '.join(errors)}")
