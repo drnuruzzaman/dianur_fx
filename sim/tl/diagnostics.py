@@ -25,9 +25,52 @@ METHOD
      oscillates and the barriers are not hit with equal ease everywhere. Two
      controls:
          placebo  — the same line shifted `placebo_atr` sideways: identical
-                    slope, identical approach dynamics, no structural claim.
-                    This is the test that matters: is THIS level special, or
-                    would any nearby parallel level do?
+                    slope, no structural claim. This is meant to be the test
+                    that matters: is THIS level special, or would any nearby
+                    parallel level do?
+
+                    *** KNOWN DEFECT -- READ BEFORE TRUSTING ANY placebo NUMBER
+                    IN THIS REPO, INCLUDING runs/tl_placebo_summary.csv ***
+
+                    The placebo does NOT have identical approach dynamics, and
+                    the claim that it does was wrong. An approach fires when
+                    price comes within `near_atr` (0.4) of the LINE. The
+                    placebo sits `placebo_atr` (1.5) away from that line, so at
+                    the entry bar price is ~1.5 ATR from the placebo -- further
+                    than either of the placebo's own barriers, which are placed
+                    at stop/target distances of ~1 ATR around the PLACEBO's
+                    level, not around price.
+
+                    Price therefore starts BEYOND one of the placebo's two
+                    barriers 100% of the time, and the placebo resolves on the
+                    first bar 100% of the time (measured on EURUSD 4h, 1452
+                    approaches, against 42% for the line). Which barrier it
+                    starts beyond is decided by the sign of `off`, a coin flip.
+
+                    So the placebo arm is not a nearby level being tested. It is
+                    a fair coin, resolved immediately, and its hold rate sits
+                    near 50% for every instrument, timeframe and geometry --
+                    which is exactly the pattern in tl_placebo_summary.csv, and
+                    was read there as "a placebo holds about half the time"
+                    rather than as the symptom it is.
+
+                    Consequences: `edge_vs_placebo` measures a real level
+                    against a coin flip, not against an alternative level, and
+                    every downstream comparison inherits that -- the structural
+                    gate, the r_conversion grids, and the paired test added on
+                    top of them. The paired statistic is computed correctly; the
+                    quantity it differences against is not a control.
+
+                    Fixing it is a design choice, not a bug fix, because the
+                    obvious repair breaks something else. Detecting approaches
+                    to the SHIFTED line independently gives a real control with
+                    matched dynamics, but those approaches happen at different
+                    bars, so the arms no longer pair and the paired test has to
+                    go. A time-shifted control (same line, wrong era) keeps the
+                    geometry honest and is what the project's own plan calls
+                    for at gate 8B. Anchoring both arms' barriers to the entry
+                    PRICE keeps pairing but makes the placebo's level
+                    irrelevant, which is what the `random` arm already does.
          random   — the same barrier width applied at random bars around the
                     current price, measuring the unconditional base rate.
 

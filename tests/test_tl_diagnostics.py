@@ -302,3 +302,74 @@ def test_paired_mean_agrees_with_the_aggregate_expectancy():
     n_paired, mean, _, _ = paired_diff(line, plac, rr)
     assert n_paired == n
     assert mean == pytest.approx(expectancy(lo) - expectancy(po))
+
+
+# --------------------------------------------------------------------------
+# the placebo control, which does not currently work
+# --------------------------------------------------------------------------
+
+def _approach_distances(bars, symbol, tf, tol=0.10, near=0.4, far=1.5,
+                        placebo_atr=1.5, seed=7):
+    """
+    Re-derive the approach set and report, per approach, how far price sat from
+    each arm's own level at the entry bar. `run()` records dist_atr for the line
+    only, so this is the only way to ask the question of the placebo.
+    """
+    from sim.indicators import atr as atr_series
+    from sim.tl.engine import TrendlineEngine
+    from sim.tl.mtf import TF_MS
+    eng = TrendlineEngine(tf, TF_MS[tf], Params(tol_atr=tol),
+                          record_tradeable=True)
+    snaps = eng.walk(bars)
+    close = np.asarray(bars['close'], float)
+    atr = atr_series(bars, 14)
+    rng = np.random.default_rng(seed)
+    armed, line_d, plac_d = {}, [], []
+    for snap in snaps:
+        i, a = snap.i, atr[snap.i]
+        if not np.isfinite(a) or a <= 0:
+            continue
+        for line_id, _role, value, _q, _t in snap.tradeable:
+            dist = abs(close[i] - value) / a
+            if dist >= far:
+                armed[line_id] = True
+                continue
+            if dist > near or not armed.get(line_id, False):
+                continue
+            armed[line_id] = False
+            off = placebo_atr * a * (1 if rng.random() < 0.5 else -1)
+            line_d.append(dist)
+            plac_d.append(abs(close[i] - (value + off)) / a)
+    return np.array(line_d), np.array(plac_d)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    'Known defect, documented in the module docstring. An approach is defined '
+    'against the LINE, so price is ~placebo_atr away from the placebo at the '
+    'entry bar -- further than the placebo\'s own barriers. The placebo resolves '
+    'on the first bar every time and is a coin flip, not an alternative level. '
+    'Fixing it is a design decision (approach-matched, time-shifted, or '
+    'entry-anchored control), so this is left failing rather than papered over.'))
+def test_placebo_entry_is_as_close_to_its_level_as_the_line_is(real_bars):
+    """
+    What the placebo arm has to satisfy to be a control at all: price should sit
+    about as far from the placebo's level at entry as it does from the line's.
+    Otherwise the two arms are not being asked the same question, and their
+    difference is not attributable to the level.
+    """
+    line_d, plac_d = _approach_distances(real_bars, 'EURUSD.a', '4h')
+    assert len(line_d) > 100
+    assert plac_d.mean() == pytest.approx(line_d.mean(), abs=0.15)
+
+
+def test_placebo_defect_is_still_exactly_as_described(real_bars):
+    """
+    Pins the defect's shape so the docstring cannot drift from reality, and so
+    a partial fix that changes the numbers without fixing the problem is
+    noticed. Delete this the moment the xfail above starts passing.
+    """
+    line_d, plac_d = _approach_distances(real_bars, 'EURUSD.a', '4h')
+    assert line_d.max() <= 0.4 + 1e-9          # by construction: near_atr
+    assert plac_d.min() >= 1.1 - 1e-9          # placebo_atr - near_atr
+    # every placebo entry starts beyond a barrier placed ~1 ATR from ITS level
+    assert (plac_d > 1.0).mean() == 1.0
