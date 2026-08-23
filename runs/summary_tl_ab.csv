@@ -1,0 +1,13 @@
+symbol,strategy,confluence,trades,net_AUD,return_pct,win_pct,avg_R,pf,maxdd_pct,sharpe,sig_seen,sig_taken,run_id
+XAUUSD.a,rsi_divergence,off,28,-16.98,-0.07,46.4,-0.017,0.986,-2.44,-0.01,28,28,20260822_rsi_divergence_XAUUSDa_off_causal
+XAUUSD.a,rsi_divergence,require,5,-320.81,-1.28,40.0,-0.534,0.105,-1.43,-0.64,102,5,20260822_rsi_divergence_XAUUSDa_require_causal
+XAUUSD.a,tl_bounce,off,6524,-13674.29,-54.7,43.5,-0.023,0.943,-55.54,-0.76,6555,6555,20260822_tl_bounce_XAUUSDa_off_causal
+XAUUSD.a,tl_bounce,require,2349,422.52,1.69,44.7,0.004,1.003,-23.85,0.08,10317,2350,20260822_tl_bounce_XAUUSDa_require_causal
+XAUUSD.a,tl_breakout,off,4584,-16300.65,-65.2,36.6,-0.046,0.901,-69.85,-1.07,4727,4727,20260822_tl_breakout_XAUUSDa_off_causal
+XAUUSD.a,tl_breakout,require,1767,-1475.52,-5.9,37.9,-0.004,0.985,-37.86,-0.05,6699,1772,20260822_tl_breakout_XAUUSDa_require_causal
+USDJPY.a,rsi_divergence,off,27,110.62,0.44,48.1,0.041,1.103,-3.79,0.08,27,27,20260822_rsi_divergence_USDJPYa_off_causal
+USDJPY.a,rsi_divergence,require,10,-64.54,-0.26,50.0,-0.034,0.87,-1.82,-0.07,64,10,20260822_rsi_divergence_USDJPYa_require_causal
+USDJPY.a,tl_bounce,off,6192,-20008.45,-80.03,41.6,-0.05,0.879,-82.49,-1.59,6210,6210,20260822_tl_bounce_USDJPYa_off_causal
+USDJPY.a,tl_bounce,require,2753,-15126.15,-60.5,42.4,-0.065,0.853,-62.51,-1.36,10154,2766,20260822_tl_bounce_USDJPYa_require_causal
+USDJPY.a,tl_breakout,off,4807,13663.46,54.65,39.2,0.022,1.036,-24.83,0.53,4818,4818,20260822_tl_breakout_USDJPYa_off_causal
+USDJPY.a,tl_breakout,require,1961,2642.57,10.57,39.2,0.014,1.018,-28.67,0.21,6837,1967,20260822_tl_breakout_USDJPYa_require_causal

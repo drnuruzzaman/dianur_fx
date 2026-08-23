@@ -1,0 +1,5 @@
+trades,gate_sample,avg_R,pf,gate_profitable,control_runs,control_avgR_p50,control_avgR_p95,percentile_vs_control,gate_beats_control,net_p05,net_p50,net_p95,prob_net_negative,dd_historical,dd_p50,dd_p95,symbol,tf,strategy,span,bars,ctrl_max_bars,secs
+2722,True,-0.1226,0.78,False,60,-0.0928,-0.045,8.3,False,-26433.27,-20262.16,-13760.02,1.0,-20454.37,-20878.79,-26887.57,EURUSD.a,1h,mean_revert,1999-01-04..2012-12-31,86917,13,58.5
+1166,True,-0.1224,0.788,False,60,-0.0479,0.0044,3.3,False,-18118.43,-12688.57,-7326.32,1.0,-12776.66,-13449.04,-18749.95,EURUSD.a,4h,mean_revert,1999-01-04..2012-12-31,22319,11,18.8
+2671,True,-0.1217,0.784,False,60,-0.1071,-0.0616,23.3,False,-25957.9,-19821.83,-13796.37,1.0,-20790.13,-20520.74,-26439.91,USDJPY.a,1h,mean_revert,1999-01-04..2012-12-31,86768,12,57.4
+1084,True,-0.0416,0.911,False,60,-0.0469,-0.0024,56.7,False,-11908.16,-5455.31,911.83,0.916,-7637.26,-7498.81,-12931.76,USDJPY.a,4h,mean_revert,1999-01-04..2012-12-31,22251,11,17.6

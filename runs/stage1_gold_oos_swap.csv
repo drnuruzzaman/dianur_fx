@@ -1,0 +1,2 @@
+trades,gate_sample,avg_R,pf,gate_profitable,control_runs,control_avgR_p50,control_avgR_p95,percentile_vs_control,gate_beats_control,net_p05,net_p50,net_p95,prob_net_negative,dd_historical,dd_p50,dd_p95,symbol,tf,strategy,span,bars,ctrl_max_bars,secs
+207,True,0.0684,1.114,True,60,-0.0767,0.0635,95.0,True,-3366.15,1418.15,7090.42,0.326,-2421.95,-2511.35,-4848.47,XAUUSD.a,4h,donchian,2016-01-04..2020-12-31,7557,18,6.3

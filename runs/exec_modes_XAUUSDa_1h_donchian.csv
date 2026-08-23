@@ -1,0 +1,40 @@
+,pessimistic,intrabar,optimistic
+symbol,XAUUSD.a,XAUUSD.a,XAUUSD.a
+tf,1h,1h,1h
+strategy,donchian,donchian,donchian
+params,"{'entry': 20, 'exit': 10, 'atr_len': 14, 'atr_mult': 2.0}","{'entry': 20, 'exit': 10, 'atr_len': 14, 'atr_mult': 2.0}","{'entry': 20, 'exit': 10, 'atr_len': 14, 'atr_mult': 2.0}"
+bars,51060,51060,51060
+skipped_signals,30,30,30
+start_equity,25000.0,25000.0,25000.0
+end_equity,24099.548305604214,24099.548305604214,24099.548305604214
+account_currency,AUD,AUD,AUD
+profit_currency,USD,USD,USD
+swap_model,none,none,none
+first_bar,2018-01-02 02:00:00,2018-01-02 02:00:00,2018-01-02 02:00:00
+last_bar,2026-08-21 17:00:00,2026-08-21 17:00:00,2026-08-21 17:00:00
+ruined_at,,,
+trades,1582,1582,1582
+net_acct,-900.45,-900.45,-900.45
+return_pct,-3.6,-3.6,-3.6
+win_rate_pct,31.8,31.8,31.8
+avg_R,0.002,0.002,0.002
+expectancy_R,0.002,0.002,0.002
+profit_factor,0.99,0.99,0.99
+avg_win_acct,180.98,180.98,180.98
+avg_loss_acct,-85.2,-85.2,-85.2
+largest_loss_acct,-237.39,-237.39,-237.39
+avg_bars_held,19.5,19.5,19.5
+max_drawdown_acct,-7105.69,-7105.69,-7105.69
+max_drawdown_pct,-27.46,-27.46,-27.46
+max_drawdown_at,2023-09-25 18:00:00,2023-09-25 18:00:00,2023-09-25 18:00:00
+cost_spread_ccy,-3262.56,-3262.56,-3262.56
+cost_slippage_ccy,-1974.09,-1974.09,-1974.09
+cost_swap_ccy,0.0,0.0,0.0
+sharpe_daily_annualised,0.01,0.01,0.01
+time_in_market_pct,60.5,60.5,60.5
+years,8.63,8.63,8.63
+trades_per_year,183.3,183.3,183.3
+cagr_pct,-0.42,-0.42,-0.42
+exit_reasons,"{'signal': 884, 'stop': 689, 'stop_gap': 8, 'end_of_data': 1}","{'signal': 884, 'stop': 689, 'stop_gap': 8, 'end_of_data': 1}","{'signal': 884, 'stop': 689, 'stop_gap': 8, 'end_of_data': 1}"
+by_side,"{'long': 844, 'short': 738}","{'long': 844, 'short': 738}","{'long': 844, 'short': 738}"
+buy_and_hold_pct,251.13,251.13,251.13

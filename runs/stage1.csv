@@ -1,0 +1,5 @@
+trades,gate_sample,avg_R,pf,control_runs,control_avgR_p50,control_avgR_p95,percentile_vs_control,gate_beats_control,net_p05,net_p50,net_p95,prob_net_negative,dd_historical,dd_p50,dd_p95,symbol,tf,strategy,ctrl_max_bars,secs
+1039,True,0.0142,1.012,30,-0.0188,0.046,80.0,False,-7741.56,620.04,9102.54,0.448,-6084.55,-5517.19,-10748.45,XAUUSD.a,1h,donchian,14,12.9
+403,True,0.1099,1.139,30,0.027,0.1048,93.3,False,-4302.77,4131.05,13769.27,0.213,-3634.69,-4086.54,-7938.07,XAUUSD.a,1h,ema_cross,27,10.1
+1052,True,0.1217,1.179,30,0.0022,0.0963,96.7,True,2943.82,20341.27,38316.86,0.028,-5622.98,-6737.75,-12108.4,USDJPY.a,1h,donchian,17,14.7
+377,True,0.2453,1.38,30,0.0417,0.1229,96.7,True,2467.61,12838.3,24080.86,0.019,-3066.63,-3551.66,-6260.41,USDJPY.a,1h,ema_cross,36,11.3

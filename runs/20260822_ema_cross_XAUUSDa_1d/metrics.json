@@ -1,0 +1,52 @@
+{
+  "symbol": "XAUUSD.a",
+  "tf": "1d",
+  "strategy": "ema_cross",
+  "params": {
+    "fast": 21,
+    "slow": 50,
+    "atr_len": 14,
+    "atr_mult": 2.5
+  },
+  "bars": 1455,
+  "skipped_signals": 3,
+  "start_equity": 25000.0,
+  "end_equity": 26090.15130623195,
+  "account_currency": "AUD",
+  "profit_currency": "USD",
+  "swap_model": "none",
+  "first_bar": "2021-01-04 00:00:00",
+  "last_bar": "2026-08-21 00:00:00",
+  "ruined_at": null,
+  "trades": 8,
+  "net_acct": 1090.15,
+  "return_pct": 4.36,
+  "win_rate_pct": 50.0,
+  "avg_R": 1.424,
+  "expectancy_R": 1.424,
+  "profit_factor": 7.322,
+  "avg_win_acct": 315.64,
+  "avg_loss_acct": -43.11,
+  "largest_loss_acct": -52.6,
+  "avg_bars_held": 75.9,
+  "max_drawdown_acct": -330.64,
+  "max_drawdown_pct": -1.26,
+  "max_drawdown_at": "2024-11-14 00:00:00",
+  "cost_spread_ccy": -0.43,
+  "cost_slippage_ccy": -8.02,
+  "cost_swap_ccy": 0.0,
+  "sharpe_daily_annualised": 0.63,
+  "time_in_market_pct": 41.7,
+  "years": 5.63,
+  "trades_per_year": 1.4,
+  "cagr_pct": 0.76,
+  "exit_reasons": {
+    "signal": 8
+  },
+  "by_side": {
+    "long": 8,
+    "short": 0
+  },
+  "buy_and_hold_pct": 136.18,
+  "data_hash": "24a24a290fe295c9"
+}

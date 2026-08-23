@@ -1,0 +1,3 @@
+trades,gate_sample,avg_R,pf,control_runs,control_avgR_p50,control_avgR_p95,percentile_vs_control,gate_beats_control,net_p05,net_p50,net_p95,prob_net_negative,dd_historical,dd_p50,dd_p95,symbol,tf,strategy,span,bars,ctrl_max_bars,secs
+2540,True,-0.0153,0.967,60,-0.0605,-0.0108,93.3,False,-22182.7,-5844.14,10908.15,0.712,-16610.84,-14152.01,-26433.31,USDJPY.a,1h,donchian,2007-01-02..2020-12-31,86604,16,63.4
+1023,True,0.0083,1.002,60,-0.0291,0.038,83.3,False,-11647.17,-70.04,12573.28,0.502,-7409.89,-7801.48,-15606.49,USDJPY.a,1h,ema_cross,2007-01-02..2020-12-31,86604,27,47.4

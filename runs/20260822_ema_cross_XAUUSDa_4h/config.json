@@ -1,0 +1,29 @@
+{
+  "run_id": "20260822_ema_cross_XAUUSDa_4h",
+  "symbol": "XAUUSD.a",
+  "tf": "4h",
+  "strategy": "ema_cross",
+  "params": {},
+  "config": {
+    "risk_pct": 0.5,
+    "start_equity": 25000.0,
+    "slippage_atr": 0.02,
+    "slippage_points": 0.0,
+    "stop_slippage_mult": 1.5,
+    "spread_points_default": 0.0,
+    "apply_swap": false,
+    "max_bars_held": null,
+    "allow_short": true,
+    "ruin_pct": 20.0,
+    "flat_by_hour": null,
+    "label": ""
+  },
+  "start": "2021-01-04 00:00:00",
+  "end": "2026-08-21 16:00:00",
+  "bars": 8723,
+  "data_hash": "46af65dc8c4bff82",
+  "account_currency": "AUD",
+  "fx_rate_freq": "1h",
+  "created_utc": "2026-08-22T10:14:53+00:00",
+  "time_base": "broker server time"
+}

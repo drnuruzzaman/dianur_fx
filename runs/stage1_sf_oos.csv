@@ -1,0 +1,2 @@
+trades,gate_sample,avg_R,pf,gate_profitable,control_runs,control_avgR_p50,control_avgR_p95,percentile_vs_control,gate_beats_control,net_p05,net_p50,net_p95,prob_net_negative,dd_historical,dd_p50,dd_p95,symbol,tf,strategy,span,bars,ctrl_max_bars,secs
+670,True,-0.0291,0.948,False,60,-0.0547,0.0247,70.0,False,-10595.86,-2521.01,5345.0,0.702,-5624.34,-6666.04,-12587.84,EURUSD.a,4h,stretch_follow,2013-01-02..2026-08-21,21357,16,16.0

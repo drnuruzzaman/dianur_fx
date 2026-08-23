@@ -1,0 +1,16 @@
+2026-08-23T08:00:33+10:00  clock     server offset +10800000 ms (UTC+3.00h) confidence=ok from 5 tick(s)
+2026-08-23T08:00:33+10:00  start     bridge on 127.0.0.1:8765 mock=False connected=True server=Pepperstone-MT5-Live01
+2026-08-23T08:02:46+10:00  download  start symbols=XAUUSD.a,USDJPY.a,EURUSD.a tfs=5m,1m years=30 days=0
+2026-08-23T08:13:48+10:00  error     /quotes ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /ticks ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /account ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /positions ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /orders ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /quotes ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /ticks ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:13:48+10:00  error     /ticks ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:14:12+10:00  download  finished rows=27995997 phase=done error=None reindex=ok
+2026-08-23T08:15:58+10:00  download  start symbols=XAUUSD.a,USDJPY.a,EURUSD.a tfs=1m,5m,15m,1h years=30 days=1200
+2026-08-23T08:16:11+10:00  error     /ticks ConnectionAbortedError: [WinError 10053] An established connection was aborted by the software in your host machine
+2026-08-23T08:16:29+10:00  download  finished rows=0 phase=done error=None reindex=ok
+2026-08-23T12:16:21+10:00  stop      bridge shutting down

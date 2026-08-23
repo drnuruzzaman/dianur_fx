@@ -1,0 +1,40 @@
+,pessimistic,intrabar,optimistic
+symbol,XAUUSD.a,XAUUSD.a,XAUUSD.a
+tf,15m,15m,15m
+strategy,tl_breakout,tl_breakout,tl_breakout
+params,"{'confluence_mode': 'off', 'min_confluence': 0.5, 'ema_filter': True, 'regime_filter': True, 'risk_reward': 2.0, 'stop_atr': 1.0, 'max_bars': 96, 'min_quality': 40.0, 'retest_bars': 0, 'retest_atr': 0.35}","{'confluence_mode': 'off', 'min_confluence': 0.5, 'ema_filter': True, 'regime_filter': True, 'risk_reward': 2.0, 'stop_atr': 1.0, 'max_bars': 96, 'min_quality': 40.0, 'retest_bars': 0, 'retest_atr': 0.35}","{'confluence_mode': 'off', 'min_confluence': 0.5, 'ema_filter': True, 'regime_filter': True, 'risk_reward': 2.0, 'stop_atr': 1.0, 'max_bars': 96, 'min_quality': 40.0, 'retest_bars': 0, 'retest_atr': 0.35}"
+bars,157006,157006,157006
+skipped_signals,11,11,16
+start_equity,25000.0,25000.0,25000.0
+end_equity,4994.1440013765405,4994.442953855044,4991.629772392734
+account_currency,AUD,AUD,AUD
+profit_currency,USD,USD,USD
+swap_model,none,none,none
+first_bar,2020-01-02 01:00:00,2020-01-02 01:00:00,2020-01-02 01:00:00
+last_bar,2026-08-21 17:00:00,2026-08-21 17:00:00,2026-08-21 17:00:00
+ruined_at,2024-05-08 17:15:00,2024-06-25 14:00:00,2024-10-10 14:15:00
+trades,2696,2773,2967
+net_acct,-20005.86,-20005.56,-20008.37
+return_pct,-80.02,-80.02,-80.03
+win_rate_pct,32.5,32.7,32.8
+avg_R,-0.125,-0.119,-0.114
+expectancy_R,-0.125,-0.119,-0.114
+profit_factor,0.838,0.841,0.846
+avg_win_acct,118.1,117.22,112.97
+avg_loss_acct,-67.83,-67.6,-65.16
+largest_loss_acct,-262.4,-262.4,-262.4
+avg_bars_held,17.4,17.5,17.4
+max_drawdown_acct,-20288.03,-20287.73,-20290.54
+max_drawdown_pct,-80.25,-80.25,-80.26
+max_drawdown_at,2024-05-08 17:15:00,2024-06-25 14:00:00,2024-10-10 14:15:00
+cost_spread_ccy,-8205.1,-8373.58,-8577.82
+cost_slippage_ccy,-1463.24,-1491.49,-1531.79
+cost_swap_ccy,0.0,0.0,0.0
+sharpe_daily_annualised,-1.84,-1.81,-1.76
+time_in_market_pct,29.9,30.9,32.8
+years,6.63,6.63,6.63
+trades_per_year,406.4,418.0,447.3
+cagr_pct,-21.56,-21.56,-21.56
+exit_reasons,"{'stop': 1781, 'target': 825, 'signal': 79, 'stop_gap': 7, 'target_gap': 4}","{'stop': 1827, 'target': 854, 'signal': 80, 'stop_gap': 7, 'target_gap': 4, 'ruin': 1}","{'stop': 1954, 'target': 921, 'signal': 81, 'stop_gap': 7, 'target_gap': 4}"
+by_side,"{'long': 1424, 'short': 1272}","{'long': 1463, 'short': 1310}","{'long': 1577, 'short': 1390}"
+buy_and_hold_pct,201.93,201.93,201.93

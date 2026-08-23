@@ -1,0 +1,2 @@
+symbol,strategy,confluence,trades,net_AUD,return_pct,win_pct,avg_R,pf,maxdd_pct,sharpe,sig_seen,sig_taken,run_id
+XAUUSD.a,rsi_divergence,off,28,-218.68,-0.87,46.4,-0.068,0.864,-3.1,-0.13,28,28,20260822_rsi_divergence_XAUUSDa_off

@@ -1,0 +1,3 @@
+trades,gate_sample,avg_R,pf,gate_profitable,control_runs,control_avgR_p50,control_avgR_p95,percentile_vs_control,gate_beats_control,net_p05,net_p50,net_p95,prob_net_negative,dd_historical,dd_p50,dd_p95,symbol,tf,strategy,span,bars,ctrl_max_bars,secs
+1344,True,-0.0499,0.909,False,60,-0.0412,0.0049,36.7,False,-16102.24,-7055.99,2234.1,0.899,-7987.6,-10206.12,-17763.84,EURUSD.a,4h,donchian,1999-01-04..2026-08-21,43676,15,32.1
+1337,True,-0.0411,0.915,False,60,-0.035,0.0259,41.7,False,-15571.02,-6588.91,3123.89,0.873,-8294.27,-9865.29,-17509.14,USDJPY.a,4h,donchian,1999-01-04..2026-08-21,43607,15,32.6
