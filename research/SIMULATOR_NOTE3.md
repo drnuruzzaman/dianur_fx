@@ -1,1 +1,0 @@
-The research runner delegates to the existing simulator. Full research gates are fail-closed until the authoritative controls are wired.
