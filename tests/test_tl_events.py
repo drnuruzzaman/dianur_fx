@@ -30,7 +30,6 @@ def test_fact_contract_rejects_strategy_opinions_and_future_known_time():
 
 def test_funnel_and_opportunity_gate():
     df = pd.concat([_events()] * 200, ignore_index=True)
-    # Give every copy unique event IDs so the event contract remains realistic.
     df["event_id"] = [f"e{i}" for i in range(len(df))]
     f = funnel(df).set_index("stage")
     assert f.loc["TOUCH", "count"] == 200
@@ -47,3 +46,11 @@ def test_registered_strategy_contracts_are_separate_from_events():
     assert REGISTERED["bounce"].no_break_bars == 5
     assert REGISTERED["breakout"].continuation_atr == 0.25
     assert REGISTERED["breakout_retest"].retest_max_bars == 12
+
+
+def test_event_runner_keyword_matches_fact_event_api():
+    import inspect
+    from sim.tl.events import build_fact_events
+    signature = inspect.signature(build_fact_events)
+    assert "instrument" in signature.parameters
+    assert "symbol" not in signature.parameters
