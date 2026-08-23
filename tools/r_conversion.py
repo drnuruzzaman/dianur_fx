@@ -192,6 +192,13 @@ def main():
                                else ('approach', args.phase)),
                     symbol=args.symbol)
         amb, by = ev.attrs.get('ambiguous_bars', 0), ev.attrs.get('resolved_by', {})
+        # Anything not settled by an actual sub-timeframe went to the stop --
+        # whether the resolver looked and could not tell ('fallback') or never
+        # got to look at all, because there is no sub-bar history for this
+        # instrument. Both mean the same thing for the result, and neither may
+        # be reported as a clean intrabar resolution.
+        settled = sum(v for k, v in by.items() if k not in
+                      ('fallback', 'pessimistic', 'optimistic'))
         ev = ev[ev.phase == args.phase]
         if not len(ev):
             continue
@@ -230,7 +237,8 @@ def main():
             'paired_t': round(d_t, 2) if np.isfinite(d_t) else np.nan,
             'paired_p': d_p,
             'ambiguous': amb,
-            'intrabar_fallback': by.get('fallback', 0),
+            'settled_by_subbars': settled,
+            'gave_up_to_stop': amb - settled,
         })
         print('  stop %.1f target %.1f  R:R %.2f  hold %.1f%% (plac %.1f%%)  '
               'gross %+.4f  friction %.4f  NET %+.4f  paired %+.4f (t %.2f, n %d)'
@@ -284,9 +292,13 @@ def main():
                      best.paired_t, best.paired_p, best.n_paired, best.net_R))
 
     amb = int(df.ambiguous.max()) if len(df) else 0
-    fb = int(df.intrabar_fallback.max()) if len(df) else 0
+    gave_up = int(df.gave_up_to_stop.max()) if len(df) else 0
     print('\nresolution=%s; worst-case %d bars reached both barriers, %d of '
-          'those fell back to the stop.' % (args.resolution, amb, fb))
+          'those went to the stop unresolved.' % (args.resolution, amb, gave_up))
+    if args.resolution == INTRABAR and amb and gave_up > 0.25 * amb:
+        print('WARNING: over a quarter of ambiguous bars were never settled by '
+              'sub-bars, so this run is closer to pessimistic than to intrabar.'
+              ' Check that %s has sub-timeframe history.' % args.symbol)
     if args.resolution == CLOSE:
         print('WARNING: close-only resolution cannot see a barrier that was '
               'touched and given back, so it understates stops. Any net_R here '
