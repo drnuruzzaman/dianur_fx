@@ -53,9 +53,6 @@ def _touch_events(instrument: str, timeframe: str, bars: pd.DataFrame,
     for i, s in enumerate(snapshots):
         timestamp = bars.index[i]
         close = float(bars["close"].iloc[i])
-        # `tradeable` is populated by the engine only when requested and includes
-        # every confirmed/active line, not just the single best support and
-        # resistance line. Each tuple is (id, role, price, quality, touches).
         for line_id, _role, px, _quality, touches in s.tradeable:
             if line_id is None or not np.isfinite(px):
                 continue
@@ -102,19 +99,13 @@ def _break_events(instrument: str, timeframe: str, bars: pd.DataFrame,
 
 def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
                       lines: pd.DataFrame, params: Params) -> list[FactEvent]:
-    """Emit structural RETEST and INVALIDATED facts.
-
-    Retest uses only the TrendlineEngine's registered structural tolerance,
-    never a strategy-specific timing or distance parameter. Strategy B/C may
-    impose their own windows later.
-    """
+    """Emit structural RETEST and INVALIDATED facts."""
     events: list[FactEvent] = []
     if lines.empty:
         return events
     for row in lines.itertuples(index=False):
         line_id = str(getattr(row, "id"))
-        timeframe_row = str(getattr(row, "timeframe"))
-        if timeframe_row != timeframe:
+        if str(getattr(row, "timeframe")) != timeframe:
             continue
         broken_at = getattr(row, "broken_at", None)
         archived_at = getattr(row, "archived_at", None)
@@ -192,7 +183,8 @@ def build_fact_events(instrument: str, bars: pd.DataFrame, *,
     params = params or Params()
     engine = TrendlineEngine(timeframe, TF_MS[timeframe], params, record_tradeable=True)
     snapshots = engine.walk(bars)
-    lines = pd.DataFrame([l.to_row() for s in snapshots for l in s.live])
+    unique_lines = {l.id: l for s in snapshots for l in s.live}
+    lines = pd.DataFrame([l.to_row() for l in unique_lines.values()])
     rows = [e.to_row() for e in (
         *_touch_events(instrument, timeframe, bars, snapshots),
         *_break_events(instrument, timeframe, bars, snapshots),
