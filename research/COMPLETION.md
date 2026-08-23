@@ -1,0 +1,1 @@
+The integrated simulator runner is available via `python -m research.run_tl`. Full research verdict controls remain separate and fail-closed.
