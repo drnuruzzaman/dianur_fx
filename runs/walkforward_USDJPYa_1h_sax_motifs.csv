@@ -1,0 +1,3 @@
+pattern_id,direction,as_proposed,stop_atr,target_atr,rr,n_events,n_decided,chop_pct,undefined,hold_pct,base_pct,base_flat_pct,fair_pct,dev_pp_oos,edge_R,gross_R,friction_R,net_R_oos,z,p_binom,z_shift,p,p_perm,folds_agree,fold_frac,survives_bh,beats_expected_max,dev_pp_is,net_R_is,fold,test_from,sign_held
+ddddd|cc,-1,False,0.5,1.0,2.0,282,282,0.0,0,40.07,33.07,33.33,33.33,7.0,0.2099,0.2021,0.2324,-0.0303,2.5,0.012443840021339522,2.34,0.019118647851360252,0.03482587064676617,3/4,0.75,True,True,10.97,0.0874,1,2009-05-07,True
+ddddd|cc,-1,False,0.5,1.0,2.0,295,295,0.0,0,34.92,31.85,31.74,33.33,3.06,0.0919,0.0475,0.2269,-0.1794,1.13,0.25882919569767676,1.0,0.31595643309468013,0.3283582089552239,3/4,0.75,False,False,9.07,0.0344,2,2013-09-06,True

@@ -66,7 +66,7 @@ from ..indicators import atr as atr_series
 
 from ..intrabar import PESSIMISTIC
 from ..stats import benjamini_hochberg, expected_max_z, two_sided_p
-from .nulls import base_by_cell, covariate_strata, gather, time_shift_null
+from .nulls import base_by_cell, covariate_strata, time_shift_null
 from .outcomes import (CHOP, STOP_FIRST, TARGET_FIRST, UNDEFINED, fair_value,
                        triple_barrier)
 
@@ -100,25 +100,149 @@ def _rate(outcomes):
     return int(decided.sum()), int((outcomes == TARGET_FIRST).sum())
 
 
+def _score(pid, bar, trade_dir, proposed, table, base, base_flat, strata,
+           folds, atr, n_bars, stop_atr, target_atr, rr, fair, min_events,
+           n_folds, n_shifts, seed, spec, slippage_atr):
+    """
+    One (pattern, direction, geometry) cell, or None if too small to test.
+
+    `trade_dir` is the side actually taken, and everything below is measured at
+    that side's own geometry: its own outcome table, its own base rate, its own
+    hit rate, its own friction. Nothing is derived from the opposite side by
+    symmetry, because none of it is symmetric.
+    """
+    out = table[trade_dir][bar]
+    n_ev = len(out)
+    n_und = int((out == UNDEFINED).sum())
+    dec, hold = _rate(out)
+    if dec < min_events:
+        return None
+    p_hat = hold / dec
+
+    decided = (out == TARGET_FIRST) | (out == STOP_FIRST)
+    p0_i = base[trade_dir][strata[bar[decided]]]
+    p0 = float(p0_i.mean())
+
+    # The null is a sum of non-identical Bernoullis -- a Poisson binomial --
+    # because each event carries its own era-matched p0. Its variance is the
+    # sum of the per-event variances; collapsing to one averaged p0 in a plain
+    # binomial SE overstates the spread whenever the p0 differ, and overstating
+    # the spread hides effects.
+    var = float((p0_i * (1 - p0_i)).sum())
+    z = (hold - p0_i.sum()) / np.sqrt(var) if var > 0 else np.nan
+
+    # ...and that binomial still assumes the events are independent, which
+    # overlapping outcome windows guarantee they are not. The shifted null is
+    # the one that decides.
+    dirs = np.full(len(bar), trade_dir, dtype=np.int64)
+    z_s, p_s, _ = time_shift_null(table, base, strata, bar, dirs, n_bars,
+                                  n_shifts=n_shifts, seed=seed)
+
+    # Per-fold sign agreement. Not a test -- a shape check, in the spirit of the
+    # neighbourhood tool: a real effect shows up in most eras, a lucky one lives
+    # in one or two.
+    f_pos = f_tot = 0
+    fb = folds[bar]
+    for f in range(max(1, n_folds)):
+        sel = decided & (fb == f)
+        d_f, h_f = _rate(out[sel])
+        if d_f < 30:
+            continue
+        f_tot += 1
+        f_pos += (h_f / d_f - base[trade_dir][strata[bar[sel]]].mean()) > 0
+
+    dev = p_hat - p0
+    # A deviation is not money. Friction in R scales as 1/stop_distance, so the
+    # same broker costs a different number of R at every geometry, and a fast
+    # timeframe with a tight stop can cost more per trade than any realistic
+    # edge is worth.
+    gross_R = p_hat * rr - (1 - p_hat)
+    fr = np.nan
+    if spec is not None:
+        risk_px = stop_atr * float(np.nanmean(atr[bar]))
+        if risk_px > 0:
+            spread_px = float(spec.get('spread_points_now') or 0) * spec['point']
+            fr = spread_px / risk_px + 2 * slippage_atr / stop_atr
+
+    return {
+        'pattern_id': pid, 'direction': trade_dir,
+        'as_proposed': trade_dir == proposed,
+        'stop_atr': stop_atr, 'target_atr': target_atr, 'rr': round(rr, 2),
+        'n_events': n_ev, 'n_decided': dec,
+        'chop_pct': round(100 * (n_ev - dec - n_und) / n_ev, 1),
+        'undefined': n_und,
+        'hold_pct': round(100 * p_hat, 2),
+        'base_pct': round(100 * p0, 2),
+        # the unstratified rate, kept so the size of the drift confound stays
+        # visible rather than merely corrected away
+        'base_flat_pct': round(100 * base_flat[trade_dir], 2),
+        'fair_pct': round(100 * fair, 2),
+        'dev_pp': round(100 * dev, 2),
+        # a percentage point converts to R at (1 + rr): a win swings the outcome
+        # from -1 to +rr. Usually much smaller than it looks.
+        'edge_R': round(dev * (1 + rr), 4),
+        'gross_R': round(gross_R, 4),
+        'friction_R': round(fr, 4) if np.isfinite(fr) else np.nan,
+        'net_R': round(gross_R - fr, 4) if np.isfinite(fr) else np.nan,
+        'z': round(z, 2) if np.isfinite(z) else np.nan,
+        'p_binom': two_sided_p(z),
+        'z_shift': round(z_s, 2) if np.isfinite(z_s) else np.nan,
+        # BH runs on the PARAMETRIC tail of the shifted z, not the raw
+        # permutation count: at `n_shifts` displacements the count cannot go
+        # below 1/(n_shifts+1), while BH over thousands of hypotheses needs
+        # thresholds far smaller, so the count would fail every wide sweep for
+        # want of resolution rather than for want of an effect. The cost is a
+        # normality assumption; p_perm sits beside it, and the two disagreeing
+        # says the assumption has broken.
+        'p': two_sided_p(z_s),
+        'p_perm': p_s,
+        'folds_agree': '%d/%d' % (f_pos, f_tot),
+        'fold_frac': round(f_pos / f_tot, 2) if f_tot else np.nan,
+    }
+
+
 def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
              resolution=PESSIMISTIC, min_events=200, n_folds=4, alpha=0.05,
              n_strata=20, vol_buckets=3, mom_buckets=1, mom_lookback=20,
-             n_shifts=400, seed=0, spec=None, slippage_atr=0.02):
+             n_shifts=400, seed=0, spec=None, slippage_atr=0.02,
+             only=None):
     """
-    Score every (pattern_id, geometry) pair. Returns a DataFrame, one row each.
+    Score every (pattern, direction, geometry) cell. One row each.
 
     `geometries` is an iterable of (stop_atr, target_atr).
-    `n_strata` time blocks define the null; see the module docstring for why
-    this matters more than anything else in the file.
+    `only` restricts scoring to an explicit list of (pattern_id, direction,
+    stop_atr, target_atr) tuples -- the out-of-sample pass, where the
+    hypotheses were chosen on earlier data and the multiplicity is however many
+    survived, not however many were searched.
+
+    BOTH directions of every pattern are scored. A shape that predicts down is
+    traded short, and a short's R:R at a given geometry is not the mirror of the
+    long's -- different barrier distances from entry, a separately measured hit
+    rate, different friction. Sign-flipping a long's economics to describe a
+    short is simply wrong.
+
+    But it does NOT simply double the hypothesis count, because some of those
+    cells are the same experiment written twice. A long with stop a and target b
+    places its barriers at b above the entry and a below; a short with stop b
+    and target a places them in exactly the same two places, and its hold rate
+    is the long's complement. Whenever a grid contains both (a, b) and (b, a) --
+    which every grid does along its diagonal, where a long and a short at the
+    same stop and target are literally the same pair of barriers -- those cells
+    collide. They are deduplicated by their actual barrier configuration, so the
+    correction counts experiments rather than table rows.
     """
     n = len(bars)
-    folds = fold_ids(n, n_folds, horizon)
     atr = atr_series(bars, 14)
+    folds = fold_ids(n, n_folds, horizon)
     strata, n_cells, strata_desc = covariate_strata(
         bars, time_blocks=n_strata, vol_buckets=vol_buckets,
         mom_buckets=mom_buckets, mom_lookback=mom_lookback)
+    wanted = set(only) if only is not None else None
     rows = []
     considered = 0
+    # (pattern, distance above entry, distance below entry) -- the identity of
+    # an experiment, independent of which side of it you call the target
+    seen = set()
 
     for stop_atr, target_atr in geometries:
         rr = target_atr / stop_atr
@@ -127,128 +251,34 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
         # One outcome table per direction, reused by every pattern. This is the
         # whole reason a sweep over thousands of patterns is affordable.
         table, base, base_flat = {}, {}, {}
-        cell_n = None
         for d in (1, -1):
             out, _amb = triple_barrier(bars, d, stop_atr, target_atr,
                                        horizon=horizon, resolution=resolution,
                                        symbol=symbol, tf=tf)
             table[d] = out
-            per, cell_n, overall = base_by_cell(out, strata, n_cells)
+            per, _cell_n, overall = base_by_cell(out, strata, n_cells)
             base[d] = per
             base_flat[d] = overall
 
         for pid, g in proposals.groupby('pattern_id', sort=True):
-            considered += 1
             bar = g['bar'].to_numpy()
-            dirs = g['direction'].to_numpy()
-            out = gather(table, bar, dirs)
-
-            n_ev = len(out)
-            n_und = int((out == UNDEFINED).sum())
-            dec, hold = _rate(out)
-            if dec < min_events:
-                continue
-            p_hat = hold / dec
-
-            # The null is matched to this pattern's own direction mix AND its
-            # own eras. Each event carries its own p0, so the null is a sum of
-            # non-identical Bernoullis -- a Poisson binomial, whose mean and
-            # variance are the sums of the per-event ones. Using a single
-            # averaged p0 in a binomial SE would overstate the variance
-            # whenever the p0 vary, and overstating variance hides effects.
-            decided_mask = (out == TARGET_FIRST) | (out == STOP_FIRST)
-            bd, dd = bar[decided_mask], dirs[decided_mask]
-            p0_i = np.empty(len(bd), dtype=float)
-            for d in (1, -1):
-                m = dd == d
-                if m.any():
-                    p0_i[m] = base[d][strata[bd[m]]]
-            p0 = float(p0_i.mean())
-            var = float((p0_i * (1 - p0_i)).sum())
-            z = (hold - p0_i.sum()) / np.sqrt(var) if var > 0 else np.nan
-            p0_flat = float(np.mean([base_flat[d] for d in dirs[decided_mask]]))
-
-            # The binomial z above assumes independent events. Overlapping
-            # outcome windows make them anything but, so the shifted null is
-            # the one that decides.
-            z_s, p_s, _devs = time_shift_null(
-                table, base, strata, bar, dirs, n, n_shifts=n_shifts,
-                min_shift=max(250, 4 * horizon), seed=seed)
-
-            # Per-fold sign agreement. Not a test -- a shape check, in the
-            # spirit of the neighbourhood tool: a real effect shows up in most
-            # eras, a lucky one lives in a couple.
-            f_pos = f_tot = 0
-            fb = folds[bar]
-            for f in range(max(1, n_folds)):
-                sel = decided_mask & (fb == f)
-                d_f, h_f = _rate(out[sel])
-                if d_f < 30:
+            proposed = int(pd.Series(g['direction']).mode().iloc[0])
+            for trade_dir in (1, -1):
+                if wanted is not None and \
+                        (pid, trade_dir, stop_atr, target_atr) not in wanted:
                     continue
-                f_tot += 1
-                bs, ds = bar[sel], dirs[sel]
-                pf = np.empty(len(bs), dtype=float)
-                for d in (1, -1):
-                    m = ds == d
-                    if m.any():
-                        pf[m] = base[d][strata[bs[m]]]
-                p0_f = float(pf.mean())
-                f_pos += (h_f / d_f - p0_f) > 0
-
-            dev = p_hat - p0
-            # --- economics -------------------------------------------------
-            # A deviation is not money. Friction in R terms scales as
-            # 1/stop_distance, so a tight stop on a fast timeframe can cost more
-            # R per trade than any realistic edge is worth -- which is exactly
-            # the regime a motif sweep on 15m bars lives in, and the reason a
-            # significant pattern here is usually still untradeable.
-            gross_R = p_hat * rr - (1 - p_hat)
-            fr = np.nan
-            if spec is not None:
-                a_ev = float(np.nanmean(atr[bar]))
-                risk_px = stop_atr * a_ev
-                spread_px = float(spec.get('spread_points_now') or 0) * spec['point']
-                fr = spread_px / risk_px + 2 * slippage_atr / stop_atr \
-                    if risk_px > 0 else np.nan
-            rows.append({
-                'pattern_id': pid, 'stop_atr': stop_atr,
-                'target_atr': target_atr, 'rr': round(rr, 2),
-                'n_events': n_ev, 'n_decided': dec,
-                'chop_pct': round(100 * (n_ev - dec - n_und) / n_ev, 1),
-                'undefined': n_und,
-                'hold_pct': round(100 * p_hat, 2),
-                'base_pct': round(100 * p0, 2),
-                # the unstratified rate, kept so the size of the drift
-                # confound is visible rather than merely corrected away
-                'base_flat_pct': round(100 * p0_flat, 2),
-                'fair_pct': round(100 * fair, 2),
-                'dev_pp': round(100 * dev, 2),
-                # A percentage point converts to R at (1 + rr): a win swings the
-                # outcome from -1 to +rr. This is the number that has to clear
-                # friction, and it is usually much smaller than it looks.
-                'edge_R': round(dev * (1 + rr), 4),
-                'gross_R': round(gross_R, 4),
-                'friction_R': round(fr, 4) if np.isfinite(fr) else np.nan,
-                'net_R': round(gross_R - fr, 4) if np.isfinite(fr) else np.nan,
-                'z': round(z, 2) if np.isfinite(z) else np.nan,
-                'p_binom': two_sided_p(z),
-                # the honest pair: a shifted z far below the binomial one means
-                # the events were correlated and the binomial was fiction
-                'z_shift': round(z_s, 2) if np.isfinite(z_s) else np.nan,
-                # BH runs on the PARAMETRIC tail of the shifted z, not on the
-                # raw permutation count. With `n_shifts` displacements the
-                # count-based p cannot go below 1/(n_shifts+1) -- 0.0025 at 400
-                # -- while BH over a few thousand hypotheses demands thresholds
-                # orders of magnitude smaller, so the count-based p would fail
-                # every wide sweep for want of resolution rather than for want
-                # of an effect. The cost is a normality assumption on the
-                # shifted distribution; p_perm is kept beside it, and the two
-                # disagreeing is the signal that the assumption has broken.
-                'p': two_sided_p(z_s),
-                'p_perm': p_s,
-                'folds_agree': '%d/%d' % (f_pos, f_tot),
-                'fold_frac': round(f_pos / f_tot, 2) if f_tot else np.nan,
-            })
+                up, down = ((target_atr, stop_atr) if trade_dir > 0
+                            else (stop_atr, target_atr))
+                if (pid, up, down) in seen:
+                    continue          # same two barriers, already scored
+                seen.add((pid, up, down))
+                considered += 1
+                row = _score(pid, bar, trade_dir, proposed, table, base,
+                             base_flat, strata, folds, atr, n, stop_atr,
+                             target_atr, rr, fair, min_events, n_folds,
+                             n_shifts, seed, spec, slippage_atr)
+                if row is not None:
+                    rows.append(row)
 
     df = pd.DataFrame(rows)
     if not len(df):
@@ -292,12 +322,14 @@ def summarise(df):
         [np.inf, -np.inf], np.nan).median()
     return (
         '%d hypotheses considered, %d scored. null = %s (%d cells)\n'
-        'best |z_shift| = %.2f (%s, stop %.1f / target %.1f, n=%d, dev %+.2f pp)\n'
+        'best |z_shift| = %.2f (%s %s, stop %.1f / target %.1f, n=%d, '
+        'dev %+.2f pp)\n'
         '  its binomial z was %.2f; median inflation across the sweep %.1fx\n'
 'expected best-of-%d under pure noise: |z| = %.2f (bar used: %.2f)\n'
         '%d survive BH at 5%%; %d exceed the noise expectation.\n%s'
         % (n_h, len(df), df.attrs.get('strata'), df.attrs.get('n_cells', 1),
-           abs(best['z_shift']), best['pattern_id'], best['stop_atr'],
+           abs(best['z_shift']), best['pattern_id'],
+           'long' if best['direction'] > 0 else 'short', best['stop_atr'],
            best['target_atr'], best['n_decided'], best['dev_pp'],
            abs(best['z']), infl if np.isfinite(infl) else float('nan'),
            n_h, emz, df.attrs.get('threshold_z', emz), bh, beat,

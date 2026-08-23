@@ -246,10 +246,16 @@ def test_a_planted_edge_is_found():
                       'direction': 1})
     res = evaluate(df, p, 'SYN', '1h', [(1.0, 1.0), (1.0, 2.0), (2.0, 1.0)],
                    horizon=200, min_events=100, n_strata=10)
+    # 3 geometries x 2 directions = 6 cells, but (long a/b) and (short b/a)
+    # are the same barrier pair, so only 3 distinct experiments remain
     assert len(res) == 3
-    assert res.iloc[0]['dev_pp'] > 5
-    assert res.iloc[0]['beats_expected_max']
-    assert res.iloc[0]['survives_bh']
+    assert res.attrs['n_hypotheses'] == 3
+    best = res.iloc[0]
+    assert best['direction'] == 1        # the edge was planted long
+    assert best['as_proposed']
+    assert best['dev_pp'] > 5
+    assert best['beats_expected_max']
+    assert best['survives_bh']
 
 
 def test_the_null_is_direction_and_era_matched():
@@ -303,6 +309,8 @@ def test_hypothesis_count_includes_patterns_dropped_for_sample_size():
     res = evaluate(df, p, 'SYN', '1h', [(1.0, 1.0)], horizon=200,
                    min_events=10_000, n_strata=5)      # floor nothing can clear
     assert len(res) == 0
+    # 3 words, one square geometry. Long and short at stop == target are the
+    # SAME two barriers, so they collapse to one experiment per word.
     assert res.attrs['n_hypotheses'] == 3
 
 
@@ -362,3 +370,52 @@ def test_deflation_never_lowers_the_bar_below_ordinary_significance():
     res = evaluate(df, p, 'SYN', '1h', [(1.0, 1.0)], horizon=200,
                    min_events=100, n_strata=10, n_shifts=200)
     assert res.attrs['threshold_z'] >= 1.96
+
+
+def test_both_directions_are_measured_independently():
+    """
+    A short is not a sign-flipped long. At an asymmetric geometry the two sides
+    put their barriers at different distances from entry, so the hit rates are
+    different quantities and the economics do not mirror. If this ever starts
+    holding exactly, the direction loop has collapsed back into a minus sign.
+    """
+    df = _walk_bars(30000, seed=43)
+    rng = np.random.default_rng(5)
+    bars_i = rng.choice(np.arange(100, len(df) - 300), 4000, replace=False)
+    p = pd.DataFrame({'pattern_id': 'w', 'bar': bars_i,
+                      'occurred_at': df.index[bars_i],
+                      'known_at': df.index[bars_i], 'direction': 1})
+    res = evaluate(df, p, 'SYN', '1h', [(0.5, 2.0)], horizon=200,
+                   min_events=100, n_strata=10, n_shifts=100)
+    lo = res[res.direction == 1].iloc[0]
+    sh = res[res.direction == -1].iloc[0]
+    assert lo['rr'] == sh['rr']                      # same geometry
+    # ...but separately measured outcomes, so the hold rates are not 1 - each
+    # other, and each side carries its own friction and its own gross R
+    assert lo['hold_pct'] + sh['hold_pct'] != pytest.approx(100.0, abs=0.01)
+    assert lo['gross_R'] != pytest.approx(-sh['gross_R'], abs=1e-9)
+    assert lo['as_proposed'] and not sh['as_proposed']
+
+
+def test_mirrored_barrier_configurations_are_counted_once():
+    """
+    A long at stop a / target b and a short at stop b / target a put their
+    barriers in the same two places. Counting both would inflate the
+    multiplicity correction with experiments that were never separately run.
+    """
+    df = _walk_bars(20000, seed=47)
+    rng = np.random.default_rng(3)
+    bars_i = rng.choice(np.arange(100, len(df) - 300), 3000, replace=False)
+    p = pd.DataFrame({'pattern_id': 'w', 'bar': bars_i,
+                      'occurred_at': df.index[bars_i],
+                      'known_at': df.index[bars_i], 'direction': 1})
+
+    # a grid closed under (a, b) -> (b, a): every cell has a mirror
+    res = evaluate(df, p, 'SYN', '1h', [(1.0, 2.0), (2.0, 1.0)], horizon=200,
+                   min_events=100, n_strata=5, n_shifts=100)
+    assert res.attrs['n_hypotheses'] == 2      # not 4
+
+    # a grid with no mirrors keeps every cell
+    res = evaluate(df, p, 'SYN', '1h', [(1.0, 2.0), (1.0, 3.0)], horizon=200,
+                   min_events=100, n_strata=5, n_shifts=100)
+    assert res.attrs['n_hypotheses'] == 4
