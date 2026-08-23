@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy this file to mt5_config.json and fill it in. mt5_config.json is gitignored and must never be shared or pasted into chat. Safest option: leave login/password/server empty, log in inside the MetaTrader 5 terminal yourself, and the bridge attaches to that session without ever handling a password.",
+  "login": "",
+  "password": "",
+  "server": "",
+  "path": "C:\\Users\\<you>\\AppData\\Roaming\\Pepperstone MetaTrader 5\\terminal64.exe"
+}

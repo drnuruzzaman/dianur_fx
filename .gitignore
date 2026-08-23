@@ -1,0 +1,6 @@
+data/
+logs/
+/.claude/*
+/.pytest_cache/*
+runs/
+__pycache__/
