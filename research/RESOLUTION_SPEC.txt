@@ -1,0 +1,1 @@
+15m execution timeframe; 5m_high_low barrier resolution; effective simulator execution=intrabar; effective intrabar_tf=5m. Reports record effective settings and ambiguity resolution counters.
