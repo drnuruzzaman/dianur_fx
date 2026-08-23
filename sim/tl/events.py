@@ -1,24 +1,7 @@
-"""Causal, strategy-free trendline fact events.
-
-The event layer answers only: "what objectively happened to a confirmed/live
-trendline?" Strategy meanings such as Bounce, Breakout, and Retest+Rejection
-belong above this layer.
-
-Events emitted here:
-    TOUCH          a tradeable line was grazed and registered a touch
-    BREAK          a tradeable line was broken by the engine's structural rule
-    RETEST         after a break, price returned to the broken line using the
-                   engine's own structural tolerance
-    INVALIDATED    a line was archived without ever producing a structural break
-
-Every row carries occurred_at and known_at. For these candle-close structural
-facts they are the same bar timestamp; strategy trigger/execution timestamps are
-intentionally not produced here.
-"""
+"""Causal, strategy-free trendline fact events."""
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -70,10 +53,10 @@ def _touch_events(instrument: str, timeframe: str, bars: pd.DataFrame,
     for i, s in enumerate(snapshots):
         timestamp = bars.index[i]
         close = float(bars["close"].iloc[i])
-        for line_id, px, touches in (
-            (s.support_id, s.support_px, s.support_touches),
-            (s.resistance_id, s.resistance_px, s.resistance_touches),
-        ):
+        # `tradeable` is populated by the engine only when requested and includes
+        # every confirmed/active line, not just the single best support and
+        # resistance line. Each tuple is (id, role, price, quality, touches).
+        for line_id, _role, px, _quality, touches in s.tradeable:
             if line_id is None or not np.isfinite(px):
                 continue
             prior = prev_touches.get(line_id, 2)
@@ -119,16 +102,15 @@ def _break_events(instrument: str, timeframe: str, bars: pd.DataFrame,
 
 def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
                       lines: pd.DataFrame, params: Params) -> list[FactEvent]:
-    """Emit RETEST and INVALIDATED from the frozen line lifecycle table.
+    """Emit structural RETEST and INVALIDATED facts.
 
-    Retest uses the engine's structural tolerance (tol_atr), not a strategy
-    parameter. That keeps it a factual structural event; strategy-specific
-    retest windows or rejection conditions are evaluated later.
+    Retest uses only the TrendlineEngine's registered structural tolerance,
+    never a strategy-specific timing or distance parameter. Strategy B/C may
+    impose their own windows later.
     """
     events: list[FactEvent] = []
     if lines.empty:
         return events
-
     for row in lines.itertuples(index=False):
         line_id = str(getattr(row, "id"))
         timeframe_row = str(getattr(row, "timeframe"))
@@ -139,50 +121,46 @@ def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
         pivot_1_t = int(getattr(row, "pivot_1_t"))
         slope = float(getattr(row, "slope"))
         intercept = float(getattr(row, "intercept"))
-        role = getattr(row, "support_resistance")
 
         if broken_at is not None:
             broken_time = pd.to_datetime(broken_at, unit="ms", utc=True)
-            start = bars.index.searchsorted(broken_time, side="right")
+            start = int(bars.index.searchsorted(broken_time, side="right"))
             end = len(bars)
             if archived_at is not None:
                 end_time = pd.to_datetime(archived_at, unit="ms", utc=True)
                 end = min(end, int(bars.index.searchsorted(end_time, side="left")))
-            seen = False
             for i in range(start, end):
                 ts = bars.index[i]
                 t_ms = int(pd.Timestamp(ts).value // 1_000_000)
                 line_px = intercept + slope * (t_ms - pivot_1_t)
-                atr = float(_atr_for_index(bars, i))
+                atr = _atr_for_index(bars, i)
                 tol = params.tol_atr * atr if np.isfinite(atr) else np.nan
-                if not np.isfinite(tol):
-                    continue
-                px = float(bars["close"].iloc[i])
-                if abs(px - line_px) <= tol:
-                    events.append(FactEvent(
-                        event_id=_make_id(timeframe, i, line_id, "RETEST"),
-                        instrument=instrument,
-                        timeframe=timeframe,
-                        trendline_id=line_id,
-                        event_type="RETEST",
-                        occurred_at=_utc_string(ts),
-                        known_at=_utc_string(ts),
-                        price=px,
-                        trendline_price=float(line_px),
-                        distance=float(abs(px - line_px)),
-                    ))
-                    seen = True
-                    break
+                if np.isfinite(tol):
+                    px = float(bars["close"].iloc[i])
+                    if abs(px - line_px) <= tol:
+                        events.append(FactEvent(
+                            event_id=_make_id(timeframe, i, line_id, "RETEST"),
+                            instrument=instrument,
+                            timeframe=timeframe,
+                            trendline_id=line_id,
+                            event_type="RETEST",
+                            occurred_at=_utc_string(ts),
+                            known_at=_utc_string(ts),
+                            price=px,
+                            trendline_price=float(line_px),
+                            distance=float(abs(px - line_px)),
+                        ))
+                        break
 
         if archived_at is not None and broken_at is None:
             ts = pd.to_datetime(archived_at, unit="ms", utc=True)
-            i = bars.index.searchsorted(ts, side="left")
+            i = int(bars.index.searchsorted(ts, side="left"))
             if i < len(bars):
                 px = float(bars["close"].iloc[i])
                 t_ms = int(ts.value // 1_000_000)
                 line_px = intercept + slope * (t_ms - pivot_1_t)
                 events.append(FactEvent(
-                    event_id=_make_id(timeframe, int(i), line_id, "INVALIDATED"),
+                    event_id=_make_id(timeframe, i, line_id, "INVALIDATED"),
                     instrument=instrument,
                     timeframe=timeframe,
                     trendline_id=line_id,
@@ -199,34 +177,27 @@ def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
 def _atr_for_index(bars: pd.DataFrame, i: int) -> float:
     if i < 14:
         return np.nan
-    prev = bars["close"].iloc[:i + 1].to_numpy(float)
-    hi = bars["high"].iloc[:i + 1].to_numpy(float)
-    lo = bars["low"].iloc[:i + 1].to_numpy(float)
-    tr = np.maximum.reduce([hi[1:] - lo[1:], abs(hi[1:] - prev[:-1]), abs(lo[1:] - prev[:-1])])
+    close = bars["close"].iloc[:i + 1].to_numpy(float)
+    high = bars["high"].iloc[:i + 1].to_numpy(float)
+    low = bars["low"].iloc[:i + 1].to_numpy(float)
+    tr = np.maximum.reduce([high[1:] - low[1:], abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])])
     if len(tr) < 14:
         return np.nan
     return float(np.mean(tr[-14:]))
 
 
-def build_fact_events(
-    instrument: str,
-    bars: pd.DataFrame,
-    *,
-    timeframe: str = "15m",
-    params: Params | None = None,
-) -> pd.DataFrame:
+def build_fact_events(instrument: str, bars: pd.DataFrame, *,
+                      timeframe: str = "15m", params: Params | None = None) -> pd.DataFrame:
     """Build long-format factual events from an incremental trendline walk."""
     params = params or Params()
-    engine = TrendlineEngine(timeframe, TF_MS[timeframe], params)
+    engine = TrendlineEngine(timeframe, TF_MS[timeframe], params, record_tradeable=True)
     snapshots = engine.walk(bars)
     lines = pd.DataFrame([l.to_row() for s in snapshots for l in s.live])
-    # `live` misses objects after archival, so prefer the engine's full objects if
-    # the implementation exposes them; otherwise lifecycle events still come
-    # from line rows retained by the feature builder.
-    touch = _touch_events(instrument, timeframe, bars, snapshots)
-    breaks = _break_events(instrument, timeframe, bars, snapshots)
-    life = _lifecycle_events(instrument, timeframe, bars, lines, params)
-    rows = [e.to_row() for e in (*touch, *breaks, *life)]
+    rows = [e.to_row() for e in (
+        *_touch_events(instrument, timeframe, bars, snapshots),
+        *_break_events(instrument, timeframe, bars, snapshots),
+        *_lifecycle_events(instrument, timeframe, bars, lines, params),
+    )]
     if not rows:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
     out = pd.DataFrame(rows).sort_values(["occurred_at", "event_type", "trendline_id"]).reset_index(drop=True)
@@ -244,7 +215,8 @@ def validate_fact_events(events: pd.DataFrame) -> list[str]:
         errors.append("invalid occurred_at/known_at")
     if (known < occurred).any():
         errors.append("known_at precedes occurred_at")
-    if events["event_type"].isin(["BOUNCE", "BREAKOUT", "ENTRY", "LONG", "SHORT"]).any():
+    bad_opinion = {"BOUNCE", "BREAKOUT", "ENTRY", "LONG", "SHORT"}
+    if set(events["event_type"].dropna()) & bad_opinion:
         errors.append("strategy opinion leaked into fact events")
     bad = set(events["event_type"].dropna()) - set(EVENT_TYPES)
     if bad:
