@@ -1,0 +1,793 @@
+<!doctype html>
+<html><head><meta charset='utf-8'><title>DiaNurFx Trendline Simulator</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:1400px;margin:32px auto;padding:0 20px}
+h1{margin-bottom:4px} .muted{color:#666} table{width:100%;border-collapse:collapse}
+th,td{padding:7px 9px;border-bottom:1px solid #ddd;text-align:right}
+th:first-child,td:first-child{text-align:left} .results{font-size:14px}
+pre{background:#f6f6f6;padding:16px;overflow:auto;max-height:500px}
+</style></head><body>
+<h1>DiaNurFx Trendline Simulator</h1>
+<p class='muted'>15M execution; 1H / 4H / D1 context. Uses the repository's existing Simulator.</p>
+<h2>Results</h2><table class="dataframe results">
+  <thead>
+    <tr style="text-align: right;">
+      <th>symbol</th>
+      <th>strategy</th>
+      <th>confluence_mode</th>
+      <th>trades</th>
+      <th>avg_R</th>
+      <th>profit_factor</th>
+      <th>win_rate_pct</th>
+      <th>max_drawdown_pct</th>
+      <th>return_pct</th>
+      <th>sharpe_daily_annualised</th>
+      <th>signals_seen</th>
+      <th>signals_taken</th>
+      <th>run_id</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>EURUSD.a</td>
+      <td>tl_bounce</td>
+      <td>off</td>
+      <td>1466</td>
+      <td>-0.218</td>
+      <td>0.659</td>
+      <td>37.2</td>
+      <td>-80.04</td>
+      <td>-80.01</td>
+      <td>-2.41</td>
+      <td>1466</td>
+      <td>1466</td>
+      <td>sim_EURUSDa_tl_bounce_off_20260823065759</td>
+    </tr>
+    <tr>
+      <td>EURUSD.a</td>
+      <td>tl_breakout</td>
+      <td>off</td>
+      <td>1318</td>
+      <td>-0.245</td>
+      <td>0.655</td>
+      <td>31.6</td>
+      <td>-80.01</td>
+      <td>-80.01</td>
+      <td>-2.56</td>
+      <td>1318</td>
+      <td>1318</td>
+      <td>sim_EURUSDa_tl_breakout_off_20260823065856</td>
+    </tr>
+    <tr>
+      <td>EURUSD.a</td>
+      <td>tl_breakout</td>
+      <td>off</td>
+      <td>1133</td>
+      <td>-0.284</td>
+      <td>0.597</td>
+      <td>31.0</td>
+      <td>-80.00</td>
+      <td>-80.00</td>
+      <td>-2.72</td>
+      <td>1133</td>
+      <td>1133</td>
+      <td>sim_EURUSDa_tl_breakout_off_20260823065953</td>
+    </tr>
+    <tr>
+      <td>XAUUSD.a</td>
+      <td>tl_bounce</td>
+      <td>off</td>
+      <td>2482</td>
+      <td>-0.132</td>
+      <td>0.812</td>
+      <td>37.5</td>
+      <td>-80.20</td>
+      <td>-80.00</td>
+      <td>-1.95</td>
+      <td>2482</td>
+      <td>2482</td>
+      <td>sim_XAUUSDa_tl_bounce_off_20260823070048</td>
+    </tr>
+    <tr>
+      <td>XAUUSD.a</td>
+      <td>tl_breakout</td>
+      <td>off</td>
+      <td>2514</td>
+      <td>-0.131</td>
+      <td>0.818</td>
+      <td>32.7</td>
+      <td>-80.22</td>
+      <td>-80.05</td>
+      <td>-1.92</td>
+      <td>2523</td>
+      <td>2523</td>
+      <td>sim_XAUUSDa_tl_breakout_off_20260823070142</td>
+    </tr>
+    <tr>
+      <td>XAUUSD.a</td>
+      <td>tl_breakout</td>
+      <td>off</td>
+      <td>1831</td>
+      <td>-0.198</td>
+      <td>0.755</td>
+      <td>32.4</td>
+      <td>-80.55</td>
+      <td>-80.05</td>
+      <td>-1.73</td>
+      <td>1831</td>
+      <td>1831</td>
+      <td>sim_XAUUSDa_tl_breakout_off_20260823070236</td>
+    </tr>
+    <tr>
+      <td>USDJPY.a</td>
+      <td>tl_bounce</td>
+      <td>off</td>
+      <td>1054</td>
+      <td>-0.305</td>
+      <td>0.564</td>
+      <td>34.8</td>
+      <td>-80.04</td>
+      <td>-80.03</td>
+      <td>-2.81</td>
+      <td>1056</td>
+      <td>1056</td>
+      <td>sim_USDJPYa_tl_bounce_off_20260823070332</td>
+    </tr>
+    <tr>
+      <td>USDJPY.a</td>
+      <td>tl_breakout</td>
+      <td>off</td>
+      <td>1427</td>
+      <td>-0.224</td>
+      <td>0.701</td>
+      <td>33.8</td>
+      <td>-80.02</td>
+      <td>-80.02</td>
+      <td>-2.39</td>
+      <td>1428</td>
+      <td>1428</td>
+      <td>sim_USDJPYa_tl_breakout_off_20260823070428</td>
+    </tr>
+    <tr>
+      <td>USDJPY.a</td>
+      <td>tl_breakout</td>
+      <td>off</td>
+      <td>982</td>
+      <td>-0.328</td>
+      <td>0.574</td>
+      <td>31.7</td>
+      <td>-80.11</td>
+      <td>-80.11</td>
+      <td>-2.80</td>
+      <td>984</td>
+      <td>984</td>
+      <td>sim_USDJPYa_tl_breakout_off_20260823070524</td>
+    </tr>
+  </tbody>
+</table>
+<h2>Machine-readable result</h2><pre>[
+  {
+    &quot;symbol&quot;: &quot;EURUSD.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_bounce&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;entry_atr&quot;: 0.5,
+      &quot;min_quality&quot;: 45.0
+    },
+    &quot;bars&quot;: 165337,
+    &quot;skipped_signals&quot;: 0,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4997.659185100848,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;USD&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 00:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 23:45:00&quot;,
+    &quot;ruined_at&quot;: &quot;2022-01-03 13:00:00&quot;,
+    &quot;trades&quot;: 1466,
+    &quot;net_acct&quot;: -20002.34,
+    &quot;return_pct&quot;: -80.01,
+    &quot;win_rate_pct&quot;: 37.2,
+    &quot;avg_R&quot;: -0.218,
+    &quot;expectancy_R&quot;: -0.218,
+    &quot;profit_factor&quot;: 0.659,
+    &quot;avg_win_acct&quot;: 70.84,
+    &quot;avg_loss_acct&quot;: -63.79,
+    &quot;largest_loss_acct&quot;: -417.73,
+    &quot;avg_bars_held&quot;: 10.5,
+    &quot;max_drawdown_acct&quot;: -20038.99,
+    &quot;max_drawdown_pct&quot;: -80.04,
+    &quot;max_drawdown_at&quot;: &quot;2022-01-03 13:00:00&quot;,
+    &quot;cost_spread_ccy&quot;: -12530.71,
+    &quot;cost_slippage_ccy&quot;: -734.83,
+    &quot;cost_swap_ccy&quot;: -407.69,
+    &quot;sharpe_daily_annualised&quot;: -2.41,
+    &quot;time_in_market_pct&quot;: 9.3,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 221.0,
+    &quot;cagr_pct&quot;: -21.55,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 883,
+      &quot;target&quot;: 561,
+      &quot;target_gap&quot;: 11,
+      &quot;stop_gap&quot;: 7,
+      &quot;signal&quot;: 3,
+      &quot;ruin&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 732,
+      &quot;short&quot;: 734
+    },
+    &quot;buy_and_hold_pct&quot;: 4.17,
+    &quot;data_hash&quot;: &quot;c3d1b6d1d5f66121&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 1466,
+    &quot;signals_taken&quot;: 1466,
+    &quot;mean_confluence&quot;: 0.158,
+    &quot;run_id&quot;: &quot;sim_EURUSDa_tl_bounce_off_20260823065759&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_EURUSDa_tl_bounce_off_20260823065759&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;EURUSD.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_breakout&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;min_quality&quot;: 40.0,
+      &quot;retest_bars&quot;: 0,
+      &quot;retest_atr&quot;: 0.4
+    },
+    &quot;bars&quot;: 165337,
+    &quot;skipped_signals&quot;: 0,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4996.697626802902,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;USD&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 00:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 23:45:00&quot;,
+    &quot;ruined_at&quot;: &quot;2021-12-24 22:45:00&quot;,
+    &quot;trades&quot;: 1318,
+    &quot;net_acct&quot;: -20003.3,
+    &quot;return_pct&quot;: -80.01,
+    &quot;win_rate_pct&quot;: 31.6,
+    &quot;avg_R&quot;: -0.245,
+    &quot;expectancy_R&quot;: -0.245,
+    &quot;profit_factor&quot;: 0.655,
+    &quot;avg_win_acct&quot;: 91.31,
+    &quot;avg_loss_acct&quot;: -64.29,
+    &quot;largest_loss_acct&quot;: -284.97,
+    &quot;avg_bars_held&quot;: 17.9,
+    &quot;max_drawdown_acct&quot;: -20003.3,
+    &quot;max_drawdown_pct&quot;: -80.01,
+    &quot;max_drawdown_at&quot;: &quot;2021-12-24 22:45:00&quot;,
+    &quot;cost_spread_ccy&quot;: -9221.45,
+    &quot;cost_slippage_ccy&quot;: -622.47,
+    &quot;cost_swap_ccy&quot;: -235.51,
+    &quot;sharpe_daily_annualised&quot;: -2.56,
+    &quot;time_in_market_pct&quot;: 14.3,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 198.7,
+    &quot;cagr_pct&quot;: -21.55,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 873,
+      &quot;target&quot;: 386,
+      &quot;signal&quot;: 45,
+      &quot;stop_gap&quot;: 12,
+      &quot;target_gap&quot;: 1,
+      &quot;ruin&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 658,
+      &quot;short&quot;: 660
+    },
+    &quot;buy_and_hold_pct&quot;: 4.17,
+    &quot;data_hash&quot;: &quot;c3d1b6d1d5f66121&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 1318,
+    &quot;signals_taken&quot;: 1318,
+    &quot;mean_confluence&quot;: 0.104,
+    &quot;run_id&quot;: &quot;sim_EURUSDa_tl_breakout_off_20260823065856&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_EURUSDa_tl_breakout_off_20260823065856&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;EURUSD.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_breakout&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;min_quality&quot;: 40.0,
+      &quot;retest_bars&quot;: 12,
+      &quot;retest_atr&quot;: 0.4
+    },
+    &quot;bars&quot;: 165337,
+    &quot;skipped_signals&quot;: 0,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4999.804573647528,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;USD&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 00:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 23:45:00&quot;,
+    &quot;ruined_at&quot;: &quot;2021-12-23 00:00:00&quot;,
+    &quot;trades&quot;: 1133,
+    &quot;net_acct&quot;: -20000.2,
+    &quot;return_pct&quot;: -80.0,
+    &quot;win_rate_pct&quot;: 31.0,
+    &quot;avg_R&quot;: -0.284,
+    &quot;expectancy_R&quot;: -0.284,
+    &quot;profit_factor&quot;: 0.597,
+    &quot;avg_win_acct&quot;: 84.48,
+    &quot;avg_loss_acct&quot;: -63.5,
+    &quot;largest_loss_acct&quot;: -321.36,
+    &quot;avg_bars_held&quot;: 9.3,
+    &quot;max_drawdown_acct&quot;: -20000.2,
+    &quot;max_drawdown_pct&quot;: -80.0,
+    &quot;max_drawdown_at&quot;: &quot;2021-12-23 00:00:00&quot;,
+    &quot;cost_spread_ccy&quot;: -9401.56,
+    &quot;cost_slippage_ccy&quot;: -625.49,
+    &quot;cost_swap_ccy&quot;: -100.32,
+    &quot;sharpe_daily_annualised&quot;: -2.72,
+    &quot;time_in_market_pct&quot;: 6.4,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 170.8,
+    &quot;cagr_pct&quot;: -21.54,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 770,
+      &quot;target&quot;: 349,
+      &quot;stop_gap&quot;: 10,
+      &quot;signal&quot;: 2,
+      &quot;target_gap&quot;: 1,
+      &quot;ruin&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 579,
+      &quot;short&quot;: 554
+    },
+    &quot;buy_and_hold_pct&quot;: 4.17,
+    &quot;data_hash&quot;: &quot;c3d1b6d1d5f66121&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 1133,
+    &quot;signals_taken&quot;: 1133,
+    &quot;mean_confluence&quot;: 0.138,
+    &quot;run_id&quot;: &quot;sim_EURUSDa_tl_breakout_off_20260823065953&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_EURUSDa_tl_breakout_off_20260823065953&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;XAUUSD.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_bounce&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;entry_atr&quot;: 0.5,
+      &quot;min_quality&quot;: 45.0
+    },
+    &quot;bars&quot;: 157006,
+    &quot;skipped_signals&quot;: 0,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4998.86223564454,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;USD&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 01:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 17:00:00&quot;,
+    &quot;ruined_at&quot;: &quot;2023-08-18 02:00:00&quot;,
+    &quot;trades&quot;: 2482,
+    &quot;net_acct&quot;: -20001.14,
+    &quot;return_pct&quot;: -80.0,
+    &quot;win_rate_pct&quot;: 37.5,
+    &quot;avg_R&quot;: -0.132,
+    &quot;expectancy_R&quot;: -0.132,
+    &quot;profit_factor&quot;: 0.812,
+    &quot;avg_win_acct&quot;: 92.7,
+    &quot;avg_loss_acct&quot;: -68.43,
+    &quot;largest_loss_acct&quot;: -351.67,
+    &quot;avg_bars_held&quot;: 10.5,
+    &quot;max_drawdown_acct&quot;: -20253.41,
+    &quot;max_drawdown_pct&quot;: -80.2,
+    &quot;max_drawdown_at&quot;: &quot;2023-08-18 02:00:00&quot;,
+    &quot;cost_spread_ccy&quot;: -9464.06,
+    &quot;cost_slippage_ccy&quot;: -1487.67,
+    &quot;cost_swap_ccy&quot;: -2374.68,
+    &quot;sharpe_daily_annualised&quot;: -1.95,
+    &quot;time_in_market_pct&quot;: 16.6,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 374.1,
+    &quot;cagr_pct&quot;: -21.55,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 1496,
+      &quot;target&quot;: 952,
+      &quot;stop_gap&quot;: 17,
+      &quot;target_gap&quot;: 11,
+      &quot;signal&quot;: 5,
+      &quot;ruin&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 1295,
+      &quot;short&quot;: 1187
+    },
+    &quot;buy_and_hold_pct&quot;: 201.93,
+    &quot;data_hash&quot;: &quot;017cd6c3abed6f6c&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 2482,
+    &quot;signals_taken&quot;: 2482,
+    &quot;mean_confluence&quot;: 0.153,
+    &quot;run_id&quot;: &quot;sim_XAUUSDa_tl_bounce_off_20260823070048&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_XAUUSDa_tl_bounce_off_20260823070048&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;XAUUSD.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_breakout&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;min_quality&quot;: 40.0,
+      &quot;retest_bars&quot;: 0,
+      &quot;retest_atr&quot;: 0.4
+    },
+    &quot;bars&quot;: 157006,
+    &quot;skipped_signals&quot;: 9,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4986.417427979988,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;USD&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 01:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 17:00:00&quot;,
+    &quot;ruined_at&quot;: &quot;2024-01-30 21:00:00&quot;,
+    &quot;trades&quot;: 2514,
+    &quot;net_acct&quot;: -20013.58,
+    &quot;return_pct&quot;: -80.05,
+    &quot;win_rate_pct&quot;: 32.7,
+    &quot;avg_R&quot;: -0.131,
+    &quot;expectancy_R&quot;: -0.131,
+    &quot;profit_factor&quot;: 0.818,
+    &quot;avg_win_acct&quot;: 109.62,
+    &quot;avg_loss_acct&quot;: -65.19,
+    &quot;largest_loss_acct&quot;: -262.4,
+    &quot;avg_bars_held&quot;: 17.6,
+    &quot;max_drawdown_acct&quot;: -20219.6,
+    &quot;max_drawdown_pct&quot;: -80.22,
+    &quot;max_drawdown_at&quot;: &quot;2024-01-30 21:00:00&quot;,
+    &quot;cost_spread_ccy&quot;: -7251.0,
+    &quot;cost_slippage_ccy&quot;: -1294.27,
+    &quot;cost_swap_ccy&quot;: -1880.71,
+    &quot;sharpe_daily_annualised&quot;: -1.92,
+    &quot;time_in_market_pct&quot;: 28.2,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 379.0,
+    &quot;cagr_pct&quot;: -21.57,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 1651,
+      &quot;target&quot;: 775,
+      &quot;signal&quot;: 76,
+      &quot;stop_gap&quot;: 7,
+      &quot;target_gap&quot;: 4,
+      &quot;ruin&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 1313,
+      &quot;short&quot;: 1201
+    },
+    &quot;buy_and_hold_pct&quot;: 201.93,
+    &quot;data_hash&quot;: &quot;017cd6c3abed6f6c&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 2523,
+    &quot;signals_taken&quot;: 2523,
+    &quot;mean_confluence&quot;: 0.092,
+    &quot;run_id&quot;: &quot;sim_XAUUSDa_tl_breakout_off_20260823070142&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_XAUUSDa_tl_breakout_off_20260823070142&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;XAUUSD.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_breakout&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;min_quality&quot;: 40.0,
+      &quot;retest_bars&quot;: 12,
+      &quot;retest_atr&quot;: 0.4
+    },
+    &quot;bars&quot;: 157006,
+    &quot;skipped_signals&quot;: 0,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4987.028345302433,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;USD&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 01:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 17:00:00&quot;,
+    &quot;ruined_at&quot;: &quot;2023-08-14 06:15:00&quot;,
+    &quot;trades&quot;: 1831,
+    &quot;net_acct&quot;: -20012.97,
+    &quot;return_pct&quot;: -80.05,
+    &quot;win_rate_pct&quot;: 32.4,
+    &quot;avg_R&quot;: -0.198,
+    &quot;expectancy_R&quot;: -0.198,
+    &quot;profit_factor&quot;: 0.755,
+    &quot;avg_win_acct&quot;: 103.73,
+    &quot;avg_loss_acct&quot;: -65.99,
+    &quot;largest_loss_acct&quot;: -2033.13,
+    &quot;avg_bars_held&quot;: 10.0,
+    &quot;max_drawdown_acct&quot;: -20656.51,
+    &quot;max_drawdown_pct&quot;: -80.55,
+    &quot;max_drawdown_at&quot;: &quot;2023-08-14 06:15:00&quot;,
+    &quot;cost_spread_ccy&quot;: -7773.25,
+    &quot;cost_slippage_ccy&quot;: -1326.16,
+    &quot;cost_swap_ccy&quot;: -1316.63,
+    &quot;sharpe_daily_annualised&quot;: -1.73,
+    &quot;time_in_market_pct&quot;: 11.7,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 276.0,
+    &quot;cagr_pct&quot;: -21.57,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 1230,
+      &quot;target&quot;: 591,
+      &quot;stop_gap&quot;: 7,
+      &quot;target_gap&quot;: 2,
+      &quot;signal&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 955,
+      &quot;short&quot;: 876
+    },
+    &quot;buy_and_hold_pct&quot;: 201.93,
+    &quot;data_hash&quot;: &quot;017cd6c3abed6f6c&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 1831,
+    &quot;signals_taken&quot;: 1831,
+    &quot;mean_confluence&quot;: 0.118,
+    &quot;run_id&quot;: &quot;sim_XAUUSDa_tl_breakout_off_20260823070236&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_XAUUSDa_tl_breakout_off_20260823070236&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;USDJPY.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_bounce&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;entry_atr&quot;: 0.5,
+      &quot;min_quality&quot;: 45.0
+    },
+    &quot;bars&quot;: 165290,
+    &quot;skipped_signals&quot;: 2,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4992.674767803858,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;JPY&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 00:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 17:00:00&quot;,
+    &quot;ruined_at&quot;: &quot;2021-06-04 12:45:00&quot;,
+    &quot;trades&quot;: 1054,
+    &quot;net_acct&quot;: -20007.33,
+    &quot;return_pct&quot;: -80.03,
+    &quot;win_rate_pct&quot;: 34.8,
+    &quot;avg_R&quot;: -0.305,
+    &quot;expectancy_R&quot;: -0.305,
+    &quot;profit_factor&quot;: 0.564,
+    &quot;avg_win_acct&quot;: 70.53,
+    &quot;avg_loss_acct&quot;: -66.8,
+    &quot;largest_loss_acct&quot;: -385.45,
+    &quot;avg_bars_held&quot;: 9.3,
+    &quot;max_drawdown_acct&quot;: -20022.96,
+    &quot;max_drawdown_pct&quot;: -80.04,
+    &quot;max_drawdown_at&quot;: &quot;2021-06-04 12:45:00&quot;,
+    &quot;cost_spread_ccy&quot;: -1248986.0,
+    &quot;cost_slippage_ccy&quot;: -58529.84,
+    &quot;cost_swap_ccy&quot;: -99288.92,
+    &quot;sharpe_daily_annualised&quot;: -2.81,
+    &quot;time_in_market_pct&quot;: 6.0,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 158.9,
+    &quot;cagr_pct&quot;: -21.56,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 645,
+      &quot;target&quot;: 387,
+      &quot;stop_gap&quot;: 17,
+      &quot;target_gap&quot;: 3,
+      &quot;signal&quot;: 2
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 553,
+      &quot;short&quot;: 501
+    },
+    &quot;buy_and_hold_pct&quot;: 46.1,
+    &quot;data_hash&quot;: &quot;8661e795fb1b449a&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 1056,
+    &quot;signals_taken&quot;: 1056,
+    &quot;mean_confluence&quot;: 0.149,
+    &quot;run_id&quot;: &quot;sim_USDJPYa_tl_bounce_off_20260823070332&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_USDJPYa_tl_bounce_off_20260823070332&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;USDJPY.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_breakout&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;min_quality&quot;: 40.0,
+      &quot;retest_bars&quot;: 0,
+      &quot;retest_atr&quot;: 0.4
+    },
+    &quot;bars&quot;: 165290,
+    &quot;skipped_signals&quot;: 1,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4994.465612101226,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;JPY&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 00:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 17:00:00&quot;,
+    &quot;ruined_at&quot;: &quot;2022-02-23 11:45:00&quot;,
+    &quot;trades&quot;: 1427,
+    &quot;net_acct&quot;: -20005.53,
+    &quot;return_pct&quot;: -80.02,
+    &quot;win_rate_pct&quot;: 33.8,
+    &quot;avg_R&quot;: -0.224,
+    &quot;expectancy_R&quot;: -0.224,
+    &quot;profit_factor&quot;: 0.701,
+    &quot;avg_win_acct&quot;: 97.31,
+    &quot;avg_loss_acct&quot;: -70.98,
+    &quot;largest_loss_acct&quot;: -283.58,
+    &quot;avg_bars_held&quot;: 16.0,
+    &quot;max_drawdown_acct&quot;: -20005.53,
+    &quot;max_drawdown_pct&quot;: -80.02,
+    &quot;max_drawdown_at&quot;: &quot;2022-02-23 11:45:00&quot;,
+    &quot;cost_spread_ccy&quot;: -1309883.0,
+    &quot;cost_slippage_ccy&quot;: -73454.59,
+    &quot;cost_swap_ccy&quot;: -131130.9,
+    &quot;sharpe_daily_annualised&quot;: -2.39,
+    &quot;time_in_market_pct&quot;: 13.8,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 215.1,
+    &quot;cagr_pct&quot;: -21.56,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 923,
+      &quot;target&quot;: 456,
+      &quot;signal&quot;: 35,
+      &quot;stop_gap&quot;: 11,
+      &quot;target_gap&quot;: 1,
+      &quot;ruin&quot;: 1
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 732,
+      &quot;short&quot;: 695
+    },
+    &quot;buy_and_hold_pct&quot;: 46.1,
+    &quot;data_hash&quot;: &quot;8661e795fb1b449a&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 1428,
+    &quot;signals_taken&quot;: 1428,
+    &quot;mean_confluence&quot;: 0.095,
+    &quot;run_id&quot;: &quot;sim_USDJPYa_tl_breakout_off_20260823070428&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_USDJPYa_tl_breakout_off_20260823070428&quot;
+  },
+  {
+    &quot;symbol&quot;: &quot;USDJPY.a&quot;,
+    &quot;tf&quot;: &quot;15m&quot;,
+    &quot;strategy&quot;: &quot;tl_breakout&quot;,
+    &quot;params&quot;: {
+      &quot;confluence_mode&quot;: &quot;off&quot;,
+      &quot;min_confluence&quot;: 0.5,
+      &quot;ema_filter&quot;: true,
+      &quot;regime_filter&quot;: true,
+      &quot;risk_reward&quot;: 2.0,
+      &quot;stop_atr&quot;: 1.0,
+      &quot;max_bars&quot;: 96,
+      &quot;min_quality&quot;: 40.0,
+      &quot;retest_bars&quot;: 12,
+      &quot;retest_atr&quot;: 0.4
+    },
+    &quot;bars&quot;: 165290,
+    &quot;skipped_signals&quot;: 2,
+    &quot;start_equity&quot;: 25000.0,
+    &quot;end_equity&quot;: 4972.520311912461,
+    &quot;account_currency&quot;: &quot;AUD&quot;,
+    &quot;profit_currency&quot;: &quot;JPY&quot;,
+    &quot;swap_model&quot;: &quot;current_rates_constant&quot;,
+    &quot;first_bar&quot;: &quot;2020-01-02 00:00:00&quot;,
+    &quot;last_bar&quot;: &quot;2026-08-21 17:00:00&quot;,
+    &quot;ruined_at&quot;: &quot;2021-11-18 10:30:00&quot;,
+    &quot;trades&quot;: 982,
+    &quot;net_acct&quot;: -20027.48,
+    &quot;return_pct&quot;: -80.11,
+    &quot;win_rate_pct&quot;: 31.7,
+    &quot;avg_R&quot;: -0.328,
+    &quot;expectancy_R&quot;: -0.328,
+    &quot;profit_factor&quot;: 0.574,
+    &quot;avg_win_acct&quot;: 86.89,
+    &quot;avg_loss_acct&quot;: -70.12,
+    &quot;largest_loss_acct&quot;: -292.87,
+    &quot;avg_bars_held&quot;: 9.0,
+    &quot;max_drawdown_acct&quot;: -20027.48,
+    &quot;max_drawdown_pct&quot;: -80.11,
+    &quot;max_drawdown_at&quot;: &quot;2021-11-18 10:30:00&quot;,
+    &quot;cost_spread_ccy&quot;: -1134952.0,
+    &quot;cost_slippage_ccy&quot;: -61820.62,
+    &quot;cost_swap_ccy&quot;: -91078.23,
+    &quot;sharpe_daily_annualised&quot;: -2.8,
+    &quot;time_in_market_pct&quot;: 5.4,
+    &quot;years&quot;: 6.63,
+    &quot;trades_per_year&quot;: 148.0,
+    &quot;cagr_pct&quot;: -21.61,
+    &quot;exit_reasons&quot;: {
+      &quot;stop&quot;: 660,
+      &quot;target&quot;: 309,
+      &quot;stop_gap&quot;: 11,
+      &quot;target_gap&quot;: 2
+    },
+    &quot;by_side&quot;: {
+      &quot;long&quot;: 512,
+      &quot;short&quot;: 470
+    },
+    &quot;buy_and_hold_pct&quot;: 46.1,
+    &quot;data_hash&quot;: &quot;8661e795fb1b449a&quot;,
+    &quot;timeframe&quot;: &quot;15m&quot;,
+    &quot;confluence_mode&quot;: &quot;off&quot;,
+    &quot;signals_seen&quot;: 984,
+    &quot;signals_taken&quot;: 984,
+    &quot;mean_confluence&quot;: 0.088,
+    &quot;run_id&quot;: &quot;sim_USDJPYa_tl_breakout_off_20260823070524&quot;,
+    &quot;output_dir&quot;: &quot;C:\\workspace-ml-ausloans\\Forex\\DiaNur_github\\research_runs\\sim_USDJPYa_tl_breakout_off_20260823070524&quot;
+  }
+]</pre>
+</body></html>

@@ -1,0 +1,51 @@
+{
+  "run_id": "sim_USDJPYa_tl_breakout_off_20260823072201",
+  "cell": {
+    "symbol": "USDJPY",
+    "strategy": "tl_breakout",
+    "start": "2020-01-01",
+    "end": null,
+    "risk_pct": 0.5,
+    "equity": 25000.0,
+    "carry_free": false,
+    "confluence_mode": "off",
+    "retest_bars": 0,
+    "retest_atr": 0.4
+  },
+  "symbol": "USDJPY.a",
+  "execution_tf": "15m",
+  "context": [
+    "1h",
+    "4h",
+    "1d"
+  ],
+  "strategy_params": {
+    "confluence_mode": "off",
+    "min_confluence": 0.5,
+    "ema_filter": true,
+    "regime_filter": true,
+    "risk_reward": 2.0,
+    "stop_atr": 1.0,
+    "max_bars": 96,
+    "min_quality": 40.0,
+    "retest_bars": 0,
+    "retest_atr": 0.4
+  },
+  "simulator_config": {
+    "risk_pct": 0.5,
+    "start_equity": 25000.0,
+    "slippage_atr": 0.02,
+    "slippage_points": 0.0,
+    "stop_slippage_mult": 1.5,
+    "spread_points_default": 0.0,
+    "apply_swap": true,
+    "max_bars_held": null,
+    "allow_short": true,
+    "ruin_pct": 20.0,
+    "flat_by_hour": null,
+    "label": "",
+    "execution": "pessimistic",
+    "intrabar_tf": null
+  },
+  "data_hash": "8661e795fb1b449a"
+}
