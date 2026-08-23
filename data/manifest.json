@@ -1,0 +1,69 @@
+{
+  "updated_utc": "2026-08-22T22:16:10+00:00",
+  "broker_server": "Pepperstone-MT5-Live01",
+  "terminal_build": 6140,
+  "terminal_maxbars": 100000000,
+  "server_utc_offset_ms": 10800000,
+  "time_base": "broker server time as reported by MetaTrader (NOT UTC-corrected); bars in seconds, ticks in milliseconds",
+  "read_only": true,
+  "probe": {
+    "XAUUSD.a": {
+      "15m": {
+        "bars": 228806,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      },
+      "1h": {
+        "bars": 65982,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      },
+      "4h": {
+        "bars": 20219,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      },
+      "1d": {
+        "bars": 6685,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      }
+    },
+    "USDJPY.a": {
+      "15m": {
+        "bars": 635292,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      },
+      "1h": {
+        "bars": 159060,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      },
+      "4h": {
+        "bars": 40414,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      },
+      "1d": {
+        "bars": 7173,
+        "first": "2001-01-01",
+        "last": "2026-08-21"
+      }
+    }
+  },
+  "on_disk": {
+    "bars": {
+      "files": 574,
+      "bytes": 329921485,
+      "mb": 329.9
+    },
+    "ticks": {
+      "files": 1273,
+      "bytes": 2108192024,
+      "mb": 2108.2
+    }
+  },
+  "server_offset_confidence": "ok",
+  "server_offset_note": "Pepperstone-MT5-Live01 runs UTC+3. A weekend measurement against a stale Friday tick wrote -38160000 (UTC-10.60h); the freshness guard that was meant to stop it measured the residue of its own rounding and could never fire. Guard rewritten to measure distance from the half-hour offset grid; value restored from the live bridge, which reports time_offset_ms=10800000."
+}
