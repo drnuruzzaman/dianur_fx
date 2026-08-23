@@ -62,9 +62,11 @@ whose z does not clear that line has told you nothing, whatever its p-value.
 import numpy as np
 import pandas as pd
 
+from ..indicators import atr as atr_series
+
 from ..intrabar import PESSIMISTIC
 from ..stats import benjamini_hochberg, expected_max_z, two_sided_p
-from .nulls import base_by_cell, covariate_strata, time_shift_null
+from .nulls import base_by_cell, covariate_strata, gather, time_shift_null
 from .outcomes import (CHOP, STOP_FIRST, TARGET_FIRST, UNDEFINED, fair_value,
                        triple_barrier)
 
@@ -101,7 +103,7 @@ def _rate(outcomes):
 def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
              resolution=PESSIMISTIC, min_events=200, n_folds=4, alpha=0.05,
              n_strata=20, vol_buckets=3, mom_buckets=1, mom_lookback=20,
-             n_shifts=400, seed=0):
+             n_shifts=400, seed=0, spec=None, slippage_atr=0.02):
     """
     Score every (pattern_id, geometry) pair. Returns a DataFrame, one row each.
 
@@ -111,6 +113,7 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
     """
     n = len(bars)
     folds = fold_ids(n, n_folds, horizon)
+    atr = atr_series(bars, 14)
     strata, n_cells, strata_desc = covariate_strata(
         bars, time_blocks=n_strata, vol_buckets=vol_buckets,
         mom_buckets=mom_buckets, mom_lookback=mom_lookback)
@@ -138,8 +141,7 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
             considered += 1
             bar = g['bar'].to_numpy()
             dirs = g['direction'].to_numpy()
-            out = np.array([table[d][b] for b, d in zip(bar, dirs)],
-                           dtype=np.int8)
+            out = gather(table, bar, dirs)
 
             n_ev = len(out)
             n_und = int((out == UNDEFINED).sum())
@@ -155,9 +157,12 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
             # averaged p0 in a binomial SE would overstate the variance
             # whenever the p0 vary, and overstating variance hides effects.
             decided_mask = (out == TARGET_FIRST) | (out == STOP_FIRST)
-            p0_i = np.array([base[d][strata[b]]
-                             for b, d in zip(bar[decided_mask],
-                                             dirs[decided_mask])], dtype=float)
+            bd, dd = bar[decided_mask], dirs[decided_mask]
+            p0_i = np.empty(len(bd), dtype=float)
+            for d in (1, -1):
+                m = dd == d
+                if m.any():
+                    p0_i[m] = base[d][strata[bd[m]]]
             p0 = float(p0_i.mean())
             var = float((p0_i * (1 - p0_i)).sum())
             z = (hold - p0_i.sum()) / np.sqrt(var) if var > 0 else np.nan
@@ -181,11 +186,30 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
                 if d_f < 30:
                     continue
                 f_tot += 1
-                p0_f = float(np.mean([base[d][strata[b]]
-                                      for b, d in zip(bar[sel], dirs[sel])]))
+                bs, ds = bar[sel], dirs[sel]
+                pf = np.empty(len(bs), dtype=float)
+                for d in (1, -1):
+                    m = ds == d
+                    if m.any():
+                        pf[m] = base[d][strata[bs[m]]]
+                p0_f = float(pf.mean())
                 f_pos += (h_f / d_f - p0_f) > 0
 
             dev = p_hat - p0
+            # --- economics -------------------------------------------------
+            # A deviation is not money. Friction in R terms scales as
+            # 1/stop_distance, so a tight stop on a fast timeframe can cost more
+            # R per trade than any realistic edge is worth -- which is exactly
+            # the regime a motif sweep on 15m bars lives in, and the reason a
+            # significant pattern here is usually still untradeable.
+            gross_R = p_hat * rr - (1 - p_hat)
+            fr = np.nan
+            if spec is not None:
+                a_ev = float(np.nanmean(atr[bar]))
+                risk_px = stop_atr * a_ev
+                spread_px = float(spec.get('spread_points_now') or 0) * spec['point']
+                fr = spread_px / risk_px + 2 * slippage_atr / stop_atr \
+                    if risk_px > 0 else np.nan
             rows.append({
                 'pattern_id': pid, 'stop_atr': stop_atr,
                 'target_atr': target_atr, 'rr': round(rr, 2),
@@ -203,6 +227,9 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
                 # outcome from -1 to +rr. This is the number that has to clear
                 # friction, and it is usually much smaller than it looks.
                 'edge_R': round(dev * (1 + rr), 4),
+                'gross_R': round(gross_R, 4),
+                'friction_R': round(fr, 4) if np.isfinite(fr) else np.nan,
+                'net_R': round(gross_R - fr, 4) if np.isfinite(fr) else np.nan,
                 'z': round(z, 2) if np.isfinite(z) else np.nan,
                 'p_binom': two_sided_p(z),
                 # the honest pair: a shifted z far below the binomial one means
@@ -274,5 +301,24 @@ def summarise(df):
            best['target_atr'], best['n_decided'], best['dev_pp'],
            abs(best['z']), infl if np.isfinite(infl) else float('nan'),
            n_h, emz, df.attrs.get('threshold_z', emz), bh, beat,
-           'NOTHING HERE IS DISTINGUISHABLE FROM NOISE.' if not beat else
-           'Candidates to walk forward -- not results.'))
+           _economics(df)))
+
+
+def _economics(df):
+    """Whether anything that cleared the statistics also clears its costs."""
+    live = df[df['beats_expected_max']] if 'beats_expected_max' in df else df
+    if not len(live):
+        return 'NOTHING HERE IS DISTINGUISHABLE FROM NOISE.'
+    if 'net_R' not in df or df['net_R'].isna().all():
+        return ('Candidates to walk forward -- not results. '
+                '(no instrument spec passed, so costs were not applied)')
+    pays = live[live['net_R'] > 0]
+    if not len(pays):
+        worst = live['friction_R'].min()
+        return ('%d beat the noise bar, NONE of them cover costs -- best gross '
+                '%+.4f R against a friction floor of %.4f R.\n'
+                'Statistically real and economically dead is the usual outcome '
+                'at this timeframe; it is still a result.'
+                % (len(live), live['gross_R'].max(), worst))
+    return ('%d beat the noise bar and %d also clear costs (best net %+.4f R). '
+            'Walk these forward.' % (len(live), len(pays), pays['net_R'].max()))

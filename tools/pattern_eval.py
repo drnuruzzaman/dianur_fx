@@ -23,12 +23,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sim.instruments import load
+from sim.instruments import load, spec
 from sim.intrabar import INTRABAR, PESSIMISTIC
 from sim.patterns.evaluate import evaluate, summarise
+from sim.patterns.sax import SaxMotifs
 from sim.patterns.trendline import TrendlineApproach
 
-PROPOSERS = {'trendline': TrendlineApproach}
+PROPOSERS = {'trendline': TrendlineApproach, 'sax': SaxMotifs}
 
 
 def main():
@@ -50,11 +51,26 @@ def main():
                     choices=[PESSIMISTIC, INTRABAR])
     ap.add_argument('--force-direction', type=int, default=0, choices=[-1, 0, 1],
                     help='override every proposal to long (1) or short (-1)')
+    ap.add_argument('--n-shifts', type=int, default=400)
+    ap.add_argument('--window', type=int, default=6,
+                    help='sax: bars per window')
+    ap.add_argument('--path-letters', type=int, default=4)
+    ap.add_argument('--body-letters', type=int, default=3)
+    ap.add_argument('--body-bars', type=int, default=2)
+    ap.add_argument('--min-count', type=int, default=200,
+                    help='sax: words rarer than this are not scored (but ARE '
+                         'counted as considered)')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
 
     bars = load(args.symbol, args.tf, args.start, args.end)
-    proposer = PROPOSERS[args.proposer]()
+    if args.proposer == 'sax':
+        proposer = SaxMotifs(window=args.window, path_letters=args.path_letters,
+                             body_letters=args.body_letters,
+                             body_bars=args.body_bars,
+                             min_count=args.min_count)
+    else:
+        proposer = PROPOSERS[args.proposer]()
     props = proposer.run(bars, args.symbol, args.tf)
     if args.force_direction:
         props = props.copy()
@@ -67,6 +83,8 @@ def main():
     print('%s %s  %s..%s  %d bars' % (args.symbol, args.tf, bars.index[0].date(),
                                       bars.index[-1].date(), len(bars)))
     print('proposer=%s %s' % (proposer.name, proposer.params()))
+    if hasattr(proposer, 'hypothesis_space'):
+        print('enumerable word space: %d' % proposer.hypothesis_space())
     print('%d proposals over %d pattern ids; %d geometries; %d strata; '
           'resolution=%s%s\n'
           % (len(props), props['pattern_id'].nunique(), len(geoms),
@@ -77,14 +95,16 @@ def main():
     df = evaluate(bars, props, args.symbol, args.tf, geoms,
                   horizon=args.horizon, resolution=args.resolution,
                   min_events=args.min_events, n_folds=args.folds,
-                  n_strata=args.strata)
+                  n_strata=args.strata, n_shifts=args.n_shifts,
+                  spec=spec(args.symbol, args.tf))
     if not len(df):
         print(summarise(df))
         return
 
     cols = ['pattern_id', 'stop_atr', 'target_atr', 'rr', 'n_decided',
-            'hold_pct', 'base_pct', 'base_flat_pct', 'fair_pct', 'dev_pp',
-            'edge_R', 'z', 'folds_agree', 'survives_bh', 'beats_expected_max']
+            'hold_pct', 'base_pct', 'dev_pp', 'edge_R', 'gross_R',
+            'friction_R', 'net_R', 'z', 'z_shift', 'folds_agree',
+            'survives_bh', 'beats_expected_max']
     print(df[cols].head(15).to_string(index=False))
     print('\n' + summarise(df))
 

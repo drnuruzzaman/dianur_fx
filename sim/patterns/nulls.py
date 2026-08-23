@@ -152,8 +152,18 @@ def base_by_cell(outcome, cell, n_cells, prior=150.0):
     return (h_c + prior * overall) / (n_c + prior), n_c, overall
 
 
+def gather(tables, bar, dirs):
+    """Outcome for each event, taking it from that event's own direction table."""
+    out = np.empty(len(bar), dtype=np.int8)
+    for d in (1, -1):
+        m = dirs == d
+        if m.any():
+            out[m] = tables[d][bar[m]]
+    return out
+
+
 def time_shift_null(tables, base, cell, bar, dirs, n_bars, n_shifts=400,
-                    min_shift=250, seed=0):
+                    min_shift=250, seed=0, chunk=64):
     """
     The observed deviation against deviations from the same pattern, moved.
 
@@ -167,21 +177,41 @@ def time_shift_null(tables, base, cell, bar, dirs, n_bars, n_shifts=400,
     horizon would leave the shifted windows overlapping the real ones and the
     "null" would still contain the effect.
 
+    All `n_shifts` displacements are evaluated as a matrix rather than a loop --
+    a sweep over a thousand words and twenty-five geometries is a million
+    shift-evaluations, and a Python loop over events inside each one does not
+    finish. Chunked over shifts so the intermediate stays bounded for a word
+    with tens of thousands of instances.
+
     Returns (z_shift, p_shift, shifted_deviations). z_shift is the observed
     deviation in units of the shifted spread, and it is the number to trust over
     the binomial z whenever the two disagree.
     """
     rng = np.random.default_rng(seed)
+    bar = np.asarray(bar)
+    dirs = np.asarray(dirs)
 
-    def deviation(b):
-        out = np.array([tables[d][i] for i, d in zip(b, dirs)], dtype=np.int8)
-        dec = (out == TARGET_FIRST) | (out == STOP_FIRST)
-        if dec.sum() < 30:
-            return np.nan
-        p0 = np.array([base[d][cell[i]] for i, d in zip(b[dec], dirs[dec])])
-        return float((out[dec] == TARGET_FIRST).mean() - p0.mean())
+    def deviations(shift_matrix_bars):
+        """shift_matrix_bars: (S, E) bar indices -> (S,) deviations."""
+        S, E = shift_matrix_bars.shape
+        flat = shift_matrix_bars.reshape(-1)
+        tiled = np.broadcast_to(dirs, (S, E)).reshape(-1)
+        out = gather(tables, flat, tiled)
+        p0 = np.empty(len(flat), dtype=float)
+        for d in (1, -1):
+            m = tiled == d
+            if m.any():
+                p0[m] = base[d][cell[flat[m]]]
+        dec = ((out == TARGET_FIRST) | (out == STOP_FIRST)).reshape(S, E)
+        hit = (out == TARGET_FIRST).reshape(S, E)
+        p0 = p0.reshape(S, E)
+        n_dec = dec.sum(1)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            dev = (np.where(dec, hit, 0).sum(1) / n_dec
+                   - np.where(dec, p0, 0).sum(1) / n_dec)
+        return np.where(n_dec >= 30, dev, np.nan)
 
-    observed = deviation(bar)
+    observed = deviations(bar[None, :])[0]
     if not np.isfinite(observed):
         return np.nan, np.nan, np.array([])
 
@@ -189,7 +219,12 @@ def time_shift_null(tables, base, cell, bar, dirs, n_bars, n_shifts=400,
     if hi <= min_shift:
         return np.nan, np.nan, np.array([])
     shifts = rng.integers(min_shift, hi, size=n_shifts)
-    devs = np.array([deviation((bar + s) % n_bars) for s in shifts])
+
+    devs = []
+    for lo in range(0, n_shifts, chunk):
+        blk = shifts[lo:lo + chunk]
+        devs.append(deviations((bar[None, :] + blk[:, None]) % n_bars))
+    devs = np.concatenate(devs)
     devs = devs[np.isfinite(devs)]
     if len(devs) < 50:
         return np.nan, np.nan, devs
