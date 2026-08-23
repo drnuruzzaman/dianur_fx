@@ -1,0 +1,3 @@
+pattern_id,direction,as_proposed,stop_atr,target_atr,rr,n_events,n_decided,chop_pct,undefined,hold_pct,base_pct,base_flat_pct,fair_pct,dev_pp,edge_R,gross_R,friction_R,net_R,z,p_binom,z_shift,p,p_perm,folds_agree,fold_frac,survives_bh,beats_expected_max,dev,z_st,net,held,sign_held
+bbaaa|ba,1,True,1.0,3.0,3.0,170,169,0.6,0,30.18,24.42,24.39,25.0,5.76,0.2304,0.2071,0.1061,0.101,1.74,0.08109399678619576,1.7,0.08883336176072729,0.09950248756218906,3/4,0.75,False,False,9.09,4.490128060534576,0.2422,EURUSD.a,True
+bbaaa|ba,1,True,1.0,3.0,3.0,156,156,0.0,0,30.13,24.97,25.19,25.0,5.15,0.2062,0.2051,0.1146,0.0906,1.49,0.13657608029770388,1.79,0.0739436922945752,0.05970149253731343,3/4,0.75,False,False,9.395,4.4264884502277875,0.2474,USDJPY.a,True
