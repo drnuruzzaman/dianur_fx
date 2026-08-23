@@ -1,0 +1,1 @@
+Simulator integration is available through research.run_tl. See research/SIMULATOR.md for commands.
