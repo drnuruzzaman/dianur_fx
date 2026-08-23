@@ -1,0 +1,11 @@
+pandas==2.3.3
+numpy==2.3.5
+colorama
+requests
+fastapi[standard]
+streamlit
+uvicorn
+matplotlib==3.10.7
+aiohttp
+joblib
+pydantic

@@ -1,3 +1,4 @@
-data/ticks/
+/logs/
+/data/ticks/
 /.pytest_cache/*
 __pycache__/
