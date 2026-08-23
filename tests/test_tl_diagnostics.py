@@ -272,3 +272,33 @@ def test_benjamini_hochberg_matches_a_worked_example():
     assert list(benjamini_hochberg([0.04, np.nan])) == [True, False]
     # against a real second test it would not
     assert list(benjamini_hochberg([0.04, 0.9])) == [False, False]
+
+
+def test_paired_mean_agrees_with_the_aggregate_expectancy():
+    """
+    When every event pairs, the mean paired difference must equal the difference
+    of the two arms' expectancies -- otherwise `paired_R` and `net_vs_placebo`
+    are measuring different things and the CSV contradicts itself.
+
+    This also pins the convention they share: CHOP is scored as a full -1R, the
+    same as a stop, because `expectancy` computes the hold rate over ALL events
+    rather than over decided ones. That is a deliberately harsh reading of a
+    trade that neither hit its target nor its stop inside the horizon, and it is
+    load-bearing -- a time-based exit near breakeven would score these nearer 0R
+    and lift every number in the grid.
+    """
+    from tools.r_conversion import paired_diff
+    rng = np.random.default_rng(0)
+    n, rr = 500, 1.8
+    lo = rng.choice([HOLD, BREAK, CHOP], n)
+    po = rng.choice([HOLD, BREAK, CHOP], n)
+    line = pd.DataFrame({'approach_bar': range(n), 'line_id': 7, 'outcome': lo})
+    plac = pd.DataFrame({'approach_bar': range(n), 'line_id': 7, 'outcome': po})
+
+    def expectancy(o):
+        p = (o == HOLD).mean()
+        return p * rr - (1 - p)
+
+    n_paired, mean, _, _ = paired_diff(line, plac, rr)
+    assert n_paired == n
+    assert mean == pytest.approx(expectancy(lo) - expectancy(po))
