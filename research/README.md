@@ -30,7 +30,28 @@ The fact event store contains only parameter-free structural facts:
 `TOUCH`, `BREAK`, `RETEST`, `INVALIDATED`.
 
 Strategy opinions such as Bounce or Breakout must never be written as fact event
-types.
+types. Structural `RETEST` uses the TrendlineEngine's registered structural
+tolerance; strategy-specific windows and rejection rules stay above the event
+layer.
+
+## Event/funnel runner
+
+Build the factual event store and opportunity funnel before running expensive
+strategy sweeps:
+
+```bash
+python -m research.run_tl_events --all --start 2021-01-01
+```
+
+Outputs:
+
+- `research_runs/trendline_events/events.csv`
+- `research_runs/trendline_events/funnel.csv`
+- `research_runs/trendline_events/opportunity_gate.csv`
+- `research_runs/trendline_events/config.json`
+
+The opportunity gate is a sizing gate, not a profitability verdict. Strategy
+A/B/C can further reduce the eligible population with their registered rules.
 
 ## Important control warning
 
