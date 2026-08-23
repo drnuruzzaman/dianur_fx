@@ -33,6 +33,14 @@ class FactEvent:
         return asdict(self)
 
 
+def _utc_index(index) -> pd.DatetimeIndex:
+    """Normalize any naive/aware DatetimeIndex to UTC-aware timestamps."""
+    idx = pd.DatetimeIndex(pd.to_datetime(index, errors="raise"))
+    if idx.tz is None:
+        return idx.tz_localize("UTC")
+    return idx.tz_convert("UTC")
+
+
 def _utc_string(ts) -> str:
     t = pd.Timestamp(ts)
     if t.tzinfo is None:
@@ -103,6 +111,8 @@ def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
     events: list[FactEvent] = []
     if lines.empty:
         return events
+
+    bar_index = _utc_index(bars.index)
     for row in lines.itertuples(index=False):
         line_id = str(getattr(row, "id"))
         if str(getattr(row, "timeframe")) != timeframe:
@@ -114,15 +124,15 @@ def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
         intercept = float(getattr(row, "intercept"))
 
         if broken_at is not None:
-            broken_time = pd.to_datetime(broken_at, unit="ms", utc=True)
-            start = int(bars.index.searchsorted(broken_time, side="right"))
+            broken_time = pd.Timestamp(broken_at, unit="ms", tz="UTC")
+            start = int(bar_index.searchsorted(broken_time, side="right"))
             end = len(bars)
             if archived_at is not None:
-                end_time = pd.to_datetime(archived_at, unit="ms", utc=True)
-                end = min(end, int(bars.index.searchsorted(end_time, side="left")))
+                end_time = pd.Timestamp(archived_at, unit="ms", tz="UTC")
+                end = min(end, int(bar_index.searchsorted(end_time, side="left")))
             for i in range(start, end):
-                ts = bars.index[i]
-                t_ms = int(pd.Timestamp(ts).value // 1_000_000)
+                ts = bar_index[i]
+                t_ms = int(ts.value // 1_000_000)
                 line_px = intercept + slope * (t_ms - pivot_1_t)
                 atr = _atr_for_index(bars, i)
                 tol = params.tol_atr * atr if np.isfinite(atr) else np.nan
@@ -144,8 +154,8 @@ def _lifecycle_events(instrument: str, timeframe: str, bars: pd.DataFrame,
                         break
 
         if archived_at is not None and broken_at is None:
-            ts = pd.to_datetime(archived_at, unit="ms", utc=True)
-            i = int(bars.index.searchsorted(ts, side="left"))
+            ts = pd.Timestamp(archived_at, unit="ms", tz="UTC")
+            i = int(bar_index.searchsorted(ts, side="left"))
             if i < len(bars):
                 px = float(bars["close"].iloc[i])
                 t_ms = int(ts.value // 1_000_000)
