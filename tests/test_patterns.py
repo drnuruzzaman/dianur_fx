@@ -16,7 +16,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sim.patterns.evaluate import evaluate, fold_ids, strata_ids
+from sim.patterns.evaluate import evaluate, fold_ids
+from sim.patterns.nulls import base_by_cell, covariate_strata, time_shift_null
 from sim.patterns.outcomes import (CHOP, STOP_FIRST, TARGET_FIRST, UNDEFINED,
                                    fair_value, triple_barrier)
 from sim.patterns.proposer import (LookAheadError, empty_proposals,
@@ -175,10 +176,32 @@ def test_folds_embargo_the_end_of_each_block():
     assert set(np.unique(ids)) == {-1, 0, 1, 2, 3}
 
 
-def test_strata_partition_without_gaps():
-    ids = strata_ids(1000, 20)
-    assert (ids >= 0).all()
-    assert len(np.unique(ids)) == 20
+def test_covariate_strata_cross_every_covariate():
+    df = _walk_bars(5000, seed=21)
+    cell, n_cells, desc = covariate_strata(df, time_blocks=5, vol_buckets=3,
+                                           mom_buckets=2)
+    assert n_cells == 30
+    assert (cell >= 0).all() and cell.max() < n_cells
+    assert 'time5' in desc and 'vol3' in desc and 'mom2' in desc
+    # every covariate set to 1 collapses to a single cell
+    cell, n_cells, desc = covariate_strata(df, 1, 1, 1)
+    assert n_cells == 1 and (cell == 0).all() and desc == 'none'
+
+
+def test_covariate_strata_use_no_forward_information():
+    """
+    A cell id must be computable from bars up to and including its own. Rebuilt
+    on truncated history, the cells for the bars that survive must be identical
+    -- the same causality audit the indicator suite already applies.
+    """
+    df = _walk_bars(4000, seed=23)
+    full, _, _ = covariate_strata(df, time_blocks=1, vol_buckets=3,
+                                  mom_buckets=3, rank_window=500)
+    cut = 3000
+    trunc, _, _ = covariate_strata(df.iloc[:cut], time_blocks=1, vol_buckets=3,
+                                   mom_buckets=3, rank_window=500)
+    # trailing ranks, so truncating the FUTURE must change nothing at all
+    assert (full[:cut] == trunc).all()
 
 
 # --------------------------------------------------------------------------
@@ -249,25 +272,25 @@ def test_the_null_is_direction_and_era_matched():
                       'occurred_at': df.index[bars_i],
                       'known_at': df.index[bars_i], 'direction': 1})
 
-    def run(n_strata):
+    def run(time_blocks, vol_buckets=1):
         return evaluate(df, p, 'SYN', '1h', [(1.0, 1.0)], horizon=200,
-                        min_events=100, n_strata=n_strata).iloc[0]
+                        min_events=100, n_strata=time_blocks,
+                        vol_buckets=vol_buckets, n_shifts=200).iloc[0]
 
-    # With one stratum the null is the whole-series rate and the trend reads as
-    # a large, wildly significant edge -- which is the failure mode this whole
-    # mechanism exists to prevent.
-    fooled = run(1)
+    # With no stratification at all the null is the whole-series rate, and the
+    # trend reads as a large, wildly significant edge -- the failure mode this
+    # whole mechanism exists to prevent.
+    fooled = run(1, vol_buckets=1)
     assert fooled['dev_pp'] > 5
     assert fooled['z'] > 5
 
-    # Stratified, the same events are measured against what their OWN era did,
-    # and the edge disappears entirely.
-    for n_strata in (20, 60):
-        clean = run(n_strata)
-        assert abs(clean['dev_pp']) < 1.5, clean.to_dict()
-        assert abs(clean['z']) < 2, clean.to_dict()
-        assert not clean['survives_bh']
-        assert clean['base_flat_pct'] < clean['base_pct']
+    # Matched to its own era, the same events lose the edge entirely.
+    clean = run(20)
+    assert abs(clean['dev_pp']) < 1.5, clean.to_dict()
+    assert abs(clean['z']) < 2, clean.to_dict()
+    assert not clean['beats_expected_max']
+    assert clean['p'] > 0.05
+    assert clean['base_flat_pct'] < clean['base_pct']
 
 
 def test_hypothesis_count_includes_patterns_dropped_for_sample_size():
@@ -281,3 +304,61 @@ def test_hypothesis_count_includes_patterns_dropped_for_sample_size():
                    min_events=10_000, n_strata=5)      # floor nothing can clear
     assert len(res) == 0
     assert res.attrs['n_hypotheses'] == 3
+
+
+# --------------------------------------------------------------------------
+# the time-shift null
+# --------------------------------------------------------------------------
+
+def test_time_shift_deflates_a_binomial_z_built_on_overlapping_events():
+    """
+    Events packed into a short stretch share most of their outcome windows, so
+    they are nowhere near the independent draws a binomial SE assumes. The
+    shifted null has to notice, and the gap between the two z values is the
+    size of the lie.
+    """
+    df = _walk_bars(30000, seed=31)
+    # deliberately clustered: consecutive bars, horizon 200, so neighbouring
+    # events overlap by 99.5%
+    bars_i = np.arange(5000, 8000)
+    p = pd.DataFrame({'pattern_id': 'clustered', 'bar': bars_i,
+                      'occurred_at': df.index[bars_i],
+                      'known_at': df.index[bars_i], 'direction': 1})
+    row = evaluate(df, p, 'SYN', '1h', [(1.0, 1.0)], horizon=200,
+                   min_events=100, n_strata=1, vol_buckets=1,
+                   n_shifts=300).iloc[0]
+    assert abs(row['z']) > abs(row['z_shift']), row.to_dict()
+    assert not row['beats_expected_max'], row.to_dict()
+
+
+def test_time_shift_still_finds_a_real_effect():
+    """
+    And it must not simply flatten everything: a genuine forward edge has to
+    survive the shift, or the harness is conservative to the point of blindness.
+    """
+    df = _walk_bars(30000, seed=37)
+    close = df['close'].to_numpy()
+    fwd = close[200:] - close[:-200]
+    cand = np.flatnonzero(fwd > np.quantile(fwd, 0.85))
+    cand = cand[cand > 100]
+    p = pd.DataFrame({'pattern_id': 'planted', 'bar': cand,
+                      'occurred_at': df.index[cand], 'known_at': df.index[cand],
+                      'direction': 1})
+    row = evaluate(df, p, 'SYN', '1h', [(1.0, 1.0)], horizon=200,
+                   min_events=100, n_strata=10, n_shifts=300).iloc[0]
+    assert row['dev_pp'] > 5
+    assert row['beats_expected_max'], row.to_dict()
+
+
+def test_deflation_never_lowers_the_bar_below_ordinary_significance():
+    from sim.stats import expected_max_z
+    assert expected_max_z(1) == 0.0
+    df = _walk_bars(20000, seed=41)
+    rng = np.random.default_rng(9)
+    bars_i = rng.choice(np.arange(100, len(df) - 300), 2000, replace=False)
+    p = pd.DataFrame({'pattern_id': 'one', 'bar': bars_i,
+                      'occurred_at': df.index[bars_i],
+                      'known_at': df.index[bars_i], 'direction': 1})
+    res = evaluate(df, p, 'SYN', '1h', [(1.0, 1.0)], horizon=200,
+                   min_events=100, n_strata=10, n_shifts=200)
+    assert res.attrs['threshold_z'] >= 1.96

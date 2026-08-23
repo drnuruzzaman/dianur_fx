@@ -64,6 +64,7 @@ import pandas as pd
 
 from ..intrabar import PESSIMISTIC
 from ..stats import benjamini_hochberg, expected_max_z, two_sided_p
+from .nulls import base_by_cell, covariate_strata, time_shift_null
 from .outcomes import (CHOP, STOP_FIRST, TARGET_FIRST, UNDEFINED, fair_value,
                        triple_barrier)
 
@@ -91,25 +92,6 @@ def fold_ids(n_bars, n_folds, horizon):
     return ids
 
 
-def strata_ids(n_bars, n_strata):
-    """
-    Contiguous time blocks used to stratify the null.
-
-    Finer than the fold split, and serving a different purpose: folds ask
-    whether an effect REPEATS across eras, strata remove what each era was doing
-    from the effect in the first place. Twenty blocks over a decade puts roughly
-    six months in each, which is short enough that a trend inside one is mostly
-    a trend the pattern shares.
-    """
-    if n_strata < 2:
-        return np.zeros(n_bars, dtype=np.int64)
-    edges = np.linspace(0, n_bars, n_strata + 1).astype(int)
-    ids = np.zeros(n_bars, dtype=np.int64)
-    for s_i in range(n_strata):
-        ids[edges[s_i]:edges[s_i + 1]] = s_i
-    return ids
-
-
 def _rate(outcomes):
     """(decided, holds) among outcomes that actually resolved."""
     decided = (outcomes == TARGET_FIRST) | (outcomes == STOP_FIRST)
@@ -118,7 +100,8 @@ def _rate(outcomes):
 
 def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
              resolution=PESSIMISTIC, min_events=200, n_folds=4, alpha=0.05,
-             n_strata=20):
+             n_strata=20, vol_buckets=3, mom_buckets=1, mom_lookback=20,
+             n_shifts=400, seed=0):
     """
     Score every (pattern_id, geometry) pair. Returns a DataFrame, one row each.
 
@@ -128,7 +111,9 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
     """
     n = len(bars)
     folds = fold_ids(n, n_folds, horizon)
-    strata = strata_ids(n, n_strata)
+    strata, n_cells, strata_desc = covariate_strata(
+        bars, time_blocks=n_strata, vol_buckets=vol_buckets,
+        mom_buckets=mom_buckets, mom_lookback=mom_lookback)
     rows = []
     considered = 0
 
@@ -139,22 +124,15 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
         # One outcome table per direction, reused by every pattern. This is the
         # whole reason a sweep over thousands of patterns is affordable.
         table, base, base_flat = {}, {}, {}
+        cell_n = None
         for d in (1, -1):
             out, _amb = triple_barrier(bars, d, stop_atr, target_atr,
                                        horizon=horizon, resolution=resolution,
                                        symbol=symbol, tf=tf)
             table[d] = out
-            dec, hold = _rate(out)
-            base_flat[d] = hold / dec if dec else np.nan
-            # per-stratum base rate, falling back to the series rate where a
-            # stratum has too little decided data to estimate one
-            per = np.full(max(1, n_strata), base_flat[d], dtype=float)
-            for s_i in range(max(1, n_strata)):
-                sel = strata == s_i
-                d_s, h_s = _rate(out[sel])
-                if d_s >= 100:
-                    per[s_i] = h_s / d_s
+            per, cell_n, overall = base_by_cell(out, strata, n_cells)
             base[d] = per
+            base_flat[d] = overall
 
         for pid, g in proposals.groupby('pattern_id', sort=True):
             considered += 1
@@ -184,6 +162,13 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
             var = float((p0_i * (1 - p0_i)).sum())
             z = (hold - p0_i.sum()) / np.sqrt(var) if var > 0 else np.nan
             p0_flat = float(np.mean([base_flat[d] for d in dirs[decided_mask]]))
+
+            # The binomial z above assumes independent events. Overlapping
+            # outcome windows make them anything but, so the shifted null is
+            # the one that decides.
+            z_s, p_s, _devs = time_shift_null(
+                table, base, strata, bar, dirs, n, n_shifts=n_shifts,
+                min_shift=max(250, 4 * horizon), seed=seed)
 
             # Per-fold sign agreement. Not a test -- a shape check, in the
             # spirit of the neighbourhood tool: a real effect shows up in most
@@ -219,7 +204,21 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
                 # friction, and it is usually much smaller than it looks.
                 'edge_R': round(dev * (1 + rr), 4),
                 'z': round(z, 2) if np.isfinite(z) else np.nan,
-                'p': two_sided_p(z),
+                'p_binom': two_sided_p(z),
+                # the honest pair: a shifted z far below the binomial one means
+                # the events were correlated and the binomial was fiction
+                'z_shift': round(z_s, 2) if np.isfinite(z_s) else np.nan,
+                # BH runs on the PARAMETRIC tail of the shifted z, not on the
+                # raw permutation count. With `n_shifts` displacements the
+                # count-based p cannot go below 1/(n_shifts+1) -- 0.0025 at 400
+                # -- while BH over a few thousand hypotheses demands thresholds
+                # orders of magnitude smaller, so the count-based p would fail
+                # every wide sweep for want of resolution rather than for want
+                # of an effect. The cost is a normality assumption on the
+                # shifted distribution; p_perm is kept beside it, and the two
+                # disagreeing is the signal that the assumption has broken.
+                'p': two_sided_p(z_s),
+                'p_perm': p_s,
                 'folds_agree': '%d/%d' % (f_pos, f_tot),
                 'fold_frac': round(f_pos / f_tot, 2) if f_tot else np.nan,
             })
@@ -236,8 +235,21 @@ def evaluate(bars, proposals, symbol, tf, geometries, horizon=48,
     # launders its own multiplicity.
     df.attrs['n_hypotheses'] = considered
     df.attrs['expected_max_z'] = expected_max_z(considered)
-    df['beats_expected_max'] = df['z'].abs() > df.attrs['expected_max_z']
-    return df.sort_values('z', key=abs, ascending=False).reset_index(drop=True)
+    # Deflation is applied to the SHIFTED z, because that is the one whose
+    # null is credible. Applying it to the binomial z would deflate a number
+    # that was already inflated and call the result conservative.
+    #
+    # Floored at the ordinary two-sided 5% critical value. Searching one or two
+    # candidates gives an expected maximum near zero, and without the floor a
+    # z of 0.3 would "beat the noise expectation" -- deflation is there to RAISE
+    # the bar when you have looked hard, never to lower it when you have not.
+    thresh = max(df.attrs['expected_max_z'], 1.96)
+    df.attrs['threshold_z'] = thresh
+    df['beats_expected_max'] = df['z_shift'].abs() > thresh
+    df.attrs['strata'] = strata_desc
+    df.attrs['n_cells'] = n_cells
+    return df.sort_values('z_shift', key=abs, ascending=False,
+                          na_position='last').reset_index(drop=True)
 
 
 def summarise(df):
@@ -249,13 +261,18 @@ def summarise(df):
     bh = int(df['survives_bh'].sum())
     beat = int(df['beats_expected_max'].sum())
     best = df.iloc[0]
+    infl = (df['z'].abs() / df['z_shift'].abs()).replace(
+        [np.inf, -np.inf], np.nan).median()
     return (
-        '%d hypotheses considered, %d scored.\n'
-        'best |z| = %.2f (%s, stop %.1f / target %.1f, n=%d, dev %+.2f pp)\n'
-        'expected best-of-%d under pure noise: |z| = %.2f\n'
+        '%d hypotheses considered, %d scored. null = %s (%d cells)\n'
+        'best |z_shift| = %.2f (%s, stop %.1f / target %.1f, n=%d, dev %+.2f pp)\n'
+        '  its binomial z was %.2f; median inflation across the sweep %.1fx\n'
+'expected best-of-%d under pure noise: |z| = %.2f (bar used: %.2f)\n'
         '%d survive BH at 5%%; %d exceed the noise expectation.\n%s'
-        % (n_h, len(df), abs(best['z']), best['pattern_id'], best['stop_atr'],
+        % (n_h, len(df), df.attrs.get('strata'), df.attrs.get('n_cells', 1),
+           abs(best['z_shift']), best['pattern_id'], best['stop_atr'],
            best['target_atr'], best['n_decided'], best['dev_pp'],
-           n_h, emz, bh, beat,
+           abs(best['z']), infl if np.isfinite(infl) else float('nan'),
+           n_h, emz, df.attrs.get('threshold_z', emz), bh, beat,
            'NOTHING HERE IS DISTINGUISHABLE FROM NOISE.' if not beat else
            'Candidates to walk forward -- not results.'))
