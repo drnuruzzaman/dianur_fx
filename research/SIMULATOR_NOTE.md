@@ -1,1 +1,0 @@
-The integrated simulator runner is available in `research/run_tl.py` and delegates to the existing simulator and strategies. The full structural research gates remain separate and are not represented as passed until their authoritative adapters are connected.
