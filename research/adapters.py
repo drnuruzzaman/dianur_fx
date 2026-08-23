@@ -1,10 +1,10 @@
 """Adapters from the research orchestrator to DiaNurFx's existing simulator.
 
-This module reuses the repository's existing data loader, feature builder,
-Strategy classes, Simulator, and metrics. Research-specific execution settings
-are translated explicitly into the existing Simulator Config so the run cannot
-silently fall back to 15m pessimistic resolution when the registered protocol
-requires 5m high/low sub-bars.
+This module deliberately reuses the repository's existing data loader, feature
+builder, Strategy classes, Simulator, and metrics. Research-specific execution
+settings are translated explicitly into the existing Simulator Config so the
+run cannot silently fall back to 15m pessimistic resolution when the registered
+protocol requires 5m high/low sub-bars.
 """
 from __future__ import annotations
 
@@ -57,13 +57,12 @@ def load_feature_bundle(symbol: str, start: str, end: str | None = None):
 def _execution_settings(barrier_resolution: str) -> tuple[str, str | None]:
     """Translate the registered research barrier model into Simulator Config."""
     if barrier_resolution == "5m_high_low":
-        # Signals/entries remain on 15m; only ambiguous 15m SL/TP bars are
-        # resolved from 5m sub-bars using high/low, through the simulator's
-        # validated INTRABAR resolver.
+        # Signals/entries remain on 15m; ambiguous 15m SL/TP bars are resolved
+        # from validated 5m sub-bars using the simulator's INTRABAR resolver.
         return "intrabar", "5m"
     if barrier_resolution == "15m_high_low":
-        # Native 15m H/L leaves the Simulator responsible for ambiguity.
-        # Pessimistic is the existing deterministic fallback.
+        # Native 15m H/L still uses the simulator's deterministic pessimistic
+        # resolution when a single 15m bar touches both barriers.
         return "pessimistic", None
     raise ValueError(
         f"unsupported barrier_resolution={barrier_resolution!r}; "
@@ -110,10 +109,8 @@ def run_cell(root: Path, cell: SimulationCell) -> dict[str, Any]:
     metrics["execution_mode"] = cfg.execution
     metrics["intrabar_tf"] = cfg.intrabar_tf
     metrics["ambiguous_bars"] = int(sim.ambiguous)
-    metrics["resolved_by_subbars"] = int(sim.resolved_by.get("subbar", 0))
-    metrics["fallback_to_pessimistic"] = int(
-        sum(v for k, v in sim.resolved_by.items() if "fallback" in str(k).lower())
-    )
+    metrics["resolved_by_subbars"] = int(sim.resolved_by.get("5m", 0))
+    metrics["fallback_to_pessimistic"] = int(sim.resolved_by.get("fallback", 0))
     metrics["resolution_breakdown"] = dict(sim.resolved_by)
 
     sig = pd.DataFrame(strategy.signal_log)
