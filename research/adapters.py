@@ -1,8 +1,10 @@
 """Adapters from the research orchestrator to DiaNurFx's existing simulator.
 
-This module deliberately reuses the repository's existing data loader, feature
-builder, Strategy classes, Simulator, and metrics. It does not redefine trading
-semantics.
+This module reuses the repository's existing data loader, feature builder,
+Strategy classes, Simulator, and metrics. Research-specific execution settings
+are translated explicitly into the existing Simulator Config so the run cannot
+silently fall back to 15m pessimistic resolution when the registered protocol
+requires 5m high/low sub-bars.
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ class SimulationCell:
     confluence_mode: str = "off"
     retest_bars: int = 0
     retest_atr: float = 0.35
+    barrier_resolution: str = "5m_high_low"
 
 
 def canonical_symbol(symbol: str) -> str:
@@ -51,16 +54,32 @@ def load_feature_bundle(symbol: str, start: str, end: str | None = None):
     return symbol, bars[EXEC_TF], features, states, lines
 
 
+def _execution_settings(barrier_resolution: str) -> tuple[str, str | None]:
+    """Translate the registered research barrier model into Simulator Config."""
+    if barrier_resolution == "5m_high_low":
+        # Signals/entries remain on 15m; only ambiguous 15m SL/TP bars are
+        # resolved from 5m sub-bars using high/low, through the simulator's
+        # validated INTRABAR resolver.
+        return "intrabar", "5m"
+    if barrier_resolution == "15m_high_low":
+        # Native 15m H/L leaves the Simulator responsible for ambiguity.
+        # Pessimistic is the existing deterministic fallback.
+        return "pessimistic", None
+    raise ValueError(
+        f"unsupported barrier_resolution={barrier_resolution!r}; "
+        "expected '5m_high_low' or '15m_high_low'"
+    )
+
+
 def build_config(cell: SimulationCell) -> Config:
+    execution, intrabar_tf = _execution_settings(cell.barrier_resolution)
     return Config(
         risk_pct=cell.risk_pct,
         start_equity=cell.equity,
         flat_by_hour=21 if cell.carry_free else None,
         apply_swap=not cell.carry_free,
-        # The execution timeframe is 15M. The simulator already resolves
-        # barriers from the current bar high/low; PESSIMISTIC is retained for
-        # the genuinely ambiguous case where both barriers are inside it.
-        execution="pessimistic",
+        execution=execution,
+        intrabar_tf=intrabar_tf,
     )
 
 
@@ -87,6 +106,15 @@ def run_cell(root: Path, cell: SimulationCell) -> dict[str, Any]:
     metrics["strategy"] = cell.strategy
     metrics["timeframe"] = EXEC_TF
     metrics["confluence_mode"] = cell.confluence_mode
+    metrics["barrier_resolution"] = cell.barrier_resolution
+    metrics["execution_mode"] = cfg.execution
+    metrics["intrabar_tf"] = cfg.intrabar_tf
+    metrics["ambiguous_bars"] = int(sim.ambiguous)
+    metrics["resolved_by_subbars"] = int(sim.resolved_by.get("subbar", 0))
+    metrics["fallback_to_pessimistic"] = int(
+        sum(v for k, v in sim.resolved_by.items() if "fallback" in str(k).lower())
+    )
+    metrics["resolution_breakdown"] = dict(sim.resolved_by)
 
     sig = pd.DataFrame(strategy.signal_log)
     if len(sig):
@@ -116,6 +144,11 @@ def run_cell(root: Path, cell: SimulationCell) -> dict[str, Any]:
             "context": list(CONTEXT),
             "strategy_params": strategy.params(),
             "simulator_config": cfg.__dict__,
+            "research_barrier_resolution": cell.barrier_resolution,
+            "effective_execution_mode": cfg.execution,
+            "effective_intrabar_tf": cfg.intrabar_tf,
+            "resolution_breakdown": sim.resolved_by,
+            "ambiguous_bars": sim.ambiguous,
             "data_hash": metrics["data_hash"],
         }, indent=2, default=str),
         encoding="utf-8",
