@@ -1,0 +1,1 @@
+The integrated simulator runner is ready. Use `python -m research.run_tl --symbol EURUSD --strategy bounce --start 2021-01-01` or `python -m research.run_tl --all --start 2021-01-01`. Results go to `research_runs/`.
