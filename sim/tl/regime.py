@@ -19,6 +19,7 @@ is what a bounce strategy wants while a breakout strategy wants its opposite.
 import numpy as np
 
 from ..indicators import atr as atr_series, ema
+from .clockguard import require_naive
 
 TRENDING_UP = 'trending_up'
 TRENDING_DOWN = 'trending_down'
@@ -36,6 +37,7 @@ def compute(bars, fast=21, slow=50, range_window=40, atr_len=14,
     All three are causal: every value at i comes from bars <= i, so a feature row
     built at bar i is legal to trade on at bar i+1.
     """
+    require_naive(bars, 'regime.compute bars')
     close = np.asarray(bars['close'], dtype=float)
     high = np.asarray(bars['high'], dtype=float)
     low = np.asarray(bars['low'], dtype=float)

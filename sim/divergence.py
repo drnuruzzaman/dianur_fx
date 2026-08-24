@@ -31,6 +31,17 @@ DEFAULTS = {
     'min_rsi_gap': 2.0,      # RSI points, so the divergence is more than noise
     'min_pivot_gap': 5,      # swings closer than this are the same swing
     'max_pivot_gap': 60,     # swings further apart than this are unrelated
+    # HIDDEN divergence is the mirror comparison and means the opposite thing:
+    # regular says the trend is failing, hidden says a pullback inside it is
+    # ending. Bullish hidden = price makes a HIGHER low while RSI makes a LOWER
+    # low. Off by default so `find()` returns exactly what it always has --
+    # the parity fixtures and rsi_divergence both depend on that.
+    'include_hidden': False,
+    # Regular divergence is filtered to RSI extremes because a reversal signal
+    # from mid-range RSI is not saying much. Hidden divergence lives in the
+    # OPPOSITE place -- a pullback inside a trend -- so the extreme filter would
+    # reject nearly all of it. It gets a mid-range band instead.
+    'hidden_band': (30.0, 70.0),
     'oversold': 40.0,        # a bullish divergence needs genuinely weak RSI
     'overbought': 60.0,
 }
@@ -42,6 +53,7 @@ def find_divergences(bars, **opts):
 
     Each is a dict:
         kind          'bullish' | 'bearish'
+                      | 'bullish_hidden' | 'bearish_hidden' (opt-in)
         pivot_i       bar index of the swing that completes the divergence
         prev_i        bar index of the swing it is compared against
         confirmed_i   bar index from which it may legally be used
@@ -54,7 +66,10 @@ def find_divergences(bars, **opts):
     highs, lows = find_pivots(high, low, o['strength'])
 
     out = []
-    for kind, pivots, sign in (('bullish', lows, 1), ('bearish', highs, -1)):
+    specs = [('bullish', lows, 1), ('bearish', highs, -1)]
+    if o['include_hidden']:
+        specs += [('bullish_hidden', lows, 1), ('bearish_hidden', highs, -1)]
+    for kind, pivots, sign in specs:
         for k in range(1, len(pivots)):
             cur, prev = pivots[k], pivots[k - 1]
             gap = cur['i'] - prev['i']
@@ -63,14 +78,26 @@ def find_divergences(bars, **opts):
             rc, rp = r[cur['i']], r[prev['i']]
             if np.isnan(rc) or np.isnan(rp):
                 continue
+            lo_b, hi_b = o['hidden_band']
             if kind == 'bullish':
+                # price lower low, RSI higher low: the decline is losing force
                 ok = (cur['price'] < prev['price']
                       and rc > rp + o['min_rsi_gap']
                       and rc < o['oversold'])
-            else:
+            elif kind == 'bearish':
                 ok = (cur['price'] > prev['price']
                       and rc < rp - o['min_rsi_gap']
                       and rc > o['overbought'])
+            elif kind == 'bullish_hidden':
+                # price HIGHER low, RSI LOWER low: a pullback inside an uptrend
+                ok = (cur['price'] > prev['price']
+                      and rc < rp - o['min_rsi_gap']
+                      and lo_b <= rc <= hi_b)
+            else:   # bearish_hidden
+                # price LOWER high, RSI HIGHER high: a bounce inside a downtrend
+                ok = (cur['price'] < prev['price']
+                      and rc > rp + o['min_rsi_gap']
+                      and lo_b <= rc <= hi_b)
             if not ok:
                 continue
             out.append({

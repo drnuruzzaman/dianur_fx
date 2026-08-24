@@ -43,28 +43,79 @@ export function compact(v) {
 }
 
 const pad = (n) => String(n).padStart(2, '0');
-
-export const hhmm = (ms) => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
-export const hhmmss = (ms) => { const d = new Date(ms); return hhmm(ms) + ':' + pad(d.getSeconds()); };
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/* ---- the display clock ---------------------------------------------------
+ *
+ * ONE zone for every rendered timestamp in the app. Formatters below shift the
+ * epoch by the zone offset and then read it with getUTC*, so "which zone" is a
+ * single number applied in a single place rather than an implicit property of
+ * whatever machine the browser is on.
+ *
+ * BROKER SERVER TIME is the default, because it is the frame the instrument
+ * itself is quoted in: an MT5 daily candle opens and closes on the broker's
+ * midnight, not on UTC midnight, so a chart drawn in any other zone shows
+ * daily bars starting at an arbitrary-looking hour. Matching the broker means
+ * a bar boundary on screen is a real bar boundary.
+ *
+ * The cost, stated because it is real: broker time moves with the BROKER's
+ * DST, so the four session windows in SESSIONS -- which keep fixed hours only
+ * in UTC -- shift by an hour twice a year against the displayed clock. The
+ * session strip therefore names its zone rather than assuming one.
+ *
+ * Two surfaces deliberately opt out. The CALENDAR keeps its own selector,
+ * because a news time is published in UTC and reading it against your own
+ * clock is the point. A SNAPSHOT renders in UTC, because an exported image
+ * outlives the session that made it and "14:00" means nothing to whoever
+ * opens the file unless the frame is universal.
+ *
+ * This governs DISPLAY only. Stored research bars stay in broker server time
+ * (tools/dataset.py, sim/tl/clockguard.py) because converting them needs a
+ * time-varying offset and one constant is wrong for half of a 27-year history.
+ */
+const ZONE = { mode: 'broker', brokerOffsetMs: 0 };
+
+export function setZone(mode, brokerOffsetMs = ZONE.brokerOffsetMs) {
+  if (mode && TZ_MODES.includes(mode)) ZONE.mode = mode;
+  ZONE.brokerOffsetMs = brokerOffsetMs || 0;
+}
+export const getZone = () => ({ ...ZONE });
+/** Run `fn` with the display zone forced to `mode`, then restore it. */
+export function withZone(mode, fn) {
+  const prev = ZONE.mode;
+  ZONE.mode = TZ_MODES.includes(mode) ? mode : prev;
+  try { return fn(); } finally { ZONE.mode = prev; }
+}
+/** Label for the zone every formatter here is currently rendering in. */
+export const zoneLabel = () => tzLabel(ZONE.mode, ZONE.brokerOffsetMs);
+/** Epoch shifted into the display zone; read the result with getUTC* only. */
+const shifted = (ms) =>
+  new Date(ms + tzOffsetMin(ZONE.mode, ZONE.brokerOffsetMs) * 60000);
+
+export const hhmm = (ms) => {
+  const d = shifted(ms);
+  return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+};
+export const hhmmss = (ms) =>
+  hhmm(ms) + ':' + pad(shifted(ms).getUTCSeconds());
 export const dmy = (ms) => {
-  const d = new Date(ms);
-  return pad(d.getDate()) + ' ' + d.toLocaleString('en-AU', { month: 'short' });
+  const d = shifted(ms);
+  return pad(d.getUTCDate()) + ' ' + MONTHS[d.getUTCMonth()];
 };
 export const stamp = (ms) => dmy(ms) + ' ' + hhmm(ms);
 
 /** Axis label appropriate to the timeframe. */
 export function axisTime(ms, tf) {
-  const d = new Date(ms);
+  const d = shifted(ms);
   if (tf === '1w' || tf === '1d') {
-    return d.getDate() === 1 || tf === '1w'
-      ? d.toLocaleString('en-AU', { month: 'short', year: '2-digit' })
-      : pad(d.getDate()) + ' ' + d.toLocaleString('en-AU', { month: 'short' });
+    return d.getUTCDate() === 1 || tf === '1w'
+      ? MONTHS[d.getUTCMonth()] + ' ' + String(d.getUTCFullYear()).slice(2)
+      : pad(d.getUTCDate()) + ' ' + MONTHS[d.getUTCMonth()];
   }
   if (tf === '4h' || tf === '1h') {
-    return d.getHours() === 0 ? dmy(ms) : hhmm(ms);
+    return d.getUTCHours() === 0 ? dmy(ms) : hhmm(ms);
   }
   return hhmm(ms);
 }
@@ -110,6 +161,12 @@ const NS = 'dnfx.';
 export const save = (key, value) => {
   try { localStorage.setItem(NS + key, JSON.stringify(value)); } catch { /* quota / private mode */ }
 };
+/** Delete one namespaced key. Callers must not touch localStorage directly:
+    every key here is prefixed, and a raw removeItem silently does nothing. */
+export const drop = (key) => {
+  try { localStorage.removeItem(NS + key); } catch { /* private mode */ }
+};
+
 export const load = (key, fallback = null) => {
   try {
     const raw = localStorage.getItem(NS + key);
@@ -131,25 +188,40 @@ export function sessionOpen(s, now = new Date()) {
 }
 
 /**
- * A session's open (or close) hour on the viewer's own clock.
+ * A session's open (or close) hour rendered in the DISPLAY zone.
  *
  * The table above is in UTC because that is the only frame in which the four
- * windows keep fixed hours -- but "London opens at 07:00 UTC" is a sum the
- * reader should not have to do at 5am. Anchored to today's date so it picks up
- * the local DST rule in force right now.
+ * windows keep fixed hours. This renders one of those hours through whatever
+ * zone the app is set to, so in the default UTC mode it is a pass-through and
+ * in `local` mode it answers "what time is that at my desk" without the reader
+ * doing the sum at 5am. Anchored to today's date so a local rendering picks up
+ * the DST rule in force right now.
  */
-export function sessionLocal(hourUtc, now = new Date()) {
+export function sessionClock(hourUtc, now = new Date()) {
   const d = new Date(now);
   d.setUTCHours(hourUtc, 0, 0, 0);
   return hhmm(d.getTime());
 }
 
-/* ---- calendar clocks -----------------------------------------------------
- * Three clocks are in play and they are hours apart: the browser's LOCAL time,
- * UTC, and the BROKER's server time (+3h), which is what every chart candle and
- * every downloaded bar is stamped in. A news event and a candle both reading
- * 08:30 can be seven hours apart, so calendar times are rendered through an
- * explicit, labelled zone rather than through "whatever Date happens to do".
+/* ---- zone plumbing -------------------------------------------------------
+ * Three clocks exist and they are hours apart: the browser's LOCAL time, UTC,
+ * and the BROKER's server time (+3h at the time of writing).
+ *
+ * WHICH IS WHICH, because this comment previously got it wrong and a wrong
+ * comment here costs someone a three-hour correction they did not need:
+ *
+ *   live bars over the bridge   TRUE UTC. mt5_bridge.py subtracts
+ *                               time_offset_ms before sending, so `t` on a
+ *                               bar and `time_ms` on a position are both UTC.
+ *   stored research bars        BROKER SERVER TIME, tz-naive, index named
+ *                               `server_time` (tools/dataset.py). NOT UTC,
+ *                               and deliberately not converted -- see
+ *                               sim/tl/clockguard.py for why one constant
+ *                               offset cannot be right across 27 years.
+ *   calendar events             TRUE UTC from the provider.
+ *
+ * So everything the browser touches is already UTC; the zone below is a
+ * DISPLAY choice applied at the last moment, never a change of storage.
  */
 export const TZ_MODES = ['local', 'utc', 'broker'];
 

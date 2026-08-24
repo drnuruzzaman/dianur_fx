@@ -145,22 +145,34 @@ export const INDICATORS = {
   },
   rsidiv: {
     label: 'RSI + divergence', pane: 'own',
-    inputs: { length: 14, strength: 3, minRsiGap: 2, oversold: 40, overbought: 60 },
+    inputs: { length: 14, strength: 3, minRsiGap: 2, oversold: 40, overbought: 60,
+              includeHidden: 0 },
     calc: (bars, o) => {
       const rsi = rsiSeries(bars, o.length);
       const divs = findDivergences(bars, {
         rsiLen: o.length, strength: o.strength, minRsiGap: o.minRsiGap,
         oversold: o.oversold, overbought: o.overbought,
+        includeHidden: !!o.includeHidden,
       });
-      const col = (d) => (d.kind === 'bullish' ? C.green : C.pink);
+      /* Hidden divergence is drawn DIMMER and dashed, and that is a judgement
+         about evidence rather than taste. Measured at the confirmation bar
+         against matched control candles over three eras, hidden returned
+         -1.51 / -0.24 / +0.07 pp -- no information at all, and regular is
+         barely better (+0.12 / +0.71 / +4.79, significant only in the era the
+         work was developed on). Drawing them identically would imply the two
+         carry comparable weight; neither carries much, and hidden carries
+         less. */
+      const hidden = (d) => d.kind.endsWith('_hidden');
+      const col = (d) => (d.kind.startsWith('bullish') ? C.green : C.pink);
       // Two legs per divergence: the RSI leg in this pane and the PRICE leg on
       // the candles, because the whole point is that the two disagree.
       const rsiLegs = divs.map((d) => ({
-        t1: d.prevT, v1: d.prevRsi, t2: d.t, v2: d.rsi, color: col(d), width: 2.2,
+        t1: d.prevT, v1: d.prevRsi, t2: d.t, v2: d.rsi, color: col(d),
+        width: hidden(d) ? 1.2 : 2.2, dash: hidden(d) ? [3, 3] : undefined,
       }));
       const priceLegs = divs.map((d) => ({
         t1: d.prevT, v1: d.prevPrice, t2: d.t, v2: d.price, color: col(d),
-        width: 1.4, dash: [5, 3],
+        width: hidden(d) ? 1 : 1.4, dash: hidden(d) ? [2, 4] : [5, 3],
       }));
       // A pivot is only visible `strength` bars after it happens, so the bar the
       // divergence could first be ACTED on is marked separately from the swing

@@ -19,3 +19,13 @@
 2026-08-23T16:05:44+10:00  stop      bridge shutting down
 2026-08-23T16:54:25+10:00  clock     server offset +10800000 ms (UTC+3.00h) confidence=ok from 5 tick(s)
 2026-08-23T16:54:25+10:00  start     bridge on 127.0.0.1:8765 mock=False connected=True server=Pepperstone-MT5-Live01
+2026-08-23T19:01:29+10:00  stop      bridge shutting down
+2026-08-23T19:10:26+10:00  clock     server offset +10800000 ms (UTC+3.00h) confidence=ok from 5 tick(s)
+2026-08-23T19:10:26+10:00  start     bridge on 127.0.0.1:8765 mock=False connected=True server=Pepperstone-MT5-Live01
+2026-08-23T19:10:33+10:00  stop      bridge shutting down
+2026-08-23T19:10:49+10:00  clock     server offset +10800000 ms (UTC+3.00h) confidence=ok from 5 tick(s)
+2026-08-23T19:10:49+10:00  start     bridge on 127.0.0.1:8765 mock=False connected=True server=Pepperstone-MT5-Live01
+2026-08-23T19:10:54+10:00  stop      bridge shutting down
+2026-08-23T19:23:06+10:00  clock     server offset +10800000 ms (UTC+3.00h) confidence=ok from 5 tick(s)
+2026-08-23T19:23:06+10:00  start     bridge on 127.0.0.1:8765 mock=False connected=True server=Pepperstone-MT5-Live01
+2026-08-23T19:33:14+10:00  stop      bridge shutting down

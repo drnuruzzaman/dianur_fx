@@ -48,10 +48,36 @@ function atrSeries(bars, len = 14) {
 }
 
 /**
- * Fractal pivots. `strength` is the number of bars that must be lower (higher)
- * on each side, so 2 finds minor swings and 6 finds structural ones.
+ * Fractal pivots. Mirror of sim/tl/pivots.py find_pivots — the two are compared
+ * over real bars by tests/test_parity.py, so any change here needs the same
+ * change there.
+ *
+ * THE WICK SETS THE PRICE, ALWAYS. A swing high is the highest price TRADED,
+ * because the wick is where the rejection happened and that is the level price
+ * gets measured against later. `i` is where it IS.
+ *
+ * Two separate questions, on purpose:
+ *
+ *   candidate    the wick-fractal shape, `strength` bars each side. confirmedI
+ *                = i + strength is the earliest bar the SHAPE is knowable.
+ *
+ *   closeConfirm=true asks whether price went on to actually CLOSE past the
+ *                extreme -- establishing the turn, not just pausing at it. See
+ *                confirmByClose. A candidate ends up CONFIRMED (confirmedI now
+ *                the bar the closes actually established it, which can be well
+ *                past i + strength), INVALIDATED (a later wick made a new
+ *                extreme first), or PENDING (not enough bars yet). Invalidated
+ *                and pending candidates are dropped.
+ *
+ * An earlier version filtered by requiring ALL of the next `strength` bars to
+ * close past the extreme -- not the same rule: one weak close inside an
+ * otherwise-decisive window killed the whole candidate. Measured against the
+ * trendline/zone/BOS detectors that consume these pivots, that filter made
+ * every one of them worse, because their signal comes from pivot DENSITY and
+ * the all-K rule starved it by a third. This walk lets confirmation take as
+ * long as the market actually takes, instead.
  */
-export function findPivots(bars, strength = 3) {
+export function findPivots(bars, strength = 3, closeConfirm = false) {
   const highs = [];
   const lows = [];
   for (let i = strength; i < bars.length - strength; i++) {
@@ -63,10 +89,41 @@ export function findPivots(bars, strength = 3) {
       if (!(bars[i].l < bars[i - k].l && bars[i].l <= bars[i + k].l)) isLow = false;
       if (!isHigh && !isLow) break;
     }
-    if (isHigh) highs.push({ i, t: bars[i].t, price: bars[i].h });
-    if (isLow) lows.push({ i, t: bars[i].t, price: bars[i].l });
+    if (isHigh) highs.push({ i, t: bars[i].t, price: bars[i].h, confirmedI: i + strength });
+    if (isLow) lows.push({ i, t: bars[i].t, price: bars[i].l, confirmedI: i + strength });
   }
-  return { highs, lows };
+  if (!closeConfirm) return { highs, lows };
+  return { highs: confirmByClose(highs, bars, strength, true),
+           lows: confirmByClose(lows, bars, strength, false) };
+}
+
+/**
+ * CANDIDATE -> CONFIRMED or dropped (invalidated / pending). Walks forward on
+ * CLOSES. See find_pivots._confirm_by_close in sim/tl/pivots.py for the same
+ * walk in Python -- keep the two in lockstep.
+ *
+ * Invalidation triggers on a later WICK, not a later close: once a bar has
+ * actually traded through the level, this candidate is no longer the extreme
+ * no matter what anything closed at.
+ */
+function confirmByClose(pivots, bars, confirmBars, isHigh) {
+  const n = bars.length;
+  const out = [];
+  for (const p of pivots) {
+    const { i, price } = p;
+    const floor = i + confirmBars;
+    let run = 0;
+    let confirmedAt = null;
+    for (let j = i + 1; j < n; j++) {
+      const w = isHigh ? bars[j].h : bars[j].l;
+      if (isHigh ? w > price : w < price) break;          // superseded
+      const turned = isHigh ? bars[j].c < bars[i].c : bars[j].c > bars[i].c;
+      run = turned ? run + 1 : 0;
+      if (run >= confirmBars) { confirmedAt = j; break; }
+    }
+    if (confirmedAt !== null) out.push({ ...p, confirmedI: Math.max(confirmedAt, floor) });
+  }
+  return out;
 }
 
 const DEFAULTS = {

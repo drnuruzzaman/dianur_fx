@@ -1,6 +1,6 @@
 /* watchlist.js — left rail: quote list, price flash, session strip. */
 
-import { $, SESSIONS, el, hhmmss, load, save, sessionLocal, sessionOpen } from '../util.js';
+import { $, SESSIONS, el, hhmmss, load, save, sessionClock, sessionOpen, withZone, zoneLabel } from '../util.js';
 
 const DEFAULT = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'XAUUSD', 'US30', 'NAS100'];
 
@@ -125,31 +125,42 @@ export class Watchlist {
     const clock = el('span', { class: 'clock' });
     host.append(rows, el('div', { class: 'sess' }, clock));
 
-    const paint = () => {
+    /* This strip is the ONE surface that stays on the viewer's LOCAL clock,
+       against the app's broker-time default. It answers a personal question --
+       "what time do I need to be at my desk for the London open" -- and broker
+       time cannot answer it. The tooltip still names the canonical UTC window,
+       which is the only frame where the four windows keep fixed hours.
+
+       withZone is used rather than a separate formatter so this cannot drift
+       out of step with the shared clock: same code path, one argument. */
+    const paintLocal = () => {
       rows.innerHTML = '';
       const now = new Date();
-      /* Open times on the viewer's clock, not UTC: the question this strip
-         answers is "what time do I need to be at my desk", and that is a local
-         question. The green dot still carries the open/closed state, so the
-         time slot is free to say something the dot cannot. */
       for (const s of SESSIONS) {
         const open = sessionOpen(s, now);
         rows.append(el('div', {
           class: 'sess' + (open ? ' open' : ''),
-          title: `${s.name} ${sessionLocal(s.open, now)}\u2013${sessionLocal(s.close, now)} `
-               + `local \u00b7 ${String(s.open).padStart(2, '0')}:00\u2013`
-               + `${String(s.close).padStart(2, '0')}:00 UTC`,
+          title: `${s.name} ${sessionClock(s.open, now)}\u2013${sessionClock(s.close, now)} `
+               + `${zoneLabel()}`
+               // Name the canonical UTC window too \u2014 but not twice, on the day
+               // a viewer is actually sitting on UTC.
+               + (zoneLabel() === 'UTC' ? ''
+                 : ` \u00b7 ${String(s.open).padStart(2, '0')}:00\u2013`
+                   + `${String(s.close).padStart(2, '0')}:00 UTC`),
         },
           el('i'), el('span', { text: s.name }),
-          el('span', { class: 'clock', text: sessionLocal(s.open, now) })));
+          el('span', { class: 'clock', text: sessionClock(s.open, now) })));
       }
     };
 
-    const tick = () => {
-      const off = -new Date().getTimezoneOffset() / 60;
-      clock.textContent = `local UTC${off < 0 ? '-' : '+'}${Math.abs(off)} `
-                        + `\u00b7 ${hhmmss(Date.now())}`;
-    };
+    const paint = () => withZone('local', paintLocal);
+
+    /* The running clock is local too, so the strip reads in one zone. It names
+       that zone, because the rest of the app is on broker time and an unlabelled
+       clock three hours off the chart would look like a bug. */
+    const tick = () => withZone('local', () => {
+      clock.textContent = `${zoneLabel()} \u00b7 ${hhmmss(Date.now())}`;
+    });
 
     paint();
     tick();

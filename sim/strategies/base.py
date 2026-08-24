@@ -62,8 +62,38 @@ class MTFStrategy(Strategy):
         self.signal_log = []                        # every signal, gated or not
 
     # ---- plumbing ------------------------------------------------------- #
+    #: BASE_COLUMNS declares the EXECUTION-frame columns with a '15m_' prefix
+    #: because 15m is the default execution frame. It is a placeholder, not a
+    #: literal: `columns()` rewrites it to whatever `exec_tf` actually is, so a
+    #: strategy can be run at another execution timeframe without every
+    #: subclass restating its column list. Context-frame columns (1h_, 4h_,
+    #: d1_) are left alone -- those name real, specific frames.
+    EXEC_PLACEHOLDER = '15m'
+
     def columns(self):
-        return tuple(self.BASE_COLUMNS)
+        pre = self.EXEC_PLACEHOLDER + '_'
+        out = []
+        for c in self.BASE_COLUMNS:
+            if c.startswith(pre) and self.exec_tf != self.EXEC_PLACEHOLDER:
+                out.append(f'{self.exec_tf}_{c[len(pre):]}')
+            else:
+                out.append(c)
+        # Running at a higher execution frame makes the lower context frames
+        # meaningless -- a 4h execution bar cannot take context from 1h. Drop
+        # any context column whose frame is at or below the execution frame
+        # rather than demanding a column the feature build could not produce.
+        if self.exec_tf != self.EXEC_PLACEHOLDER:
+            order = ['1m', '5m', '15m', '30m', '1h', '4h', 'd1', '1d']
+            def rank(tf):
+                tf = 'd1' if tf == '1d' else tf
+                return order.index(tf) if tf in order else -1
+            keep, ex = [], rank(self.exec_tf)
+            for c in out:
+                tf = c.split('_', 1)[0]
+                if tf == self.exec_tf or rank(tf) < 0 or rank(tf) > ex:
+                    keep.append(c)
+            out = keep
+        return tuple(dict.fromkeys(out))
 
     def prepare(self, bars):
         f = self.features

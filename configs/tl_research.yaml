@@ -19,6 +19,7 @@ strategies:
     retest_distance_atr: 0.40
     rejection_max_bars: 1
 
+
 # Execution/barrier model. 15m remains the execution timeframe. Trade barriers
 # are resolved with validated 5m high/low sub-bars. Structural trendline BREAK
 # remains the detector's registered structural definition.

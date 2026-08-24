@@ -80,19 +80,123 @@ kbd{
 .pill[data-state="mock"]{color:#241300; background:var(--orange); border-color:var(--orange)}
 .pill[data-state="down"]{color:#fff; background:var(--pink); border-color:var(--pink)}
 
-.acct{display:flex; gap:2px}
-.acct-cell{display:flex; flex-direction:column; padding:2px 10px; border-left:1px solid var(--line-soft)}
-.acct-cell span{font-size:9.5px; text-transform:uppercase; letter-spacing:2px; color:var(--text-faint)}
-.acct-cell b{font-family:var(--mono); font-size:12.5px; font-weight:500}
+/* Account balances. They live in the FOOTER tab bar next to READ ONLY, not in
+   the header: the numbers are account state, they sit with the account tabs
+   (Positions / Orders / History), and they are hidden until asked for so a
+   shared screen does not lead with a balance. */
+.acct{display:flex; gap:2px; align-items:center}
+.acct[hidden]{display:none}
+.acct-cell{display:flex; align-items:baseline; gap:5px;
+  padding:1px 8px; border-left:1px solid var(--line-soft)}
+.acct-cell span{font-size:9px; text-transform:uppercase; letter-spacing:1.5px;
+  color:var(--text-faint)}
+.acct-cell b{font-family:var(--mono); font-size:11px; font-weight:500}
+.acct-btn{margin-left:6px; margin-right:2px; border:1px solid var(--line);
+  border-radius:4px; width:24px}
+.acct-btn[aria-expanded="true"]{background:var(--accent-soft); color:#fff;
+  border-color:transparent}
 
 /* ---------------- workspace ---------------- */
+/* Both rails collapse to nothing so the chart can take the full width. The
+   grid columns are driven by variables rather than by hiding the <aside>,
+   because `display:none` would tear down the panels and lose their scroll
+   position and any in-progress render; collapsing the TRACK keeps them mounted
+   and simply gives them no room. */
 .workspace{
-  display:grid; grid-template-columns:var(--side-w) minmax(0,1fr) var(--right-w);
-  min-height:0; overflow:hidden;
+  display:grid;
+  grid-template-columns:var(--side-track) minmax(0,1fr) var(--right-track);
+  min-height:0; overflow:hidden; position:relative;
+  transition:grid-template-columns .16s ease;
 }
+body{--side-track:var(--side-w); --right-track:var(--right-w); --stub-w:26px}
+/* Collapsed leaves a STUB, not nothing: a rail you cannot see is a rail you
+   forget exists, and the name on the spine is what makes it findable again. */
+body.side-collapsed{--side-track:var(--stub-w)}
+body.right-collapsed{--right-track:var(--stub-w)}
+
+/* PEEK OVERLAYS THE CHART, it does not reflow it. Widening the grid track on
+   hover would resize every canvas on every mouse-over -- a full re-render for a
+   glance. Sliding the panel over the chart costs one transform and leaves the
+   chart's backing store untouched. */
+body.side-collapsed .sidebar,
+body.right-collapsed .rightbar{
+  position:absolute; top:0; bottom:0; z-index:8;
+  transition:transform .16s ease; box-shadow:0 0 18px rgba(0,0,0,.55);
+}
+body.side-collapsed .sidebar{
+  left:0; width:var(--side-w); transform:translateX(-100%);
+}
+body.right-collapsed .rightbar{
+  right:0; width:var(--right-w); transform:translateX(100%);
+}
+body.side-collapsed.side-peek .sidebar{ transform:translateX(var(--stub-w)) }
+body.right-collapsed.right-peek .rightbar{ transform:translateX(calc(-1 * var(--stub-w))) }
+
+/* The spine. Vertical text via writing-mode rather than a rotate transform, so
+   the strip keeps a real layout box and stays clickable and focusable. */
+.rail-stub{
+  display:none; position:absolute; top:0; bottom:0; width:var(--stub-w);
+  z-index:7; cursor:pointer; background:var(--surface);
+  align-items:center; justify-content:center;
+  font-size:9.5px; letter-spacing:2.5px; text-transform:uppercase;
+  color:var(--text-faint); user-select:none;
+  transition:color .12s ease, background .12s ease;
+}
+.rail-stub span{ writing-mode:vertical-rl; white-space:nowrap }
+.rail-stub-l{ left:0; border-right:1px solid var(--line) }
+.rail-stub-r{ right:0; border-left:1px solid var(--line) }
+.rail-stub-r span{ transform:rotate(180deg) }
+.rail-stub:hover,.rail-stub:focus-visible{ color:var(--text); background:var(--surface-2); outline:0 }
+body.side-collapsed .rail-stub-l,
+body.right-collapsed .rail-stub-r{ display:flex }
+/* The floating handle is the OPEN-state control; collapsed, the spine is. Two
+   controls for one thing in the same place would just be clutter. */
+body.side-collapsed .rail-toggle-l,
+body.right-collapsed .rail-toggle-r{ display:none }
+
+/* The handle floats over the chart edge rather than sitting in the grid, so a
+   collapsed rail leaves no gutter behind. */
+.rail-toggle{
+  position:absolute; top:8px; z-index:6; width:16px; height:34px;
+  display:grid; place-items:center; cursor:pointer; padding:0;
+  background:var(--surface); color:var(--text-faint);
+  border:1px solid var(--line); border-radius:3px;
+  font-size:11px; line-height:1;
+  transition:left .16s ease, right .16s ease, color .12s ease;
+}
+.rail-toggle:hover{color:var(--text); background:var(--surface-2)}
+/* Amber sits between up and down: a margin level of 150% is not healthy and
+   not yet a margin call, and colouring it green or red would say otherwise. */
+.warn{color:var(--orange)}
+.rail-toggle-l{left:calc(var(--side-track) + 4px)}
+.rail-toggle-r{right:calc(var(--right-track) + 4px)}
+/* EXPLICIT column placement. A collapsed rail is position:absolute, which takes
+   it out of the grid flow -- and auto-placement then slides everything after it
+   one column left, putting the chart in the 26px stub track and blanking it.
+   Pinning each area to its own column makes the layout independent of which
+   rails are currently in flow. */
+.sidebar{grid-column:1}
+/* The chart AREA owns column 2 and stacks the grid above the tab strip; the
+   grid keeps its own display:grid for tiling. Splitting the two means the tab
+   strip is not itself a grid cell fighting the layout. */
+.chartarea{grid-column:2; display:flex; flex-direction:column; min-width:0; min-height:0}
+.rightbar{grid-column:3}
 .sidebar,.rightbar{
   background:var(--surface); display:flex; flex-direction:column; min-height:0; overflow:hidden;
 }
+/* A zero-width track still lays its content out and can bleed a pixel of
+   border; clipping the aside itself keeps a collapsed rail truly invisible. */
+body.side-collapsed .sidebar,
+body.right-collapsed .rightbar{ border:0; overflow:hidden }
+/* The right rail stacks four sections (Trend read, Signal engine, Time & Sales,
+   Contract). Their combined natural height exceeds a laptop viewport, and the
+   rail used to `overflow:hidden` that difference away -- the tape kept its
+   header and lost its rows, which reads as an empty feed rather than a clipped
+   one. The rail therefore scrolls as a whole, and the tape additionally keeps
+   its OWN bounded scroll so it can never grow long enough to push Contract off
+   the end again. */
+.rightbar{overflow-y:auto; overflow-x:hidden}
+.rightbar .side-head{position:sticky; top:0; z-index:3}
 .sidebar{border-right:1px solid var(--line)}
 .rightbar{border-left:1px solid var(--line)}
 .side-head{
@@ -139,7 +243,13 @@ kbd{
 .sess.open i{background:var(--green); box-shadow:0 0 7px rgba(147,201,15,.75)}
 .sess .clock{margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--text-faint)}
 
-.tape{overflow-y:auto; flex:1 1 auto; min-height:100px; font-family:var(--mono); font-size:11px}
+/* A bounded, self-scrolling window rather than `flex:1`: as a flex child it
+   was the only section that could give up space, so every pixel the two new
+   panels needed came out of the tape until nothing was left. */
+.tape{
+  overflow-y:auto; flex:none; height:clamp(150px, 24vh, 320px);
+  font-family:var(--mono); font-size:11px}
+.tape-head{position:sticky; top:0; z-index:2; background:var(--surface)}
 .tape-head{grid-template-columns:60px 1fr 1fr}
 .tape-row{display:grid; grid-template-columns:60px 1fr 1fr; gap:4px; padding:2px 10px}
 .tape-row span:not(:first-child){text-align:right}
@@ -149,11 +259,37 @@ kbd{
 .spec dt{color:var(--text-faint)} .spec dd{margin:0; font-family:var(--mono); text-align:right}
 
 /* ---------------- chart grid ---------------- */
-.charts{display:grid; gap:1px; background:var(--line); min-height:0; min-width:0}
+.charts{display:grid; gap:1px; background:var(--line); flex:1 1 auto; min-height:0; min-width:0}
 .charts[data-layout="1"]{grid-template:1fr/1fr}
 .charts[data-layout="2h"]{grid-template:1fr/1fr 1fr}
 .charts[data-layout="2v"]{grid-template:1fr 1fr/1fr}
 .charts[data-layout="4"]{grid-template:1fr 1fr/1fr 1fr}
+/* MT5-style open-chart tabs. One tab per OPEN chart, not per visible cell:
+   the layout decides how many render at once, the tabs decide which ones. */
+.chart-tabs{
+  display:flex; align-items:stretch; gap:1px; flex:none; height:24px;
+  background:var(--line); border-top:1px solid var(--line);
+}
+.ct-list{display:flex; gap:1px; overflow-x:auto; overflow-y:hidden; flex:1 1 auto}
+.ct-list::-webkit-scrollbar{height:5px}
+.ct-list::-webkit-scrollbar-thumb{background:var(--line-soft); border-radius:3px}
+.ct{
+  display:flex; align-items:center; gap:6px; flex:none; padding:0 8px;
+  background:var(--surface); color:var(--text-dim); cursor:pointer;
+  font-family:var(--mono); font-size:10.5px; white-space:nowrap; border:0;
+  border-top:2px solid transparent;
+}
+.ct:hover{background:var(--surface-2); color:var(--text)}
+/* `shown` = rendered in some cell right now. `active` = the focused one. In a
+   4-chart layout four tabs are shown and only one is active, so the two states
+   have to be visually distinct or the highlight lies about what is focused. */
+.ct.shown{background:var(--bg); color:var(--text)}
+.ct.active{border-top-color:var(--pink); color:#fff}
+.ct-x{
+  border:0; background:transparent; color:var(--text-faint); cursor:pointer;
+  font-size:12px; line-height:1; padding:0 2px; border-radius:2px;
+}
+.ct-x:hover{background:var(--down); color:#fff}
 .cell{position:relative; background:var(--bg); min-width:0; min-height:0; overflow:hidden}
 .cell.active::after{
   content:""; position:absolute; inset:0; pointer-events:none;
@@ -204,10 +340,6 @@ kbd{
 .tab:hover{color:var(--text)}
 .tab.active{color:#fff; border-bottom-color:var(--pink)}
 .tab b{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:3px}
-.ro-badge{
-  font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; padding:3px 7px;
-  border:1px solid var(--green); color:var(--green); border-radius:3px;
-}
 .panel{overflow:auto; flex:1 1 auto; min-height:0}
 body.bottom-collapsed .panel{display:none}
 table.grid{width:100%; border-collapse:collapse; font-size:12px}
@@ -275,7 +407,7 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
 *::-webkit-scrollbar-thumb{background:#0d3a6b; border-radius:9px}
 *::-webkit-scrollbar-thumb:hover{background:#155093}
 
-@media (max-width:1280px){ .rightbar{display:none} .workspace{grid-template-columns:var(--side-w) 1fr} }
+@media (max-width:1280px){ body:not(.right-collapsed){--right-track:var(--stub-w)} }
 @media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} .acct{display:none} }
 
 /* ---------------- backtest tab ---------------- */
@@ -459,3 +591,84 @@ table.grid tr.cal-now td{background:var(--surface-2); text-align:left; padding:3
   font-family:var(--mono); font-size:10px; letter-spacing:2px; text-transform:uppercase;
   color:var(--pink); opacity:1}
 table.grid tr.cal-now:hover td{background:var(--surface-2)}
+
+/* ---- Trend read -------------------------------------------------------- */
+/* A verdict panel, laid out as a verdict: the call and its conviction first and
+   large, the per-timeframe evidence beneath, then the three numbers that decide
+   whether the read is actionable. Reading top-to-bottom should answer "trade or
+   wait?" before you reach the detail. */
+.trendread{padding:9px 10px 10px; border-bottom:1px solid var(--line); flex:none}
+.tr-empty{padding:6px 0; font-size:12px}
+
+.tr-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.tr-verdict{
+  font-size:12px; letter-spacing:.09em; padding:4px 10px; border-radius:3px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text-dim);
+  white-space:nowrap}
+.tr-verdict.tr-bull{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.tr-verdict.tr-bear{color:#fff; background:var(--down); border-color:var(--down)}
+.tr-verdict.tr-watch{color:var(--text); border-color:var(--line)}
+.tr-verdict.tr-neutral{color:var(--text-faint); border-style:dashed}
+/* The conviction number is the second thing read, so it is sized to be seen
+   from the same glance as the badge rather than hunted for. */
+.tr-score{font-size:17px; line-height:1; font-weight:500; color:var(--text)}
+.tr-score.dim{color:var(--text-faint); font-weight:400}
+
+.tr-note{font-size:11px; margin-top:7px; line-height:1.35}
+.tr-rows{margin-top:10px; display:flex; flex-direction:column; gap:5px}
+.tr-row{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  font-size:11px}
+.tr-tf{color:var(--text-faint)}
+.tr-state{display:inline-flex; align-items:baseline; gap:5px; white-space:nowrap}
+.tr-mark{font-style:normal; font-size:9px}
+
+.tr-facts{
+  margin-top:10px; padding-top:8px; border-top:1px solid var(--line-soft);
+  display:flex; flex-direction:column; gap:5px}
+.tr-fact{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  font-size:11px}
+.tr-val{font-variant-numeric:tabular-nums; white-space:nowrap}
+.tr-val.mono{font-family:var(--mono)}
+
+/* ---- Signal engine ----------------------------------------------------- */
+/* Bars diverge from a centre line because the SIGN is the information: six
+   left-anchored bars would read as six magnitudes and hide the disagreement
+   that makes a composite worth computing. */
+.signalpanel{padding:9px 10px 10px; border-bottom:1px solid var(--line); flex:none}
+.sig-empty{padding:6px 0; font-size:12px}
+.sig-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.sig-badge{
+  font-size:12px; letter-spacing:.09em; padding:4px 10px; border-radius:3px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text-dim)}
+.sig-badge.sig-bull{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.sig-badge.sig-bear{color:#fff; background:var(--down); border-color:var(--down)}
+.sig-badge.sig-neutral{color:var(--text-faint)}
+.sig-score{font-size:17px; line-height:1; font-weight:500}
+
+.sig-bars{margin-top:10px; display:flex; flex-direction:column; gap:5px}
+.sig-row{display:grid; grid-template-columns:58px 1fr 26px; align-items:center; gap:7px;
+  font-size:11px}
+.sig-label{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.sig-track{position:relative; height:7px; background:var(--surface-2); border-radius:2px}
+.sig-zero{position:absolute; left:50%; top:-1px; bottom:-1px; width:1px;
+  background:var(--line); opacity:.9}
+.sig-fill{position:absolute; top:0; bottom:0; border-radius:2px}
+.sig-fill.pos{background:var(--up)}
+.sig-fill.neg{background:var(--down)}
+.sig-num{text-align:right; font-size:11px; font-variant-numeric:tabular-nums}
+
+.sig-stats{
+  margin-top:10px; padding-top:8px; border-top:1px solid var(--line-soft);
+  display:flex; flex-direction:column; gap:5px}
+.sig-stat{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  font-size:11px}
+.sig-val{font-variant-numeric:tabular-nums; white-space:nowrap}
+.sig-verdict{margin-top:8px; font-size:11px; line-height:1.35}
+
+/* The rail headings are timeframe pickers, so they have to read as pressable
+   without becoming a second toolbar competing with the real one. */
+.rail-tf{
+  background:transparent; border:1px solid transparent; border-radius:3px;
+  color:var(--text-dim); font-family:var(--mono); font-size:10px;
+  letter-spacing:.5px; padding:1px 6px; cursor:pointer}
+.rail-tf:hover{color:#fff; border-color:var(--line); background:var(--surface-2)}

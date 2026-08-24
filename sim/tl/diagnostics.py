@@ -25,52 +25,9 @@ METHOD
      oscillates and the barriers are not hit with equal ease everywhere. Two
      controls:
          placebo  — the same line shifted `placebo_atr` sideways: identical
-                    slope, no structural claim. This is meant to be the test
-                    that matters: is THIS level special, or would any nearby
-                    parallel level do?
-
-                    *** KNOWN DEFECT -- READ BEFORE TRUSTING ANY placebo NUMBER
-                    IN THIS REPO, INCLUDING runs/tl_placebo_summary.csv ***
-
-                    The placebo does NOT have identical approach dynamics, and
-                    the claim that it does was wrong. An approach fires when
-                    price comes within `near_atr` (0.4) of the LINE. The
-                    placebo sits `placebo_atr` (1.5) away from that line, so at
-                    the entry bar price is ~1.5 ATR from the placebo -- further
-                    than either of the placebo's own barriers, which are placed
-                    at stop/target distances of ~1 ATR around the PLACEBO's
-                    level, not around price.
-
-                    Price therefore starts BEYOND one of the placebo's two
-                    barriers 100% of the time, and the placebo resolves on the
-                    first bar 100% of the time (measured on EURUSD 4h, 1452
-                    approaches, against 42% for the line). Which barrier it
-                    starts beyond is decided by the sign of `off`, a coin flip.
-
-                    So the placebo arm is not a nearby level being tested. It is
-                    a fair coin, resolved immediately, and its hold rate sits
-                    near 50% for every instrument, timeframe and geometry --
-                    which is exactly the pattern in tl_placebo_summary.csv, and
-                    was read there as "a placebo holds about half the time"
-                    rather than as the symptom it is.
-
-                    Consequences: `edge_vs_placebo` measures a real level
-                    against a coin flip, not against an alternative level, and
-                    every downstream comparison inherits that -- the structural
-                    gate, the r_conversion grids, and the paired test added on
-                    top of them. The paired statistic is computed correctly; the
-                    quantity it differences against is not a control.
-
-                    Fixing it is a design choice, not a bug fix, because the
-                    obvious repair breaks something else. Detecting approaches
-                    to the SHIFTED line independently gives a real control with
-                    matched dynamics, but those approaches happen at different
-                    bars, so the arms no longer pair and the paired test has to
-                    go. A time-shifted control (same line, wrong era) keeps the
-                    geometry honest and is what the project's own plan calls
-                    for at gate 8B. Anchoring both arms' barriers to the entry
-                    PRICE keeps pairing but makes the placebo's level
-                    irrelevant, which is what the `random` arm already does.
+                    slope, identical approach dynamics, no structural claim.
+                    This is the test that matters: is THIS level special, or
+                    would any nearby parallel level do?
          random   — the same barrier width applied at random bars around the
                     current price, measuring the unconditional base rate.
 
@@ -80,25 +37,16 @@ engine freezes its tradeable set per bar (Snapshot.tradeable) rather than
 letting this read a final status.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from ..indicators import atr as atr_series
-from ..intrabar import INTRABAR, PESSIMISTIC, STOP, TARGET, SubBars
-from ..intrabar import resolve as ib_resolve
+from .engine import _break_strength
 from .engine import Params, TrendlineEngine
+from .lines import Role
 from .mtf import TF_MS
-
-# A fourth resolution mode, on top of sim/intrabar.py's three. CLOSE asks only
-# where the bar CLOSED, which is what this module measured originally: it can
-# never see a barrier that was touched and given back, so a stop that price
-# spiked through and recovered from does not count. That is the right basis for
-# a question about where price ENDS UP, and the wrong one for a question about
-# what a bracket order would have PAID -- a real stop fills on the touch.
-CLOSE = 'close'
-RESOLUTIONS = (CLOSE, PESSIMISTIC, INTRABAR)
 
 
 @dataclass
@@ -128,114 +76,77 @@ class DiagParams:
     horizon: int = 48            # bars to resolve an outcome
     placebo_atr: float = 1.5     # parallel-line offset for the placebo
     seed: int = 7
-    # How a bar that reached BOTH barriers is settled. CLOSE keeps the original
-    # measurement (closes only, so such a bar cannot arise); PESSIMISTIC gives
-    # it to the stop; INTRABAR goes and looks at sub-bars and only falls back to
-    # the stop when even those cannot tell. The economic gate must not use
-    # CLOSE: it prices a bracket order, and a bracket fills on the touch.
-    resolution: str = CLOSE
-    sub_tf: str = None           # None -> intrabar.DEFAULT_SUB_TF for this tf
 
 
 HOLD, BREAK, CHOP = 'hold', 'break', 'chop'
 
 
-@dataclass
-class _Ctx:
-    """Everything the barrier walk needs that does not change per event."""
-    high: np.ndarray
-    low: np.ndarray
-    close: np.ndarray
-    times: pd.Index
-    mode: str = CLOSE
-    sub: object = None
-    ambiguous: int = 0                      # bars that reached both barriers
-    resolved_by: dict = field(default_factory=dict)
-
-
-def _hits(ctx, j, tgt_px, stop_px, direction):
-    """Did bar j reach the target, the stop, both, or neither?"""
-    if ctx.mode == CLOSE:
-        c = ctx.close[j]
-        return ((c >= tgt_px, c <= stop_px) if direction > 0
-                else (c <= tgt_px, c >= stop_px))
-    hi, lo = ctx.high[j], ctx.low[j]
-    return ((hi >= tgt_px, lo <= stop_px) if direction > 0
-            else (lo <= tgt_px, hi >= stop_px))
-
-
-def _walk(ctx, i, horizon, n, tgt_at, stop_at, direction):
+def _resolve(bars_c, line_val, i, side, move, horizon, n, up=None, down=None):
     """
-    Walk forward from bar i+1 to whichever barrier is reached first.
+    First barrier touched by a CLOSE, walking forward. `line_val` is a callable
+    giving the line's value at any bar, so a sloping line keeps sloping.
+    `side` is +1 for support (price above), -1 for resistance.
 
-    `tgt_at(j)` and `stop_at(j)` return the two barrier prices at bar j, so a
-    barrier that tracks a sloping line and one that is fixed are the same walk.
-    `direction` is +1 when the target sits above the entry, -1 when below.
+    `up`/`down` allow the two barriers to sit at different distances; both
+    default to `move`, which is the symmetric case the structural test uses.
+    """
+    up = move if up is None else up
+    down = move if down is None else down
+    end = min(n - 1, i + horizon)
+    for j in range(i + 1, end + 1):
+        v = line_val(j)
+        if bars_c[j] >= v + up:
+            return (HOLD if side > 0 else BREAK), j
+        if bars_c[j] <= v - down:
+            return (BREAK if side > 0 else HOLD), j
+    return CHOP, None
 
-    Returns (TARGET | STOP | None, j). None means neither inside the horizon.
 
-    The barrier prices are taken at the bar's own index, so a sloping line is
-    held constant WITHIN a bar. Over one bar the line moves a small fraction of
-    a tolerance, and the alternative -- interpolating a level across sub-bars --
-    would add precision the line's own two-pivot fit does not have.
+def _resolve_bracket(bars_c, i, direction, target_px, stop_px, horizon, n):
+    """
+    A fixed bracket around an entry that has already happened, rather than
+    barriers tracking a sloping line.
+
+    Used for the phases that begin AFTER the line has been left behind: a
+    breakout enters at the break, a retest enters on the way back. From that
+    point the line is history and what matters is whether price continues.
+    `direction` is +1 when the trade is long, -1 when short.
     """
     end = min(n - 1, i + horizon)
     for j in range(i + 1, end + 1):
-        tp, sp = tgt_at(j), stop_at(j)
-        hit_t, hit_s = _hits(ctx, j, tp, sp, direction)
-        if hit_t and hit_s:
-            # The bar holds both. This is the whole reason the module exists:
-            # guessing here is how a backtest flatters itself.
-            verdict, how = ib_resolve(ctx.mode, ctx.sub, ctx.times[j],
-                                      direction, sp, tp)
-            ctx.ambiguous += 1
-            ctx.resolved_by[how] = ctx.resolved_by.get(how, 0) + 1
-            return verdict, j
-        if hit_t:
-            return TARGET, j
-        if hit_s:
-            return STOP, j
-    return None, None
+        c = bars_c[j]
+        if direction > 0:
+            if c >= target_px:
+                return HOLD, j
+            if c <= stop_px:
+                return BREAK, j
+        else:
+            if c <= target_px:
+                return HOLD, j
+            if c >= stop_px:
+                return BREAK, j
+    return CHOP, None
 
 
-def _outcome(hit):
-    """
-    TARGET/STOP/None -> the diagnostic vocabulary.
-
-    Every phase orients its barriers so that the TARGET is the favourable one:
-    the bounce holding, or the break continuing. One mapping therefore serves
-    all three, and one expectancy calculation prices all three.
-    """
-    return CHOP if hit is None else (HOLD if hit == TARGET else BREAK)
-
-
-def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
+def run(bars, tf, params: Params = None, dp: DiagParams = None,
+        sensitivity=None):
     """
     Returns (events DataFrame, summary DataFrame).
 
     One row per approach, per arm ('line', 'placebo', 'random'), with the
     outcome, the line's quality at that bar, and the ATR at that bar.
-
-    `symbol` is needed only for dp.resolution == INTRABAR, which loads sub-bars
-    to settle bars that reached both barriers. Without it the walk degrades to
-    PESSIMISTIC on those bars and says so in ev.attrs.
     """
     dp = dp or DiagParams()
-    if dp.resolution not in RESOLUTIONS:
-        raise ValueError('resolution must be one of %s' % (RESOLUTIONS,))
-    eng = TrendlineEngine(tf, TF_MS[tf], params or Params(), record_tradeable=True)
+    eng = TrendlineEngine(tf, TF_MS[tf], params or Params(),
+                          record_tradeable=True, sensitivity=sensitivity)
     snaps = eng.walk(bars)
 
     close = np.asarray(bars['close'], dtype=float)
+    high = np.asarray(bars['high'], dtype=float)
+    low = np.asarray(bars['low'], dtype=float)
     atr = atr_series(bars, 14)
     n = len(close)
     rng = np.random.default_rng(dp.seed)
-
-    ctx = _Ctx(high=np.asarray(bars['high'], dtype=float),
-               low=np.asarray(bars['low'], dtype=float),
-               close=close, times=bars.index, mode=dp.resolution,
-               sub=(SubBars(symbol, tf, dp.sub_tf)
-                    if dp.resolution == INTRABAR and symbol else None))
 
     # per-line state: has price been far enough away to allow a new approach?
     armed = {}
@@ -248,7 +159,9 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
         a = atr[i]
         if not np.isfinite(a) or a <= 0:
             continue
-        for line_id, role, value, quality, touches in snap.tradeable:
+        for k_idx, (line_id, role, value, quality, touches) in enumerate(snap.tradeable):
+            status = (snap.tradeable_status[k_idx]
+                      if k_idx < len(snap.tradeable_status) else '')
             geom.setdefault(line_id, {})[i] = value
             dist = abs(close[i] - value) / a
             was_armed = armed.get(line_id, False)
@@ -268,12 +181,12 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
             if len(ks) > 1:
                 slope = (seen[ks[-1]] - seen[ks[0]]) / max(1, ks[-1] - ks[0])
             base = value
+            move = dp.move_atr * a
             # HOLD is the favourable outcome, so the target barrier is the one
             # a hold has to reach: above for support, below for resistance.
-            # `side` carries that orientation into the walk, which is why one
-            # pair of closures covers both roles.
             tgt = (dp.target_atr if dp.target_atr is not None else dp.move_atr) * a
             stp = (dp.stop_atr if dp.stop_atr is not None else dp.move_atr) * a
+            up_move, down_move = (tgt, stp) if side > 0 else (stp, tgt)
 
             def val_at(j, base=base, slope=slope, i0=i):
                 return base + slope * (j - i0)
@@ -286,14 +199,18 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
             # ask whether a hold-rate edge survives the geometry it is traded on.
             # occurred_at is recorded because a bar INDEX is not reproducible --
             # it shifts the moment the data start date changes.
-            # approach_bar is the PAIRING key. `bar` is overwritten by the
-            # breakout and retest rows with the bar they actually entered on,
-            # which differs between the line and placebo arms -- so it cannot
-            # join the two arms of one approach. This can, and that join is
-            # what makes a paired test possible.
-            common = dict(bar=i, approach_bar=i, occurred_at=bars.index[i],
-                          dist_atr=dist, line_id=line_id, role=role,
-                          quality=quality, touches=touches, atr=a, tf=tf)
+            # `bar` is overwritten to the break bar on the breakout/retest
+            # rows, so the APPROACH bar is carried separately. Without it the
+            # two arms cannot be paired for those phases: they break on
+            # different bars, and pairing on the break bar silently selects only
+            # the cases where they coincide -- which are exactly the cases where
+            # the outcome is identical by construction, because the post-break
+            # bracket is anchored on the entry price and never references the
+            # line again.
+            common = dict(status=status, bar=i, approach_bar=i,
+                          occurred_at=bars.index[i], dist_atr=dist,
+                          line_id=line_id, role=role, quality=quality,
+                          touches=touches, atr=a, tf=tf)
             tgt_atr = dp.target_atr if dp.target_atr is not None else dp.move_atr
             stp_atr = dp.stop_atr if dp.stop_atr is not None else dp.move_atr
             off = dp.placebo_atr * a * (1 if rng.random() < 0.5 else -1)
@@ -303,10 +220,8 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
 
             for arm in ('line', 'placebo'):
                 lv = arm_val(arm)
-                hit, j_res = _walk(ctx, i, dp.horizon, n,
-                                   lambda j, f=lv: f(j) + side * tgt,
-                                   lambda j, f=lv: f(j) - side * stp, side)
-                outcome = _outcome(hit)
+                outcome, j_res = _resolve(close, lv, i, side, move,
+                                          dp.horizon, n, up_move, down_move)
                 if 'approach' in dp.phases:
                     rows.append({**common, 'arm': arm, 'phase': 'approach',
                                  'outcome': outcome})
@@ -319,12 +234,21 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
                 tp = ent + bdir * tgt_atr * a
                 sl = ent - bdir * stp_atr * a
                 if 'breakout' in dp.phases:
-                    bo = _outcome(_walk(ctx, j_res, dp.horizon, n,
-                                        lambda j, v=tp: v, lambda j, v=sl: v,
-                                        bdir)[0])
+                    bo, _ = _resolve_bracket(close, j_res, bdir, tp, sl,
+                                             dp.horizon, n)
+                    # How energetic was the candle that actually broke it? The
+                    # engine used to record every break identically; this is the
+                    # claim that a big committed candle differs from a small
+                    # hesitant one, measured at the bar the barrier was crossed.
+                    bs = _break_strength(high, low, close, j_res, atr[j_res],
+                                         Role.SUPPORT if side > 0 else Role.RESISTANCE)
                     rows.append({**common, 'arm': arm, 'phase': 'breakout',
                                  'bar': j_res, 'occurred_at': bars.index[j_res],
-                                 'dist_atr': 0.0, 'outcome': bo})
+                                 'dist_atr': 0.0, 'outcome': bo,
+                                 'break_body_atr': bs['body_atr'],
+                                 'break_range_atr': bs['range_atr'],
+                                 'break_close_pos': bs['close_pos'],
+                                 'break_conviction': bs['conviction']})
 
                 if 'retest' in dp.phases:
                     # price must come back to the broken line before continuing
@@ -338,9 +262,8 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
                         ent2 = close[k]
                         tp2 = ent2 + bdir * tgt_atr * a
                         sl2 = ent2 - bdir * stp_atr * a
-                        rt = _outcome(_walk(ctx, k, dp.horizon, n,
-                                            lambda j, v=tp2: v,
-                                            lambda j, v=sl2: v, bdir)[0])
+                        rt, _ = _resolve_bracket(close, k, bdir, tp2, sl2,
+                                                 dp.horizon, n)
                         rows.append({**common, 'arm': arm, 'phase': 'retest',
                                      'bar': k, 'occurred_at': bars.index[k],
                                      'dist_atr': 0.0, 'outcome': rt})
@@ -349,11 +272,11 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
             rj = int(rng.integers(20, max(21, n - dp.horizon - 1)))
             if np.isfinite(atr[rj]) and atr[rj] > 0 and 'approach' in dp.phases:
                 rbase = close[rj]
-                r_tgt = rbase + side * tgt_atr * atr[rj]
-                r_stp = rbase - side * stp_atr * atr[rj]
-                r_out = _outcome(_walk(ctx, rj, dp.horizon, n,
-                                       lambda j, v=r_tgt: v,
-                                       lambda j, v=r_stp: v, side)[0])
+                r_up = (tgt_atr if side > 0 else stp_atr) * atr[rj]
+                r_dn = (stp_atr if side > 0 else tgt_atr) * atr[rj]
+                r_out, _ = _resolve(close, lambda j, b=rbase: b, rj, side,
+                                    dp.move_atr * atr[rj], dp.horizon, n,
+                                    r_up, r_dn)
                 # the random arm fires at an unrelated bar and has no line to
                 # be offset from, so its bar/time/distance are its own
                 rows.append({**common, 'arm': 'random', 'phase': 'approach',
@@ -361,11 +284,6 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None, symbol=None):
                              'dist_atr': np.nan, 'outcome': r_out})
 
     ev = pd.DataFrame(rows)
-    # How often finer data was actually needed, and how often it answered. A
-    # high fallback rate means the run is closer to PESSIMISTIC than it claims.
-    ev.attrs['resolution'] = dp.resolution
-    ev.attrs['ambiguous_bars'] = ctx.ambiguous
-    ev.attrs['resolved_by'] = dict(ctx.resolved_by)
     return ev, summarise(ev)
 
 

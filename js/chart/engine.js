@@ -13,7 +13,7 @@
  */
 
 import { INDICATORS, runStudy, studyTitle, heikinAshi } from './indicators.js';
-import { TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp } from '../util.js';
+import { TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp, withZone, zoneLabel } from '../util.js';
 
 const AXIS_W = 64;        // right-hand price axis
 const TIME_H = 22;        // bottom time axis
@@ -42,6 +42,37 @@ const COL = {
   tp: '#93C90F',
   draw: '#D9D9D6',
   pink: '#E31C79',
+};
+
+/* Ink for a snapshot that will land on a WHITE page.
+ *
+ * The chart is light-on-dark, so a transparent export washes out over white --
+ * pale grid, faint axis text, and a light-grey wordmark that disappears
+ * entirely. Transparency cannot fix that; the ink colour is the problem.
+ *
+ * Every draw site reads COL.<key> at call time rather than closing over the
+ * value, so an export can overwrite these keys, paint, and put the originals
+ * back. That is why this is a flat override map and not a second palette
+ * threaded through forty call sites.
+ *
+ * Brand hues are kept but darkened to carry on white: #93C90F green is a
+ * highlighter at 4.5:1 against paper, #171C8F navy already reads.
+ */
+const INK_ON_LIGHT = {
+  bg: '#FFFFFF',              // label chips only -- the canvas fill is skipped
+  grid: 'rgba(23,28,143,.14)',
+  gridStrong: 'rgba(23,28,143,.30)',
+  text: '#2B3440',
+  textFaint: '#63707F',
+  up: '#4E7A00',
+  down: '#C0135F',
+  upFill: 'rgba(78,122,0,.85)',
+  downFill: 'rgba(192,19,95,.85)',
+  cross: 'rgba(43,52,64,.45)',
+  line: '#0E7C8A',
+  area1: 'rgba(14,124,138,.22)',
+  area2: 'rgba(14,124,138,0)',
+  draw: '#3A3F45',
 };
 
 export const CHART_TYPES = {
@@ -102,11 +133,30 @@ export class Chart {
     this.digits = 5;
     this.positions = [];
     this.autoLines = [];
+    this.channels = [];
+    this.zones = [];
+    this.segments = [];
+    this.sdZones = [];
+    this.msEvents = [];
+    this.swings = [];
     this.message = 'loading…';
     this.view = { right: 0, span: 160, priceLock: null };
     this.cross = null;
     this.pending = null;          // in-progress drawing
     this.hoverDrawing = null;
+    /* Click-selected drawing. Separate from hover: a selection has to
+       survive the mouse moving away, which is the whole point of it. */
+    this.selectedDrawing = null;
+    /* Set only for the duration of a snapshot. Suppresses live-account and
+       interaction-state chrome (broker positions, selection accent) so the
+       exported PNG is a picture of the MARKET, not of this session. */
+    this._exporting = false;
+    /* Multiplies the canvas backing store during an export. The CSS size is
+       untouched, so layout, font sizes and line widths are all unchanged --
+       the same drawing is simply rasterised onto more pixels. */
+    this._exportScale = 1;
+    /* Backdrop baked into an export. null means leave it transparent. */
+    this._exportBg = '#FFFFFF';
     this.panes = [];
     this.dirty = false;
 
@@ -145,7 +195,7 @@ export class Chart {
   destroy() { this.ro.disconnect(); this.host.innerHTML = ''; }
 
   resize() {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (window.devicePixelRatio || 1) * this._exportScale;
     const w = Math.max(80, this.host.clientWidth);
     const h = Math.max(80, this.host.clientHeight);
     this.w = w; this.h = h;
@@ -198,6 +248,17 @@ export class Chart {
   }
 
   /** Algorithmic trendlines, each tagged with the tf it was detected on. */
+  setChannels(chs) { this.channels = chs || []; }
+
+  setZones(zs) { this.zones = zs || []; }
+
+  setSegments(sg) { this.segments = sg || []; }
+
+  setSdZones(zs) { this.sdZones = zs || []; }
+
+  setMsEvents(ev) { this.msEvents = ev || []; }
+  setSwings(sw) { this.swings = sw || []; }
+
   setAutoLines(lines) {
     this.autoLines = lines || [];
     this.draw();
@@ -208,7 +269,6 @@ export class Chart {
     this.draw();
   }
 
-  setSymbol(s) { this.symbol = s; this.bars = []; this.drawings = this._loadDrawings(); this.onChange(this); }
   setTimeframe(tf) { this.tf = tf; this.bars = []; this.drawings = this._loadDrawings(); this.onChange(this); }
   setType(t) { this.type = t; this._recalc(); this.draw(); this.onChange(this); }
   setTool(t) { this.tool = t; this.pending = null; this.canvas.style.cursor = t === 'cursor' ? 'crosshair' : 'copy'; }
@@ -382,8 +442,17 @@ export class Chart {
   _paint() {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
-    ctx.fillStyle = COL.bg;
-    ctx.fillRect(0, 0, this.w, this.h);
+    /* On export the backdrop comes from _exportBg: a solid colour is BAKED IN
+       rather than left transparent. Transparency looked correct in a compositor
+       and wrong everywhere else -- most viewers, chat clients and slide tools
+       paint their own backing behind a transparent PNG, usually a dark one, so
+       a light-ink chart landed on a dark field and appeared unchanged. A white
+       fill removes that dependency on whatever is showing the file. */
+    const back = this._exporting ? this._exportBg : COL.bg;
+    if (back) {
+      ctx.fillStyle = back;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
     this.msgEl.textContent = this.message || '';
     this.msgEl.style.display = this.message ? 'grid' : 'none';
     if (!this.bars.length) { this.legend.innerHTML = ''; return; }
@@ -403,7 +472,11 @@ export class Chart {
       ctx.clip();
       for (const run of pane.runs) this._plots(pane, run);
       if (pane.isMain) {
-        this._price(pane); this._foreignPlots(pane); this._autoLines(pane);
+        this._segments(pane); this._zones(pane); this._sdZones(pane);
+        this._price(pane); this._foreignPlots(pane);
+        this._channels(pane); this._autoLines(pane);
+        this._msEvents(pane);
+        this._swings(pane);
         this._positions(pane); this._drawings(pane);
       }
       ctx.restore();
@@ -683,6 +756,10 @@ export class Chart {
   }
 
   _positions(pane) {
+    /* Entry/SL/TP lines are live-account state. They are deliberately absent
+       from an exported image -- a snapshot gets shared, and a share should not
+       carry position size or where the stops sit. */
+    if (this._exporting) return;
     const ctx = this.ctx;
     for (const p of this.positions) {
       const rows = [
@@ -715,6 +792,301 @@ export class Chart {
      the app's up/down colours. Lines are anchored in time and mapped through
      idxOfTime, which is what lets a higher timeframe's geometry land correctly
      on a lower timeframe's x-axis. */
+  /* Regime episodes as a thin strip along the TOP of the price pane, not as a
+     full-height tint. A full-height band behind the candles would fight the
+     zones and channels already there, and the episode boundary -- the thing the
+     strip exists to show -- would be the least visible part of it. A strip
+     puts the boundaries on one line where they read as a sequence. */
+  _segments(pane) {
+    if (!this.segments || !this.segments.length) return;
+    const ctx = this.ctx;
+    const H = 3;
+    const COLOR = {
+      trending_up: COL.up, trending_down: COL.down,
+      sideways: COL.textFaint || COL.text, transition: COL.line,
+    };
+    ctx.save();
+    for (const sg of this.segments) {
+      const x0 = this.x(this.idxOfTime(sg.t0));
+      const x1 = this.x(this.idxOfTime(sg.t1));
+      if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
+      if (x1 < pane.x || x0 > pane.x + pane.w) continue;
+      const a = Math.max(pane.x, x0), b = Math.min(pane.x + pane.w, x1);
+      ctx.globalAlpha = sg.closed ? 0.55 : 0.85;
+      ctx.fillStyle = COLOR[sg.kind] || COL.line;
+      ctx.fillRect(a, pane.y + 1, Math.max(1, b - a), H);
+      /* Only label an episode wide enough to hold its own name. A clipped
+         "Downtr…" is worse than no label: it reads as a different word. */
+      if (b - a > 62) {
+        ctx.font = '8.5px "Roboto Mono", monospace';
+        ctx.globalAlpha = 0.7;
+        ctx.fillText(sg.label.toUpperCase(), a + 3, pane.y + H + 9);
+      }
+    }
+    ctx.restore();
+  }
+
+  /* Zones are drawn UNDER the candles, unlike lines and channels. A band is
+     the backdrop a bar prints against -- covering the wick that tested it would
+     hide the very evidence the zone is claiming. Everything else in this
+     renderer sits above price because it is an annotation ON the bars; a zone
+     is the region they moved through.
+
+     Colour is by ROLE AT THE CURRENT PRICE, not by the pivots that built it, so
+     a band flips from pink to green the moment price closes above it. That flip
+     is the whole idea behind "old resistance becomes support", and a zone
+     permanently coloured by its origin could never show it. */
+  _zones(pane) {
+    if (!this.zones || !this.zones.length) return;
+    const ctx = this.ctx;
+    const last = this.bars.length ? this.bars[this.bars.length - 1].c : NaN;
+    for (const z of this.zones) {
+      const yHi = this.y(pane, z.high);
+      const yLo = this.y(pane, z.low);
+      if (!Number.isFinite(yHi) || !Number.isFinite(yLo)) continue;
+      if (yLo < pane.y - 40 || yHi > pane.y + pane.h + 40) continue;
+      const role = z.roleAt(last);
+      const col = role === 'support' ? COL.up : COL.down;
+      /* A one-pixel band is invisible on a tight zone, and a tight zone is the
+         strongest kind -- so the drawn height has a floor while the EDGES stay
+         truthful, marked by the two boundary strokes. */
+      const h = Math.max(3, yLo - yHi);
+
+      ctx.save();
+      ctx.globalAlpha = 0.055 + 0.055 * (z.strength / 100);
+      ctx.fillStyle = col;
+      ctx.fillRect(pane.x, yHi, pane.w, h);
+
+      ctx.globalAlpha = 0.35 + 0.3 * (z.strength / 100);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      for (const y of [yHi, yLo]) {
+        ctx.beginPath(); ctx.moveTo(pane.x, y); ctx.lineTo(pane.x + pane.w, y); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      const label = `${role === 'support' ? 'DEMAND' : 'SUPPLY'} ×${z.touches}`;
+      ctx.font = '9px "Roboto Mono", monospace';
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = col;
+      ctx.fillText(label, pane.x + 6, clamp(yHi - 3, pane.y + 9, pane.y + pane.h - 3));
+      ctx.restore();
+    }
+  }
+
+  /* BOS / CHoCH marks: a short horizontal stub at the level that broke,
+     running from the swing that made it to the bar that took it out, with the
+     label above or below depending on direction.
+
+     Drawn as a LEVEL rather than a marker on the candle because that is what
+     the event is about -- the price that gave way. A triangle on the breaking
+     bar (which is how the break markers were first drawn, and then removed for
+     being unreadable) says an event happened; this says what it happened TO.
+
+     CHoCH is drawn brighter than BOS because it is the one that flips the bias,
+     not because it predicts better -- measured, CHoCH beat BOS in two eras out
+     of three and lost decisively in the third, so the distinction is
+     bookkeeping. Both carry about +4 pp against matched candles. */
+  /* Swing highs and lows with their HH / HL / LH / LL label.
+   *
+   * The dot sits ON the extreme; the label sits outside it -- above a high,
+   * below a low -- so the marker never covers the wick it is pointing at.
+   *
+   * Colour is the LABEL, not the swing kind: HH and HL are both bullish
+   * structure and both take the up colour, LH and LL the down colour. Colouring
+   * by high-vs-low instead would make every chart half green and half red and
+   * say nothing.
+   *
+   * Density is handled by dropping labels, never dots. At strength 3 on M15
+   * there are thousands of pivots; when they crowd, the shape of the sequence
+   * is still readable from the dots alone, whereas overlapping text is not
+   * readable at all.
+   */
+  _swings(pane) {
+    if (!this.swings || !this.swings.length) return;
+    const ctx = this.ctx;
+    const i0 = Math.floor(this.i0) - 2, i1 = Math.ceil(this.i1) + 2;
+    // Label only when there is room for one: 26px of text plus a gap.
+    const roomy = this.barW >= 5;
+    let lastLabelX = -Infinity;
+
+    ctx.save();
+    ctx.font = '8.5px "Roboto Mono", monospace';
+    ctx.textAlign = 'center';
+    for (const s of this.swings) {
+      if (s.i < i0 || s.i > i1) continue;
+      const x = this.x(s.i);
+      const y = this.y(pane, s.price);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (y < pane.y - 6 || y > pane.y + pane.h + 6) continue;
+
+      const bull = s.label === 'HH' || s.label === 'HL';
+      const col = s.label ? (bull ? COL.up : COL.down) : COL.textFaint;
+      ctx.fillStyle = col;
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (!s.label || !roomy || x - lastLabelX < 30) continue;
+      lastLabelX = x;
+      ctx.globalAlpha = 0.95;
+      ctx.fillText(s.label, x, s.isHigh ? y - 6 : y + 13);
+    }
+    ctx.restore();
+  }
+
+  _msEvents(pane) {
+    if (!this.msEvents || !this.msEvents.length) return;
+    const ctx = this.ctx;
+    const i0 = Math.floor(this.i0), i1 = Math.ceil(this.i1);
+    for (const e of this.msEvents) {
+      if (e.i < i0 - 5 || e.levelI > i1 + 5) continue;
+      const y = this.y(pane, e.level);
+      if (!Number.isFinite(y) || y < pane.y - 20 || y > pane.y + pane.h + 20) continue;
+      const xa = this.x(e.levelI);
+      const xb = this.x(e.i);
+      if (!Number.isFinite(xa) || !Number.isFinite(xb)) continue;
+      const bull = e.direction === 'bullish';
+      const col = bull ? COL.up : COL.down;
+      const choch = e.kind === 'choch';
+
+      ctx.save();
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = choch ? 0.9 : 0.55;
+      ctx.lineWidth = choch ? 1.4 : 1;
+      ctx.setLineDash(choch ? [] : [4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(Math.max(pane.x, xa), y);
+      ctx.lineTo(Math.min(pane.x + pane.w, xb), y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.font = '8.5px "Roboto Mono", monospace';
+      ctx.fillStyle = col;
+      ctx.globalAlpha = choch ? 0.95 : 0.7;
+      const label = choch ? 'CHoCH' : 'BOS';
+      const w = ctx.measureText(label).width;
+      const lx = clamp(xb - w - 2, pane.x + 2, pane.x + pane.w - w - 2);
+      ctx.fillText(label, lx, bull ? y - 3 : y + 9);
+      ctx.restore();
+    }
+  }
+
+  /* Supply/demand zones (js/chart/supplydemand.js) are drawn UNDER the candles
+     like pivot-cluster zones, but they start at the bar they were CONFIRMED and
+     run right rather than spanning the whole chart. That is the honest shape:
+     the zone did not exist before its impulse finished, and drawing it across
+     earlier bars would imply it was available to trade then.
+
+     A FRESH zone (never revisited) is drawn solid; a used one is dashed and
+     fainter. Fresh beat tested in all three eras measured (+6.16 vs +4.93,
+     +7.21 vs +6.53, +4.28 vs +3.39), so the distinction is real -- but the gap
+     is about one percentage point, so it is a hint in the styling rather than a
+     different colour. */
+  _sdZones(pane) {
+    if (!this.sdZones || !this.sdZones.length) return;
+    const ctx = this.ctx;
+    for (const z of this.sdZones) {
+      const yHi = this.y(pane, z.high);
+      const yLo = this.y(pane, z.low);
+      if (!Number.isFinite(yHi) || !Number.isFinite(yLo)) continue;
+      if (yLo < pane.y - 40 || yHi > pane.y + pane.h + 40) continue;
+      const x0 = Math.max(pane.x, this.x(this.idxOfTime(z.tConfirmed)));
+      const x1 = pane.x + pane.w;
+      if (x1 <= x0) continue;
+      const col = z.kind === 'demand' ? COL.up : COL.down;
+      const h = Math.max(3, yLo - yHi);
+
+      ctx.save();
+      ctx.globalAlpha = (z.fresh ? 0.10 : 0.055) + 0.05 * (z.strength / 100);
+      ctx.fillStyle = col;
+      ctx.fillRect(x0, yHi, x1 - x0, h);
+
+      ctx.globalAlpha = z.fresh ? 0.75 : 0.4;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash(z.fresh ? [] : [3, 3]);
+      for (const y of [yHi, yLo]) {
+        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      const label = `${z.kind === 'demand' ? 'DEMAND' : 'SUPPLY'}`
+        + `${z.fresh ? ' ●' : ' ×' + z.touches}`;
+      ctx.font = '9px "Roboto Mono", monospace';
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = col;
+      ctx.fillText(label, x0 + 4, clamp(yHi - 3, pane.y + 9, pane.y + pane.h - 3));
+      ctx.restore();
+    }
+  }
+
+  /* A channel is drawn as a FILLED corridor with a dashed median, not as two
+     more lines. Two extra lines would compete with the trendlines already on
+     the chart and the reader would have to work out which pair belongs
+     together; a tinted band says "price lives in here" at a glance, which is
+     the entire claim the object makes.
+
+     The fill is deliberately faint. It sits under the candles in z-order and
+     under the trendlines, because it is context for them, not a competitor. */
+  _channels(pane) {
+    if (!this.channels || !this.channels.length) return;
+    const ctx = this.ctx;
+    const rightT = this.tAt(Math.min(this.i1, this.bars.length - 1 + this.rightPad()));
+    for (const c of this.channels) {
+      const own = c.timeframe === this.tf;
+      const col = c.direction === 'up' ? COL.up : c.direction === 'down' ? COL.down : COL.text;
+      const t0 = Math.max(c.tStart, this.tAt(this.i0));
+      const t1 = rightT;
+      const x0 = this.x(this.idxOfTime(t0));
+      const x1 = this.x(this.idxOfTime(t1));
+      const lo0 = this.y(pane, c.lowerAt(t0)), hi0 = this.y(pane, c.upperAt(t0));
+      const lo1 = this.y(pane, c.lowerAt(t1)), hi1 = this.y(pane, c.upperAt(t1));
+      if (![lo0, hi0, lo1, hi1].every(Number.isFinite)) continue;
+
+      ctx.save();
+      /* A projected channel has one assumed rail. It is drawn fainter and its
+         label says so, because presenting an assumption at the same weight as a
+         measurement is how a chart lies quietly. */
+      const weak = c.kind === 'projected';
+      ctx.globalAlpha = (own ? 0.10 : 0.06) * (weak ? 0.6 : 1);
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(x0, hi0); ctx.lineTo(x1, hi1);
+      ctx.lineTo(x1, lo1); ctx.lineTo(x0, lo0);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.globalAlpha = (own ? 0.75 : 0.5) * (weak ? 0.65 : 1);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = own ? 1.4 : 1.1;
+      for (const [ya, yb] of [[hi0, hi1], [lo0, lo1]]) {
+        ctx.beginPath(); ctx.moveTo(x0, ya); ctx.lineTo(x1, yb); ctx.stroke();
+      }
+      // the median, dashed, as every hand-drawn channel carries
+      ctx.globalAlpha *= 0.6;
+      ctx.setLineDash([5, 5]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x0, (hi0 + lo0) / 2); ctx.lineTo(x1, (hi1 + lo1) / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const name = c.direction === 'up' ? 'ASCENDING' : c.direction === 'down' ? 'DESCENDING' : 'RANGE';
+      const label = `${TF_LABEL[c.timeframe] || c.timeframe} ${name} CHANNEL${weak ? ' (proj)' : ''}`;
+      ctx.font = '9px "Roboto Mono", monospace';
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = col;
+      const my = (hi1 + lo1) / 2;
+      const w = ctx.measureText(label).width;
+      ctx.fillText(label, Math.max(pane.x + 6, x1 - w - 8),
+                   clamp(my - 4, pane.y + 10, pane.y + pane.h - 6));
+      ctx.restore();
+    }
+  }
+
   _autoLines(pane) {
     if (!this.autoLines || !this.autoLines.length) return;
     const ctx = this.ctx;
@@ -728,10 +1100,17 @@ export class Chart {
       const yr = this.y(pane, l.p1.price + l.slope * (rightT - l.p1.t));
       if (!Number.isFinite(y1) || !Number.isFinite(yr)) continue;
 
+      /* `offered` marks a line the engine would hand a strategy (quality >= its
+         measured threshold). Lines below it are still drawn -- they are real
+         structure and hiding them left charts blank -- but at half weight, so
+         the eye separates "this is a level" from "this is a level worth
+         trading" without reading a single label. */
+      const weak = l.offered === false;
       ctx.save();
       ctx.strokeStyle = col;
-      ctx.globalAlpha = (own ? 0.95 : 0.62) * (l.status === 'ACTIVE' ? 1 : 0.82);
-      ctx.lineWidth = own ? 1.5 : 2;
+      ctx.globalAlpha = (own ? 0.95 : 0.62) * (l.status === 'ACTIVE' ? 1 : 0.82)
+                        * (weak ? 0.45 : 1);
+      ctx.lineWidth = (own ? 1.5 : 2) * (weak ? 0.7 : 1);
       ctx.setLineDash(own ? [] : (AUTO_DASH[l.tf] || [8, 4]));
       ctx.beginPath();
       ctx.moveTo(x1, y1);
@@ -739,13 +1118,32 @@ export class Chart {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // anchors, so it is obvious which swings built the line
-      if (own) {
-        ctx.globalAlpha = 0.95;
-        for (const p of [l.p1, l.p2]) {
-          ctx.beginPath();
-          ctx.arc(this.x(this.idxOfTime(p.t)), this.y(pane, p.price), 2.5, 0, Math.PI * 2);
+      /* Anchors, so it is obvious WHICH swings built the line -- a trendline
+         with no visible pivots is an assertion, and the two dots are the
+         evidence for it. Drawn for projected lines too, not just own-timeframe:
+         the anchors of an H4 line are exactly what a 15m chart cannot show you
+         otherwise, which is the case where they matter most.
+
+         The second anchor is hollow. It is the later of the two, so it is the
+         one price is currently working away from, and distinguishing them makes
+         the line's direction readable without following it to its end. */
+      ctx.globalAlpha = weak ? 0.5 : 0.95;
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = col;
+      ctx.fillStyle = col;
+      for (const [k, p] of [l.p1, l.p2].entries()) {
+        const px = this.x(this.idxOfTime(p.t));
+        const py = this.y(pane, p.price);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+        if (px < pane.x - 4 || px > pane.x + pane.w + 4) continue;
+        ctx.beginPath();
+        ctx.arc(px, py, own ? 3 : 2.5, 0, Math.PI * 2);
+        if (k === 1) {
+          ctx.fillStyle = COL.bg || '#02101f';
+          ctx.fill();
+          ctx.stroke();
           ctx.fillStyle = col;
+        } else {
           ctx.fill();
         }
       }
@@ -771,11 +1169,13 @@ export class Chart {
     const ctx = this.ctx;
     const all = this.pending ? [...this.drawings, this.pending] : this.drawings;
     for (const d of all) {
-      const col = d === this.hoverDrawing ? COL.pink : (d.color || COL.draw);
+      const sel = !this._exporting && d === this.selectedDrawing;
+      const hov = !this._exporting && d === this.hoverDrawing;
+      const col = (sel || hov) ? COL.pink : (d.color || COL.draw);
       ctx.save();
       ctx.strokeStyle = col;
       ctx.fillStyle = col;
-      ctx.lineWidth = d === this.hoverDrawing ? 2 : 1.4;
+      ctx.lineWidth = sel ? 2.6 : hov ? 2 : 1.4;
       const p1 = d.p1 ? { x: this.x(this.idxOfTime(d.p1.t)), y: this.y(pane, d.p1.price) } : null;
       const p2 = d.p2 ? { x: this.x(this.idxOfTime(d.p2.t)), y: this.y(pane, d.p2.price) } : null;
 
@@ -815,7 +1215,7 @@ export class Chart {
 
   _axisY(pane) {
     const ctx = this.ctx;
-    ctx.fillStyle = COL.axisBg;
+    ctx.fillStyle = this._exporting ? 'transparent' : COL.axisBg;
     ctx.fillRect(this.plot.r, pane.y, AXIS_W, pane.h);
     ctx.strokeStyle = COL.grid;
     ctx.beginPath();
@@ -862,7 +1262,7 @@ export class Chart {
 
   _axisX() {
     const ctx = this.ctx;
-    ctx.fillStyle = COL.axisBg;
+    ctx.fillStyle = this._exporting ? 'transparent' : COL.axisBg;
     ctx.fillRect(0, this.plot.b, this.w, TIME_H);
     ctx.strokeStyle = COL.grid;
     ctx.beginPath();
@@ -1087,12 +1487,153 @@ export class Chart {
         e.preventDefault();
         this.drawings = this.drawings.filter((d) => d !== hit);
         this.hoverDrawing = null;
+        if (this.selectedDrawing === hit) this.selectedDrawing = null;
+    /* Click-selected drawing. Separate from hover: a selection has to
+       survive the mouse moving away, which is the whole point of it. */
+    this.selectedDrawing = null;
         this._persist();
         this.draw();
       }
     });
 
-    c.addEventListener('click', () => this.onActivate(this));
+    c.addEventListener('click', (e) => {
+      this.onActivate(this);
+      /* Selecting is a CURSOR-tool action. While a drawing tool is armed the
+         click belongs to the tool, or you could never place a second anchor on
+         top of an existing line. */
+      if (this.tool !== 'cursor') return;
+      const hit = this._hitDrawing(local(e));
+      this.selectedDrawing = hit || null;
+      this.draw();
+    });
+  }
+
+  /** Remove the selected drawing. Returns false if there was nothing selected. */
+  deleteSelected() {
+    if (!this.selectedDrawing) return false;
+    this.drawings = this.drawings.filter((d) => d !== this.selectedDrawing);
+    this.selectedDrawing = null;
+    this.hoverDrawing = null;
+    this._persist();
+    this.draw();
+    return true;
+  }
+
+  clearSelection() {
+    if (!this.selectedDrawing) return;
+    this.selectedDrawing = null;
+    this.draw();
+  }
+
+  /**
+   * The chart as a PNG data URL — canvas only, so it captures exactly what is
+   * rendered and nothing of the surrounding page.
+   */
+  /**
+   * Brand mark top-left, capture time bottom-right -- drawn straight onto the
+   * canvas so they survive into the PNG. Painted AFTER the chart and outside
+   * the pane clip, so nothing can cover them.
+   *
+   * The mark is the four-square logo redrawn in canvas primitives rather than
+   * an <img>. Loading an image would make snapshot() async, and a rasterised
+   * copy would blur on a HiDPI canvas; five rects cost nothing and stay sharp
+   * at any dpr.
+   */
+  _stampBrand() {
+    const ctx = this.ctx;
+    const { l, r, b } = this.plot;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.9;
+
+    // --- logo, top-left of the plot area ---
+    const M = 28;                                   // mark size in px
+    const x = l + 12, y = this.plot.t + 12, u = M / 32;   // 32-unit artboard
+    const sq = (rx, ry, fill) => {
+      ctx.fillStyle = fill;
+      ctx.fillRect(x + rx * u, y + ry * u, 14 * u, 14 * u);
+    };
+    sq(0, 0, '#171C8F'); sq(18, 0, '#FF9E1B');
+    sq(0, 18, '#93C90F'); sq(18, 18, '#E31C79');
+    sq(9, 9, '#B1B3B3');
+
+    ctx.font = '700 21px Inter, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    const tx = x + M + 10, ty = y + M / 2;
+    ctx.fillStyle = COL.draw;
+    ctx.fillText('DIANUR', tx, ty);
+    ctx.fillStyle = COL.pink;
+    ctx.fillText('FX', tx + ctx.measureText('DIANUR').width, ty);
+
+    // --- symbol + timeframe, under the mark ---
+    ctx.font = '13px "Roboto Mono", monospace';
+    ctx.fillStyle = COL.text;
+    ctx.fillText(`${this.symbol}  ${TF_LABEL[this.tf] || this.tf}`, x, y + M + 12);
+
+    // --- capture time, bottom-right, above the time axis ---
+    const off = -new Date().getTimezoneOffset() / 60;
+    const tz = `UTC${off >= 0 ? '+' : ''}${off}`;
+    ctx.font = '11px "Roboto Mono", monospace';
+    ctx.fillStyle = COL.textFaint;
+    ctx.textAlign = 'right';
+    ctx.fillText(`${stamp(Date.now())} ${zoneLabel()}`, r - 8, b - 10);
+    ctx.restore();
+  }
+
+  /**
+   * PNG of exactly what is rendered -- candles, studies, drawings, panels --
+   * with the brand mark and capture time added and live-account chrome removed.
+   * Paints twice: once in export mode for the capture, once normally to put
+   * the interactive chart back.
+   *
+   * _paint() directly, NOT draw(). draw() only schedules a repaint on the next
+   * animation frame, so toDataURL would capture the frame BEFORE export mode
+   * took effect -- which is exactly how the first version shipped an image
+   * with the position lines still in it.
+   *
+   * `scale` multiplies the backing store on top of the device ratio, so a 2
+   * on an already-2x display exports at 4x the CSS pixels. Layout is driven by
+   * this.w/this.h, which do not change, so nothing reflows -- text and lines
+   * are simply rasterised finer rather than being drawn larger.
+   */
+  snapshot({ scale = 2, ink = 'light', background = ink === 'light' ? '#FFFFFF' : null,
+             zone = 'utc' } = {}) {
+    /* An export renders in UTC while the app itself runs on broker time. The
+       image outlives the session that made it: "14:00" tells whoever opens the
+       file nothing unless the frame is universal, and the axis, the crosshair
+       and the corner stamp all have to agree on that frame -- which is why the
+       whole paint happens inside withZone rather than the stamp alone. */
+    return withZone(zone, () => this._snapshot(scale, ink, background));
+  }
+
+  _snapshot(scale, ink, background) {
+    const prev = this._exporting;
+    const prevBg = this._exportBg;
+    this._exportBg = background;
+    const saved = {};
+    if (ink === 'light') {
+      for (const k of Object.keys(INK_ON_LIGHT)) {
+        saved[k] = COL[k];
+        COL[k] = INK_ON_LIGHT[k];
+      }
+    }
+    this._exporting = true;
+    this._exportScale = scale;
+    this.resize();                 // re-rasterise at the export resolution
+    try {
+      this._paint();
+      this._stampBrand();
+      return this.canvas.toDataURL('image/png');
+    } catch {
+      return null;
+    } finally {
+      for (const k of Object.keys(saved)) COL[k] = saved[k];
+      this._exporting = prev;
+      this._exportBg = prevBg;
+      this._exportScale = 1;
+      this.resize();               // back to screen resolution; queues a repaint
+      this._paint();
+    }
   }
 
   _toolClick(p) {

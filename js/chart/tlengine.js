@@ -21,10 +21,12 @@
  */
 
 import { findPivots } from './trendlines.js';
+import { forRole, pivotProminence } from './sensitivity.js';
 
 export const Status = {
   CANDIDATE: 'CANDIDATE', CONFIRMED: 'CONFIRMED', ACTIVE: 'ACTIVE',
   BROKEN: 'BROKEN', ARCHIVED: 'ARCHIVED',
+  RECLAIMED: 'RECLAIMED',
 };
 export const Role = { SUPPORT: 'support', RESISTANCE: 'resistance' };
 export const Direction = { UP: 'up', DOWN: 'down', HORIZONTAL: 'horizontal' };
@@ -46,11 +48,31 @@ export const DEFAULT_PARAMS = {
   tolAtr: 0.32,         // touch / break tolerance, in ATR
   minSwingAtr: 0,       // a pivot must stand out this far to count
   maxViolations: 0,     // closes beyond tolerance before BROKEN
+  minTouches: 3,        // distinct touches that confirm a candidate (anchors count)
+  breakConfirmBars: 1,  // CONSECUTIVE closes beyond tolerance before a break counts
+  /* Consecutive closes back on the working side that revive a BROKEN line.
+     0 = the original one-way lifecycle. Deliberately harder than breaking: a
+     line should not resurrect because price brushed past it. Only possible
+     within `archiveAfter` bars of the break. See sim/tl/lines.py. */
+  /* ON by default — see sim/tl/engine.py for the pooled measurement. The
+     reclaimed slice runs +4.76 / +3.10 / +4.75 pp across three eras once
+     gated by reclaimMinQuality. */
+  reclaimConfirmBars: 3,
+  /* Quality floor a RECLAIMED line must clear to be OFFERED. Measured, not
+     chosen: 42,273 reclaimed approaches over three eras, bucketed on the
+     reclaimed line's LIVE score — >=0 gives +1.12 pp, >=70 gives +3.41 pp
+     (z 7.59), positive in all three eras (+3.02/+3.61/+3.85), while the half
+     below is negative in two.
+
+     Applied after rescoring, never at the transition: the score frozen at the
+     break is almost always above 70 (the line was tradeable before it broke),
+     so gating there filtered 9% of reclaims and changed nothing. */
+  reclaimMinQuality: 70,
   maxLive: 20,          // per role: a holding pool, not the offer list
   maxOffered: 4,        // per role, what consumers actually see
   archiveAfter: 40,     // bars after breaking before archiving
   maxDistanceAtr: 10,   // archive a line this far from price
-  minQuality: 25,       // below this a line is not offered
+  minQuality: 90,       // below this a line is not offered — see sim/tl/engine.py
 };
 
 const round2 = (v) => Math.round(v * 100) / 100;
@@ -118,6 +140,10 @@ export class Trendline {
     this.atrAtCreation = o.atrAtCreation;
     this.lastPriceDistanceAtr = 0;
     this._lastTouchI = -10000;
+    this._run = 0;
+    this._back = 0;
+    this.reclaims = 0;
+    this.reclaimedAt = null;
   }
 
   valueAt(tMs) { return this.intercept + this.slope * (tMs - this.pivot1.t); }
@@ -131,21 +157,22 @@ export class Trendline {
 
   get isLive() {
     return this.status === Status.CANDIDATE || this.status === Status.CONFIRMED
-        || this.status === Status.ACTIVE;
+        || this.status === Status.ACTIVE || this.status === Status.RECLAIMED;
   }
 
   /** Only a confirmed line is worth acting on; a candidate is a guess. */
   get isTradeable() {
-    return this.status === Status.CONFIRMED || this.status === Status.ACTIVE;
+    return this.status === Status.CONFIRMED || this.status === Status.ACTIVE
+           || this.status === Status.RECLAIMED;
   }
 
-  registerTouch(tMs, barI, minGapBars) {
+  registerTouch(tMs, barI, minGapBars, minTouches = 3) {
     if (barI - this._lastTouchI < minGapBars) return false;
     this._lastTouchI = barI;
     this.touches += 1;
     this.tests += 1;
     this.lastTestAt = tMs;
-    if (this.status === Status.CANDIDATE && this.touches >= 3) {
+    if (this.status === Status.CANDIDATE && this.touches >= minTouches) {
       this.status = Status.CONFIRMED;
       this.confirmedAt = tMs;
     } else if (this.status === Status.CONFIRMED) {
@@ -154,8 +181,14 @@ export class Trendline {
     return true;
   }
 
-  registerViolation(tMs, maxViolations) {
+  /** A close back on the working side: resets the consecutive run. */
+  registerInside() { this._run = 0; }
+
+  registerViolation(tMs, maxViolations, confirmBars = 1) {
     if (this.status === Status.BROKEN) return false;   // it does not break twice
+    this._back = 0;
+    this._run = (this._run || 0) + 1;
+    if (this._run < Math.max(1, confirmBars)) return false;
     this.violations += 1;
     if (this.violations > maxViolations) {
       this.status = Status.BROKEN;
@@ -164,6 +197,29 @@ export class Trendline {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Price closed back on the working side and STAYED there.
+   *
+   * BROKEN was terminal, and that buried lines the market was still using: on
+   * gold H1 a rising support with five touches sat one point under price,
+   * marked BROKEN because price had left it 29 bars earlier — and seven of the
+   * ten bars since had closed back above it.
+   *
+   * The violation is NOT forgiven: `violations` stays, so the quality penalty
+   * and `qualityAtBreak` both survive. A reclaimed line is a line with a scar.
+   */
+  registerReclaim(tMs, confirmBars) {
+    if (this.status !== Status.BROKEN) { this._back = 0; return false; }
+    this._back = (this._back || 0) + 1;
+    if (this._back < Math.max(1, confirmBars)) return false;
+    this._back = 0;
+    this._run = 0;
+    this.status = Status.RECLAIMED;
+    this.reclaimedAt = tMs;
+    this.reclaims = (this.reclaims || 0) + 1;
+    return true;
   }
 
   archive(tMs, reason = '') {
@@ -194,10 +250,20 @@ export class Trendline {
 
 /* ---------------------------------------------------------------- engine ---- */
 export class TrendlineEngine {
-  constructor(timeframe, tfMs, params = {}) {
+  /* `sensitivity` is an optional object from js/chart/sensitivity.js. When
+     given, its per-SIDE values override the flat ones in `params`: pivot
+     window, prominence bar, touch/break tolerance and the offer bar.
+     Left out, everything comes from `params` exactly as before.
+
+     Unlike the Python engine this takes only a STATIC sensitivity, never a
+     callable. The chart calibrates once at the bar it is drawing, so a rolling
+     calibration has nothing to vary over — and the rolling variant measured
+     WORSE than the static one in all three eras, so there is nothing to port. */
+  constructor(timeframe, tfMs, params = {}, sensitivity = null) {
     this.timeframe = timeframe;
     this.tfMs = tfMs;
     this.p = { ...DEFAULT_PARAMS, ...params };
+    this.sens = sensitivity;
     this._seq = 0;
   }
 
@@ -207,19 +273,44 @@ export class TrendlineEngine {
   }
 
   /** One snapshot per bar. Strictly forward, so state at i only saw bars <= i. */
+  tolAtrFor(role) {
+    return this.sens ? forRole(this.sens, role).tolAtr : this.p.tolAtr;
+  }
+
+  minQualityFor(role) {
+    return this.sens ? forRole(this.sens, role).minQuality : this.p.minQuality;
+  }
+
+  strength() {
+    return this.sens ? this.sens.support.strength : this.p.strength;
+  }
+
+  /** Tradeable, and above the measured floor if it is a reclaimed line. */
+  offerable(l) {
+    if (!l.isTradeable) return false;
+    if (l.status === Status.RECLAIMED
+        && l.qualityScore < this.p.reclaimMinQuality) return false;
+    return true;
+  }
+
   walk(bars) {
     const n = bars.length;
     const atr = atrSeries(bars, 14);
-    let { highs, lows } = findPivots(bars, this.p.strength);
+    const strength = this.strength();
+    let { highs, lows } = findPivots(bars, strength);
     // A fractal pivot can be a 0.1 ATR wiggle; requiring a minimum swing depth
     // is what separates a bar higher than its neighbours from a swing the market
     // actually turned at. Mirrors _significant() in sim/tl/engine.py.
-    if (this.p.minSwingAtr > 0) {
-      highs = significant(highs, bars, atr, this.p.strength, this.p.minSwingAtr, true);
-      lows = significant(lows, bars, atr, this.p.strength, this.p.minSwingAtr, false);
-    }
-    const highsByConf = bucket(highs, n, this.p.strength);
-    const lowsByConf = bucket(lows, n, this.p.strength);
+    /* Prominence bars are per side when a sensitivity is supplied: a swing HIGH
+       feeds resistance, a swing LOW feeds support. They are only meaningful
+       alongside the wider window — measured over +/-strength, a 7-bar depth
+       barely discriminates, which is why the two must move together. */
+    const hiBar = this.sens ? this.sens.resistance.minProminenceAtr : this.p.minSwingAtr;
+    const loBar = this.sens ? this.sens.support.minProminenceAtr : this.p.minSwingAtr;
+    if (hiBar > 0) highs = significant(highs, bars, atr, strength, hiBar, true);
+    if (loBar > 0) lows = significant(lows, bars, atr, strength, loBar, false);
+    const highsByConf = bucket(highs, n, strength);
+    const lowsByConf = bucket(lows, n, strength);
 
     const live = { [Role.SUPPORT]: [], [Role.RESISTANCE]: [] };
     const pool = { [Role.SUPPORT]: [], [Role.RESISTANCE]: [] };
@@ -228,7 +319,7 @@ export class TrendlineEngine {
     for (let i = 0; i < n; i++) {
       const t = bars[i].t;
       const a = Number.isFinite(atr[i]) ? atr[i] : 0;
-      const tol = a * this.p.tolAtr;
+      const tol = a * this.p.tolAtr;      // default; per-role below
       const close = bars[i].c;
 
       // 1. newly visible pivots enter the pool
@@ -263,19 +354,21 @@ export class TrendlineEngine {
             continue;
           }
 
+          const rtol = a * this.tolAtrFor(role);
           let breached, grazed;
           if (role === Role.RESISTANCE) {
-            breached = close > value + tol;
-            grazed = Math.abs(bars[i].h - value) <= tol;
+            breached = close > value + rtol;
+            grazed = Math.abs(bars[i].h - value) <= rtol;
           } else {
-            breached = close < value - tol;
-            grazed = Math.abs(bars[i].l - value) <= tol;
+            breached = close < value - rtol;
+            grazed = Math.abs(bars[i].l - value) <= rtol;
           }
 
           if (breached) {
             // a break only counts if the market had ACKNOWLEDGED the line first
             const wasTradeable = line.isTradeable;
-            if (line.registerViolation(t, this.p.maxViolations)) {
+            if (line.registerViolation(t, this.p.maxViolations,
+                                       this.p.breakConfirmBars)) {
               if (wasTradeable) {
                 brokenNow.push(line);
               } else {
@@ -284,8 +377,26 @@ export class TrendlineEngine {
                 continue;
               }
             }
-          } else if (grazed) {
-            line.registerTouch(t, i, this.p.strength + 1);
+          } else {
+            /* Close back on the working side: the run resets, which is what
+               makes breakConfirmBars CONSECUTIVE rather than cumulative. The
+               original `else if (grazed)` semantics are preserved — a bar that
+               breached does not also count as a touch. */
+            line.registerInside();
+            if (grazed) {
+              line.registerTouch(t, i, strength + 1, this.p.minTouches);
+            }
+          }
+
+          /* 4b. a broken line that price has closed back through, and stayed.
+             Placed AFTER the touch block so both engines evaluate it at the
+             same point in the bar — the first port had it before, and the two
+             produced different status sequences. */
+          if (this.p.reclaimConfirmBars > 0 && line.status === Status.BROKEN) {
+            const inside = role === Role.RESISTANCE
+              ? close < value - rtol : close > value + rtol;
+            if (inside) line.registerReclaim(t, this.p.reclaimConfirmBars);
+            else line._back = 0;
           }
 
           // 5. archive what no longer matters
@@ -372,7 +483,8 @@ export class TrendlineEngine {
     let best = null;
     let bestKey = null;
     for (const l of lines) {
-      if (!l.isTradeable || l.qualityScore < this.p.minQuality) continue;
+      if (!this.offerable(l)) continue;
+      if (l.qualityScore < this.minQualityFor(role)) continue;
       const v = l.valueAt(t);
       if (role === Role.SUPPORT && v > lastClose) continue;
       if (role === Role.RESISTANCE && v < lastClose) continue;
@@ -425,16 +537,130 @@ function remove(arr, item) {
  * lifecycle state. `limitBars` walks only the recent tail for responsiveness —
  * the backtest always walks everything.
  */
-export function liveLines(bars, timeframe, { limitBars = 1500, params = {} } = {}) {
+/**
+ * Lines for DRAWING, which is deliberately a lower bar than lines for TRADING.
+ *
+ * `minQuality` (90) is a measured threshold: below ~80 a line holds several
+ * points LESS often than a random parallel level, in two disjoint out-of-sample
+ * eras. That is the right bar for what a strategy acts on. It is the wrong bar
+ * for what a chart shows -- at 90 a EURUSD 4h chart draws ZERO lines, and a
+ * structure tool that draws nothing is not being rigorous, it is being useless.
+ *
+ * So the two are separated. `minDraw` decides what appears; `minQuality` decides
+ * what is flagged `offered`, and the renderer draws the rest dimmer. You can see
+ * the structure and still tell at a glance which lines the engine would stand
+ * behind.
+ */
+/**
+ * Break EVENTS over the visible window: which bar a confirmed line failed on,
+ * and what it was worth at that moment.
+ *
+ * `qualityAtBreak` is frozen by the engine precisely so this can be honest --
+ * reading `qualityScore` after the walk would report the score the line
+ * eventually decayed to, not the score it had when the break happened.
+ *
+ * Only CONFIRMED lines count. A candidate breaking is a bad guess expiring.
+ *
+ * NOT DRAWN ON THE CHART. Markers for these were added and then removed: even
+ * deduplicated to one per bar and capped at 30, they were too busy to read
+ * across a timeframe -- 1200 bars of EURUSD 4h produce 562 raw break events, so
+ * any cap that leaves the chart legible is also a cap that hides most of them.
+ * The function stays because break events are worth QUERYING (sim/tl/ uses the
+ * same events for the breakout diagnostics); they are just not worth painting.
+ */
+export function breakEvents(bars, timeframe, { limitBars = 1500, params = {},
+                                               minQuality = null,
+                                               max = 40 } = {}) {
   if (!bars || bars.length < 40) return [];
   const slice = limitBars && bars.length > limitBars ? bars.slice(-limitBars) : bars;
-  const eng = new TrendlineEngine(timeframe, TF_MS[timeframe] || 900e3, params);
+  const offset = bars.length - slice.length;
+  /* Two calibrations, not one. `sensitivity` drives DETECTION and is the
+     permissive one -- a looser prominence bar means more swings survive, so
+     more lines exist to look at. `offerSensitivity` is the measured one and
+     only decides which of them are flagged `offered`. Running the engine at
+     the strict setting instead would delete the lines rather than dim them,
+     which is the mistake min_quality=90 made on its own. */
+  const eng = new TrendlineEngine(timeframe, TF_MS[timeframe] || 900e3, params,
+                                  sensitivity);
+  const atr = atrSeries(slice, 14);
+  const snaps = eng.walk(slice);
+  const bar = minQuality === null ? eng.p.minQuality : minQuality;
+  const out = [];
+  for (const s of snaps) {
+    if (!s.breaks || !s.breaks.length) continue;
+    for (const [role, price, quality] of s.breaks) {
+      if (!(quality >= bar)) continue;
+      out.push({
+        i: s.i + offset, t: s.t, tf: timeframe, role, price, quality,
+        /* A support failing is a DOWN break and a resistance failing is an UP
+           break: the direction is the opposite of the rail's own role, which is
+           the bit that reads backwards if it is not named. */
+        dir: role === Role.SUPPORT ? 'down' : 'up',
+      });
+    }
+  }
+  /* Several lines commonly fail on the SAME bar -- a cluster of near-parallel
+     supports all give way to one impulse candle. That is one event to a reader,
+     so only the strongest per bar is kept; without this a single sharp move
+     stamps six overlapping triangles on one candle.
+
+     Then a cap: 1200 bars of EURUSD 4h produce 562 raw breaks, roughly one
+     every two bars, which is a texture rather than a set of events. The most
+     RECENT are kept, because an old break is history the chart already shows in
+     its price. */
+  const byBar = new Map();
+  for (const e of out) {
+    const prev = byBar.get(e.i);
+    if (!prev || e.quality > prev.quality) byBar.set(e.i, e);
+  }
+  const kept = [...byBar.values()].sort((a, b) => a.i - b.i);
+  return max && kept.length > max ? kept.slice(-max) : kept;
+}
+
+export function liveLines(bars, timeframe,
+                          { limitBars = 1500, params = {}, minDraw = null,
+                            sensitivity = null, offerSensitivity = null } = {}) {
+  if (!bars || bars.length < 40) return [];
+  const slice = limitBars && bars.length > limitBars ? bars.slice(-limitBars) : bars;
+  /* Two calibrations, not one. `sensitivity` drives DETECTION and is the
+     permissive one -- a looser prominence bar means more swings survive, so
+     more lines exist to look at. `offerSensitivity` is the measured one and
+     only decides which of them are flagged `offered`. Running the engine at
+     the strict setting instead would delete the lines rather than dim them,
+     which is the mistake min_quality=90 made on its own. */
+  const eng = new TrendlineEngine(timeframe, TF_MS[timeframe] || 900e3, params,
+                                  sensitivity);
+  const atr = atrSeries(slice, 14);
   const snaps = eng.walk(slice);
   const last = snaps[snaps.length - 1];
   const seen = new Set();
   const out = [];
   for (const l of last.live) {
-    if (!l.isTradeable || seen.has(l.id)) continue;
+    /* Quality gates what is OFFERED, not what is tradeable: `isTradeable` is a
+       lifecycle fact (confirmed / active) and Snapshot.tradeable deliberately
+       keeps reporting every one of them so diagnostics can still MEASURE the
+       low-quality population. Drawing them was the mistake -- a sub-80 line is
+       measurably worse than a random parallel level. */
+    const bar = minDraw === null ? eng.p.minQuality : minDraw;
+    if (!eng.offerable(l) || l.qualityScore < bar || seen.has(l.id)) continue;
+    /* The offer bar comes from the strict calibration when one is supplied,
+       so `offered` keeps meaning "the engine would hand this to a strategy"
+       even though the population around it is deliberately wider. */
+    let isOffered;
+    if (offerSensitivity) {
+      /* A line is `offered` only if the STRICT calibration would have built it
+         at all: both anchors must clear its prominence bar, measured at its
+         window, as well as the quality bar. Checking quality alone would flag
+         lines the measured detector never sees, which is the opposite of what
+         the flag is for. */
+      const side = forRole(offerSensitivity, l.role);
+      const isHigh = l.role === Role.RESISTANCE;
+      const anchorsOk = [l.pivot1.i, l.pivot2.i].every((pi) =>
+        pivotProminence(slice, pi, side.strength, isHigh, atr) >= side.minProminenceAtr);
+      isOffered = anchorsOk && l.qualityScore >= side.minQuality;
+    } else {
+      isOffered = l.qualityScore >= eng.p.minQuality;
+    }
     seen.add(l.id);
     out.push({
       id: l.id, tf: timeframe, kind: l.role, status: l.status,
@@ -443,6 +669,9 @@ export function liveLines(bars, timeframe, { limitBars = 1500, params = {} } = {
       p2: { t: l.pivot2.t, price: l.pivot2.price },
       slope: l.slope, touches: l.touches, tests: l.tests,
       violations: l.violations, score: l.qualityScore,
+      /* Above the measured threshold the engine would offer this line to a
+         strategy; below it, the line is shown as structure only. */
+      offered: isOffered,
       age: l.ageBars, spanBars: l.spanBars,
       lastTestAt: l.lastTestAt, confirmedAt: l.confirmedAt,
       valueAt: (t) => l.valueAt(t),

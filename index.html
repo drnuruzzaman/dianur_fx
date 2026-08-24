@@ -35,22 +35,20 @@
     <button class="tb" id="indBtn" title="Indicators (f)">ƒ Indicators</button>
     <button class="tb" id="drawBtn" title="Drawing tools">✎ Draw</button>
     <button class="tb" id="autoBtn" title="Algorithmic trendlines (l)">⌑ Auto TL</button>
+    <button class="tb" id="snapBtn" title="Save chart as PNG (s)">⤓ Snapshot</button>
     <button class="tb" id="layoutBtn" title="Chart layout">▦ Layout</button>
   </div>
 
   <div class="spacer"></div>
 
-  <div class="acct" id="acct">
-    <div class="acct-cell"><span>Balance</span><b id="acBal">—</b></div>
-    <div class="acct-cell"><span>Equity</span><b id="acEq">—</b></div>
-    <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
-    <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
-  </div>
-
   <button class="pill" id="healthPill" title="Bridge status">connecting…</button>
 </header>
 
 <main class="workspace">
+  <button class="rail-toggle rail-toggle-l" id="sidebarToggle"
+          title="Watchlist &amp; Session (\)" aria-expanded="true">‹</button>
+  <div class="rail-stub rail-stub-l" id="sidebarStub" role="button" tabindex="0"
+       title="Hover to peek, click to pin open (\)"><span>Watchlist · Session</span></div>
   <aside class="sidebar" id="sidebar">
     <div class="side-head">
       <span>Watchlist</span>
@@ -62,14 +60,28 @@
     <div class="sessions" id="sessions"></div>
   </aside>
 
-  <section class="charts" id="grid" data-layout="1"></section>
+  <section class="chartarea">
+    <div class="charts" id="grid" data-layout="1"></div>
+    <div class="chart-tabs" id="chartTabs">
+      <div class="ct-list" id="ctList"></div>
+    </div>
+  </section>
 
+  <button class="rail-toggle rail-toggle-r" id="rightbarToggle"
+          title="Trend read &amp; Signal engine (])" aria-expanded="true">›</button>
+  <div class="rail-stub rail-stub-r" id="rightbarStub" role="button" tabindex="0"
+       title="Hover to peek, click to pin open (])"><span>Trend read · Signal engine</span></div>
   <aside class="rightbar" id="rightbar">
-    <div class="side-head"><span>Time &amp; Sales</span><span class="mono dim" id="tapeSym">—</span></div>
-    <div class="tape-head"><span>Time</span><span>Price</span><span>Bid/Ask</span></div>
-    <div class="tape" id="tape"></div>
-    <div class="side-head"><span>Contract</span></div>
-    <div class="spec" id="spec"></div>
+    <div class="side-head">
+      <span>Trend read</span>
+      <button class="rail-tf" id="trSym" title="Read timeframe — changes the chart too">—</button>
+    </div>
+    <div class="trendread" id="trendread"></div>
+    <div class="side-head">
+      <span>Signal engine</span>
+      <button class="rail-tf" id="sigSym" title="Execution timeframe — changes the chart too">—</button>
+    </div>
+    <div class="signalpanel" id="signalpanel"></div>
   </aside>
 </main>
 
@@ -81,7 +93,15 @@
     <button class="tab" data-tab="calendar">Calendar</button>
     <button class="tab" data-tab="backtest">Backtest</button>
     <div class="spacer"></div>
-    <span class="ro-badge" title="The MT5 bridge exposes no trading endpoints">READ&nbsp;ONLY</span>
+    <div class="acct" id="acct" hidden>
+      <div class="acct-cell"><span>Balance</span><b id="acBal">—</b></div>
+      <div class="acct-cell"><span>Equity</span><b id="acEq">—</b></div>
+      <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
+      <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
+      <div class="acct-cell"><span>Margin level</span><b id="acLevel">—</b></div>
+    </div>
+    <button class="size-btn acct-btn" id="acctToggle" aria-expanded="false"
+            title="Show account balances">◧</button>
     <div class="panel-size">
       <button class="size-btn" id="bottomToggle" title="Collapse panel">–</button>
       <button class="size-btn" id="bottomExpand" title="Expand panel">□</button>
