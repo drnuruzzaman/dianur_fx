@@ -19,7 +19,10 @@ const plCell = (v) => el('td', { class: v >= 0 ? 'up' : 'down', text: (v >= 0 ? 
 export class Panels {
   constructor() {
     this.host = $('#panel');
-    this.tab = 'positions';
+    /* Which bottom tab you were on is a UI setting like any other. It was the
+       one thing in the footer that did not survive a reload -- open History,
+       come back, and you are looking at Positions again. */
+    this.tab = load('panelTab', 'positions');
     this.data = { positions: [], orders: [], deals: [], calendar: [] };
     this.currency = '';
     // the Backtest tab is a viewer over runs/index.json; see js/ui/backtest.js
@@ -33,9 +36,16 @@ export class Panels {
       if (this.tab === 'backtest' && b.dataset.tab !== 'backtest') this.backtest.hide();
       if (b.dataset.tab === 'calendar') this.calScrolled = false;   // land on now again
       this.tab = b.dataset.tab;
+      save('panelTab', this.tab);
       [...$('#tabs').querySelectorAll('.tab')].forEach((x) => x.classList.toggle('active', x === b));
       this.render();
     });
+
+    /* index.html marks Positions active, so a restored tab has to be applied to
+       the buttons as well as to `this.tab` -- otherwise the panel renders
+       History while the footer highlights Positions. */
+    [...$('#tabs').querySelectorAll('.tab')].forEach(
+      (x) => x.classList.toggle('active', x.dataset.tab === this.tab));
 
     /* Three panel sizes, one source of truth. The buttons previously toggled two
        independent classes, so expanded+collapsed could both be set and the

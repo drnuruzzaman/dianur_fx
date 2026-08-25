@@ -163,6 +163,7 @@ for (const name of readdirSync(FIXTURES).filter((f) => f.startsWith('bars_') && 
         from_highs: z.fromHighs, from_lows: z.fromLows,
         first_t: z.firstT, last_t: z.lastT, first_i: z.firstI, last_i: z.lastI,
         width_atr: z.widthAtr, strength: z.strength, levels: z.levels,
+        reaction_atr: z.reactionAtr,
         role_now: z.roleAt(b[b.length - 1].c),
       }));
     })(),

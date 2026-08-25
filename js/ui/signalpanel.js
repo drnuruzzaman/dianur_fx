@@ -16,8 +16,44 @@
  */
 
 import { el } from '../util.js';
+import { tip } from './tips.js';
 import { COMPONENTS, LABEL, latest } from '../chart/signals.js';
-import { shortSymbol } from './trendread.js';
+import { asOfBanner, shortSymbol } from './trendread.js';
+
+/* What each component actually looks at, in words rather than indicator names.
+   "Macd -12" tells a reader nothing unless they already know what MACD is; the
+   panel is the wrong place to assume that. */
+const COMP_TIP = {
+  trend: ['Trend', 'Compares fast and slow moving averages of price. Positive '
+    + 'when the recent average is above the longer one, which is the plainest '
+    + 'definition of "price has been going up".'],
+  momentum: ['Momentum', 'How fast price has moved recently, regardless of '
+    + 'direction of the longer trend. Positive means the last stretch of bars '
+    + 'pushed upward harder than they pushed down.'],
+  macd: ['MACD', 'Whether upward pressure is building or fading. It watches the '
+    + 'GAP between a fast and a slow average: a widening gap means the move is '
+    + 'accelerating, a narrowing one means it is running out of steam.'],
+  meanrev: ['Mean reversion', 'How stretched price is from its own average. '
+    + 'This one deliberately points the OTHER way to the rest, because '
+    + 'stretched moves tend to snap back: price far ABOVE normal reads '
+    + 'negative, price far BELOW normal reads positive. So a positive number '
+    + 'here means price looks cheap and this component expects a bounce up.'],
+  breakout: ['Breakout', 'Whether price has pushed clear of its recent range. '
+    + 'Positive when it has broken out of the top of where it has been sitting, '
+    + 'negative out of the bottom.'],
+  flow: ['Flow', 'Where price closes inside each bar, weighted by volume. '
+    + 'Closing near the highs on heavy volume says buyers were in control of '
+    + 'the bar, not just that the price ended higher.'],
+};
+
+function compNote(v) {
+  if (!Number.isFinite(v)) return 'Not enough bars yet.';
+  const m = Math.abs(v);
+  const dir = v > 0 ? 'up' : 'down';
+  if (m < 15) return `${Math.round(v)} — near zero. This one has no opinion.`;
+  if (m < 45) return `${Math.round(v)} — leaning ${dir}, mildly.`;
+  return `${Math.round(v)} — strongly ${dir}.`;
+}
 
 const BADGE_CLS = { BULLISH: 'bull', BEARISH: 'bear', NEUTRAL: 'neutral' };
 
@@ -30,9 +66,10 @@ export class SignalPanel {
     this.data = null;
   }
 
-  update(symbol, tf, bars) {
+  update(symbol, tf, bars, asOf = null) {
     this.symbol = symbol;
     this.tf = tf;
+    this.asOf = asOf;
     this.data = (bars && bars.length >= 120) ? latest(bars) : null;
     this.render();
   }
@@ -63,18 +100,40 @@ export class SignalPanel {
     }
     const d = this.data;
 
+    if (this.asOf) r.appendChild(asOfBanner(this.asOf));
     const head = el('div', { class: 'sig-head' });
-    head.appendChild(el('b', { class: `sig-badge sig-${BADGE_CLS[d.badge]}` }, d.badge));
-    head.appendChild(el('span', {
-      class: `sig-score mono ${d.score > 0 ? 'up' : d.score < 0 ? 'down' : 'dim'}`,
-      title: 'equal-weighted composite of the six components, -100..+100',
-    }, (d.score > 0 ? '+' : '') + Math.round(d.score)));
+    head.appendChild(tip(
+      el('b', { class: `sig-badge sig-${BADGE_CLS[d.badge]}` }, d.badge),
+      `Signal engine: ${d.badge}`,
+      'Six independent measurements of the same bars, averaged. This is the '
+      + 'verdict of that average. It is a summary of what price HAS done, not '
+      + 'a forecast — the scorecard at the bottom is where you find out how '
+      + 'often it has been right.',
+      d.badge === 'NEUTRAL'
+        ? 'The six components disagree, or all six are quiet.'
+        : 'Most of the six point the same way. Check which ones below.'));
+    head.appendChild(tip(
+      el('span', {
+        class: `sig-score mono ${d.score > 0 ? 'up' : d.score < 0 ? 'down' : 'dim'}`,
+      }, (d.score > 0 ? '+' : '') + Math.round(d.score)),
+      'Composite score',
+      'The six components below, averaged with equal weight, on a scale of '
+      + '-100 to +100. Equal weight is deliberate: weighting one higher would '
+      + 'be a claim that it predicts better, and nothing here has measured '
+      + 'that.',
+      Math.abs(d.score) >= 40
+        ? `${Math.round(d.score)} — a strong reading. These are the ones the `
+          + '"Signals hit" line below is scored on.'
+        : `${Math.round(d.score)} — below the 40 that counts as a strong `
+          + 'reading.'));
     r.appendChild(head);
 
     const bars = el('div', { class: 'sig-bars' });
     for (const k of COMPONENTS) {
       const v = d.scores[k];
       const row = el('div', { class: 'sig-row' });
+      const ct = COMP_TIP[k] || [LABEL[k], ''];
+      tip(row, ct[0], ct[1], compNote(v));
       row.appendChild(el('span', { class: 'sig-label dim' }, LABEL[k]));
 
       const track = el('div', { class: 'sig-track' });
@@ -101,7 +160,16 @@ export class SignalPanel {
 
     stats.appendChild(this._stat('Model P(next bar up)', pct(c.pUp),
       c.pUp > 55 ? 'up' : c.pUp < 45 ? 'down' : 'dim',
-      'walk-forward logistic on the six components; trained only on bars before this one'));
+      'Chance the next bar closes up',
+      'A small statistical model reads the six components and estimates the '
+      + 'odds the NEXT bar finishes higher than this one. It is retrained as it '
+      + 'goes and only ever sees bars that had already happened, so it is not '
+      + 'grading its own homework.',
+      Number.isFinite(c.pUp)
+        ? (Math.abs(c.pUp - 50) < 3
+          ? `${pct(c.pUp)} — that is a coin flip. No opinion.`
+          : `${pct(c.pUp)} — a genuine lean, but one bar is one bar.`)
+        : 'Not enough history yet.'));
 
     /* Accuracy is coloured against the BASELINE, never against 50: a model that
        is 56% accurate where the market printed 57% up bars has learned the
@@ -110,21 +178,57 @@ export class SignalPanel {
       && c.accuracy > c.baseline;
     stats.appendChild(this._stat(`Accuracy (walk-forward, n=${c.n || 0})`,
       pct(c.accuracy), beats ? 'up' : 'down',
-      'out-of-sample by construction — each prediction made before its own bar'));
+      'How often it has been right',
+      'Over the last ' + (c.n || 0) + ' bars, the share of times the model '
+      + 'called the next bar correctly. Every one of those calls was made '
+      + 'before its own bar existed, so this is not the model being tested on '
+      + 'what it was taught.',
+      Number.isFinite(c.accuracy) && Number.isFinite(c.baseline)
+        ? (beats
+          ? `${pct(c.accuracy)} against a ${pct(c.baseline)} baseline — ahead, `
+            + 'by the only comparison that counts.'
+          : `${pct(c.accuracy)} against a ${pct(c.baseline)} baseline — NOT `
+            + 'ahead. Compare it to the baseline below, never to 50%.')
+        : 'Not enough history yet.'));
 
     stats.appendChild(this._stat('Majority baseline', pct(c.baseline), 'dim',
-      'accuracy of always predicting the more common direction — the bar to beat'));
+      'The score to beat',
+      'What you would get by ignoring the model entirely and always guessing '
+      + 'whichever direction has been more common. If the market printed 57% up '
+      + 'bars, guessing "up" every single time scores 57% — so a model on 56% '
+      + 'has learned nothing except the drift.',
+      Number.isFinite(c.baseline)
+        ? `Beat ${pct(c.baseline)} or the model is not adding anything.`
+        : 'Not enough history yet.'));
 
     stats.appendChild(this._stat('Signals hit (5 bars fwd)',
       Number.isFinite(c.hit) ? `${Math.round(c.hit)}% of ${c.hitN}` : `— of ${c.hitN || 0}`,
       !Number.isFinite(c.hit) ? 'dim' : c.hit >= 50 ? 'up' : 'down',
-      'how strong composite readings (|score| >= 40) actually resolved'));
+      'Did the strong calls work out?',
+      'Ignores the quiet readings entirely. Of the ' + (c.hitN || 0) + ' times '
+      + 'the composite went past 40 in either direction, this is how often '
+      + 'price was on the predicted side five bars later.',
+      Number.isFinite(c.hit)
+        ? `${Math.round(c.hit)}% of ${c.hitN}. A small count here is normal — `
+          + 'strong readings are rare, so treat it as a hint, not a track record.'
+        : 'No strong readings in this window yet.'));
 
     stats.appendChild(this._stat('Avg move per signal',
       Number.isFinite(c.avgBps) ? `${c.avgBps > 0 ? '+' : ''}${c.avgBps.toFixed(1)} bps` : '—',
       !Number.isFinite(c.avgBps) ? 'dim' : c.avgBps > 0 ? 'up' : 'down',
-      'signed by the signal direction, before spread — a positive model with a '
-      + 'negative average move is picking direction on bars that do not move'));
+      'How far price actually moved',
+      'Being right is not the same as being paid. This is the average move '
+      + 'after a strong signal, measured in basis points (1 bp = 0.01%) and '
+      + 'signed so that a correct call is positive. It is measured before '
+      + 'spread and commission, which come out of it.',
+      Number.isFinite(c.avgBps)
+        ? (c.avgBps > 0
+          ? `${c.avgBps.toFixed(1)} bps before costs. Compare that against the `
+            + 'spread you actually pay.'
+          : `${c.avgBps.toFixed(1)} bps — negative. High accuracy with a `
+            + 'negative average move means it is right on bars that go nowhere '
+            + 'and wrong on the ones that move.')
+        : 'No strong readings in this window yet.'));
 
     r.appendChild(stats);
 
@@ -152,10 +256,10 @@ export class SignalPanel {
     }
   }
 
-  _stat(label, value, cls, title) {
-    const row = el('div', { class: 'sig-stat', title: title || '' });
+  _stat(label, value, cls, tipTitle, tipBody, tipNote) {
+    const row = el('div', { class: 'sig-stat' });
     row.appendChild(el('span', { class: 'dim' }, label));
     row.appendChild(el('span', { class: `sig-val mono ${cls || ''}` }, value));
-    return row;
+    return tipTitle ? tip(row, tipTitle, tipBody, tipNote) : row;
   }
 }

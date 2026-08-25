@@ -7,13 +7,13 @@
  */
 
 import { api, status, setBase, base } from './api.js';
-import { CHART_TYPES, Chart, DRAW_TOOLS } from './chart/engine.js';
+import { CHART_TYPES, Chart, DRAW_TOOLS, defaultSpan } from './chart/engine.js';
 import { INDICATORS } from './chart/indicators.js';
 // The chart draws from the SAME lifecycle engine the backtest uses
 // (js/chart/tlengine.js is a port of sim/tl/engine.py, kept honest by
 // tests/test_tl_parity.py). It previously used the batch scorer in
 // trendlines.js, so the lines on screen were not the lines traded.
-import { liveLines } from './chart/tlengine.js';
+import { atrSeries, liveLines } from './chart/tlengine.js';
 import { liveChannels } from './chart/channels.js';
 import { calibrate } from './chart/sensitivity.js';
 import { liveZones } from './chart/zones.js';
@@ -21,16 +21,21 @@ import { liveSDZones } from './chart/supplydemand.js';
 import { detect as detectMS } from './chart/marketstructure.js';
 import { swingPoints } from './chart/structure.js';
 import { build as buildSegments } from './chart/segments.js';
-import { $, $$, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed } from './util.js';
+import { $, $$, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed, hydrateWorkspace } from './util.js';
 import { closeMenu, openMenu, toast } from './ui/menu.js';
 import { SymbolSearch } from './ui/search.js';
 import { Watchlist } from './ui/watchlist.js';
 import { Panels } from './ui/panels.js';
 import { TrendRead, readTfs } from './ui/trendread.js';
 import { SignalPanel } from './ui/signalpanel.js';
+import { installTips } from './ui/tips.js';
 
 /* Sensitivity presets, expressed as engine parameters. Pivot strength is the
    real control: 2 finds minor swings, 6 finds structural ones. */
+/* The strength that defines a MAJOR swing, taken from the menu's own `major`
+   preset so the mark and the setting cannot drift apart. */
+const MAJOR_STRENGTH = 6;
+
 const SENS = {
   fine: { label: 'Fine (minor swings)', strength: 2 },
   normal: { label: 'Normal', strength: 3 },
@@ -70,10 +75,21 @@ const app = {
        +0.85 pp placebo-adjusted over three eras -- which makes the detector
        less bad rather than good, so it is offered rather than imposed. */
     adaptive: false,
+    zones: true,           // horizontal support/resistance (pivot clusters)
     sdZones: false,        // impulse-origin supply/demand zones
     ms: false,             // BOS / CHoCH marks
     msMax: 12,             // most recent N events
     swings: false,         // HH / HL / LH / LL markers
+    /* Both of these DREW UNCONDITIONALLY until now -- the flags existed in
+       saved state but nothing read them, and there was no menu entry to change
+       them either. On a 15m gold chart that put 6 channel rails and 12 regime
+       segments on the canvas alongside the 4 lines the budget allows, so the
+       thing the line budget exists to prevent was happening anyway, just from
+       two other sources. Off by default: they answer questions the reader has
+       not asked yet. */
+    channels: false,       // parallel corridors around a line
+    channelHistory: false, // ...and the ones that have already ended
+    segments: false,       // regime episodes, drawn as sloped runs
   }),
 };
 
@@ -91,6 +107,117 @@ const app = {
  * nothing saved under the old scheme is lost. Dedupes on id, because the same
  * drawing may have been saved under several timeframes. */
 const drawKey = (c) => `draw.${typeof c === 'string' ? c : c.symbol}`;
+
+/* PER-SYMBOL CHART SETTINGS, kept independently of any open tab.
+ *
+ * Drawings were already keyed by instrument, but timeframe, chart type, studies
+ * and zoom lived only on the tab -- so closing a chart threw them away and
+ * reopening the symbol gave you a default. Now the symbol remembers how you
+ * look at it, and the tab is just a window onto that.
+ *
+ * `span` is included deliberately: how far you zoom out is part of how you read
+ * an instrument, and a daily chart of gold wants a different span from 5m
+ * EURUSD. */
+const symKey = (sym) => `sym.${sym}`;
+
+/* MERGES rather than replaces. The record holds fields the chart does not own
+   -- `sens` is set from the menu, not from chart state -- and a wholesale
+   overwrite silently dropped them on the next repaint. */
+function saveSymbolSettings(chart) {
+  const st = chart.state();
+  const prev = load(symKey(st.symbol), null) || {};
+  save(symKey(st.symbol), {
+    ...prev,
+    tf: st.tf, type: st.type, studies: st.studies, span: st.span,
+    priceLock: st.priceLock || null,
+  });
+}
+
+/* SENSITIVITY IS PER INSTRUMENT.
+ *
+ * It was one global, so picking `Major structure` to read gold also re-read
+ * every FX pair at strength 6 -- and strength is not a preference, it is a
+ * claim about how big a swing has to be before it counts. Gold at 42 ATR and
+ * EURUSD at 0.0008 do not answer that question the same way.
+ *
+ * `app.auto.sens` stays as the DEFAULT for an instrument that has never been
+ * set, so nothing changes until you choose. */
+/* THE WHOLE AUTO TL MENU IS PER INSTRUMENT.
+ *
+ * It started as one global, then sensitivity alone was split out -- which left
+ * the menu half per-symbol and half not, a worse state than either. Every entry
+ * in it is now a claim about ONE instrument: how big a swing has to be, how
+ * many lines are worth drawing, which frames are worth projecting from. Gold at
+ * 42 ATR and EURUSD at 0.0008 do not answer any of those the same way.
+ *
+ * `app.auto` is the DEFAULT for an instrument never configured, and stays the
+ * thing the menu falls back to, so nothing moves until you choose. Overrides
+ * live in the per-symbol record under `auto`.
+ */
+/* Overrides as a map of timeframe -> settings, with the legacy shape handled.
+ *
+ * The first version keyed on the instrument alone, which is already wrong for
+ * the reason the instrument split was right: strength 3 is the sensible read on
+ * H1 and says nothing about what M15 or D1 want. Measured on XAUUSD H1, `major`
+ * turns HALF its BOS marks into sub-quarter-ATR closes while `normal` is the
+ * strength every backtest on record was run at -- and neither fact transfers to
+ * another frame.
+ */
+function autoByTf(symbol) {
+  const v = load(symKey(symbol), null) || {};
+  const a = v.auto;
+  if (!a || typeof a !== 'object') return {};
+  /* LEGACY: a flat settings object from when overrides were per-instrument.
+     It was chosen while the symbol was on `v.tf`, so that is the frame it
+     belongs to -- attributing it to every frame would spread a decision the
+     reader made once. */
+  if ('sens' in a || 'on' in a || 'maxLines' in a) return { [v.tf || '15m']: a };
+  return a;
+}
+
+function autoFor(symbol, tf) {
+  if (!symbol || !tf) return app.auto;
+  const own = autoByTf(symbol)[tf];
+  return own ? { ...app.auto, ...own } : app.auto;
+}
+
+/** The auto settings of the chart in front of you: its symbol AND its frame. */
+function activeAuto() {
+  return app.active ? autoFor(app.active.symbol, app.active.tf) : app.auto;
+}
+
+function setAutoFor(symbol, tf, patch) {
+  if (!symbol || !tf) { Object.assign(app.auto, patch); save('auto', app.auto); return; }
+  const prev = load(symKey(symbol), null) || {};
+  const byTf = autoByTf(symbol);
+  const cur = { ...app.auto, ...(byTf[tf] || {}) };
+  save(symKey(symbol), { ...prev, auto: { ...byTf, [tf]: { ...cur, ...patch } } });
+}
+
+/* Price locks as they were on disk AT STARTUP.
+ *
+ * Reading them at restore time does not work: `persist()` runs while the
+ * workspace is being built, before any bars have arrived, and writes the fresh
+ * chart's empty lock over the saved one. By the time `loadBars` looked, the
+ * value it wanted had already been erased by its own app. Snapshotting once at
+ * module load is the only point that is guaranteed to be before that. */
+const BOOT_LOCKS = (() => {
+  const out = new Map();
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (!k.startsWith('dnfx.sym.')) continue;
+      const v = JSON.parse(localStorage.getItem(k) || 'null');
+      if (v && v.priceLock) out.set(k.slice('dnfx.sym.'.length),
+        { lock: v.priceLock, tf: v.tf });
+    }
+  } catch { /* a corrupt entry just means no lock to restore */ }
+  return out;
+})();
+
+function loadSymbolSettings(sym) {
+  const v = load(symKey(sym), null);
+  return v && typeof v === 'object' && v.tf ? v : null;
+}
 
 const LEGACY_TFS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
 
@@ -160,8 +287,25 @@ function buildGrid() {
       drawings: migrateDrawings(state.symbol),
       onChange: (ch) => { persist(); loadBarsIfNeeded(ch); },
       onActivate: (ch) => setActive(ch),
+      /* Scrolling into history re-runs the AUTO stack AS OF the bar at the
+         right edge -- see runAuto. 200ms so a drag recomputes when it settles
+         rather than on every frame; one refit is ~19ms per source and there can
+         be five of them. */
+      onView: (ch) => {
+        if (autoFor(ch.symbol, ch.tf).on) computeAuto(ch, 200);
+        if (ch === app.active) queuePanelRead(ch);
+        /* Scrolled INTO the old edge, tested by where the RIGHT edge is.
+           `fitAll` leaves the right edge at the live bar, so it never asks for
+           more; panning left moves it back, and that is the gesture that means
+           "show me earlier". The previous test compared span to bar count,
+           which stopped the fetch after fitAll -- correctly -- and then also
+           stopped it when the reader panned left FROM that view, which was the
+           whole point of having it. */
+        if (ch.view.right < ch.bars.length - 1
+          && ch.i0 < Math.max(50, ch.view.span * 0.25)) extendHistory(ch);
+      },
     });
-    chart.view.span = state.span || 160;
+    chart.view.span = state.span || defaultSpan(state.tf || '15m');
     chart.onNewBar = (ch) => {
       computeAuto(ch, 400);                        // refit as each bar closes
       if (ch === app.active) loadTrendRead(ch);    // and re-read the panels
@@ -236,6 +380,12 @@ function persist() {
   save('slots', app.slots);
   save('layout', app.layout);
   for (const c of app.charts) save(drawKey(c), c.drawings);
+  /* Per-symbol settings, written for every rendered chart. The ACTIVE chart is
+     written LAST so it wins: with the same symbol open in two cells on
+     different timeframes there is no single right answer, and "the one you are
+     looking at" is the least surprising tiebreak. */
+  for (const c of app.charts) if (c !== app.active) saveSymbolSettings(c);
+  if (app.active) saveSymbolSettings(app.active);
   /* The strip shows SYMBOL,TF, so it is stale the moment either changes.
      persist() runs on every such change, which makes it the one place that
      cannot miss one. */
@@ -264,6 +414,45 @@ const BAR_COUNT = {
   '1h': 1500, '4h': 1200, '1d': 1000, '1w': 800,
 };
 
+/* Scrolling past the oldest loaded bar showed blank, because the initial fetch
+   is all there ever was -- 1200 bars on 4h is nine months, and there was no
+   path to more. The counts above stay small so a chart OPENS fast; history is
+   fetched on demand when you actually scroll into it.
+
+   The cap is generous because detection cost does not scale with the array:
+   `detectTrendlines` reads only the last `window` bars, zones use their own
+   lookback, and the swing walk is O(n) but trivially so. What does scale is
+   memory and the as-of slice, hence a ceiling rather than none. */
+const MAX_BARS = 20000;
+const extending = new WeakSet();
+
+/**
+ * Double the loaded history for this chart, keeping the reader in place.
+ *
+ * Prepending shifts every bar INDEX, and the view is expressed in indices, so
+ * `view.right` has to move by the same delta or the chart jumps to a different
+ * era the moment more data arrives.
+ */
+async function extendHistory(chart) {
+  if (extending.has(chart) || !chart.bars.length) return;
+  const cur = chart.bars.length;
+  const want = Math.min(cur * 2, MAX_BARS);
+  if (want <= cur) return;                       // already at the ceiling
+  extending.add(chart);
+  try {
+    const payload = await api.bars(chart.symbol, chart.tf, want);
+    const got = (payload && payload.bars) ? payload.bars.length : 0;
+    if (got > cur) {
+      const right = chart.view.right;
+      chart.setData(payload);
+      chart.view.right = right + (got - cur);    // same bars under the cursor
+      computeAuto(chart, 0);
+      chart.draw();
+    }
+  } catch { /* leave the chart as it is; the next pan can try again */ }
+  finally { extending.delete(chart); }
+}
+
 async function loadBars(chart) {
   const token = Symbol('req');
   inflight.set(chart, token);
@@ -280,6 +469,17 @@ async function loadBars(chart) {
     const payload = await api.bars(chart.symbol, chart.tf, BAR_COUNT[chart.tf] || 2000);
     if (inflight.get(chart) !== token) return;                  // superseded
     chart.setData(payload);
+    /* AFTER setData, not before. `setData` calls `resetView` on the first
+       payload and resetView clears the price lock -- correctly, because a
+       timeframe change should re-scale -- so a lock restored at construction
+       would be wiped by the data arriving. Applied only when the saved
+       timeframe matches, since a scale set on M15 means nothing on D1. */
+    const boot = BOOT_LOCKS.get(chart.symbol);
+    if (boot && boot.tf === chart.tf) {
+      chart.view.priceLock = boot.lock;
+      BOOT_LOCKS.delete(chart.symbol);      // restore once, not on every refetch
+      saveSymbolSettings(chart);            // put it back on disk
+    }
     adoptResolved(chart);
     chart.setPositions(panels.data.positions);
     computeAuto(chart, 0);
@@ -334,6 +534,13 @@ const trendRead = new TrendRead($('#trendread'), $('#trSym'));
    about the next few bars of the chart you are on, not about context. */
 const signalPanel = new SignalPanel($('#signalpanel'), $('#sigSym'));
 let panelTick = 0;
+let panelReadTimer = null;
+
+/** Same 200ms settle the AUTO stack uses, for the same reason. */
+function queuePanelRead(chart) {
+  clearTimeout(panelReadTimer);
+  panelReadTimer = setTimeout(() => loadTrendRead(chart), 200);
+}
 let trendReadSeq = 0;
 
 /* Reads the FOCUSED chart, in both axes: its instrument and its timeframe. The
@@ -347,6 +554,7 @@ async function loadTrendRead(chart) {
   const { symbol, tf } = chart;
   const tfs = readTfs(tf);
   const seq = ++trendReadSeq;
+  const { scrolled, ownBars, asOfT, cutHtf } = asOfCut(chart);
 
   const series = new Map();
   trendRead.update(symbol, series, tfs, { execTf: tf });   // pending rows first
@@ -357,8 +565,9 @@ async function loadTrendRead(chart) {
        a snapshot that could be minutes stale while the chart beside it moved.
        Higher frames still come from the cache: they change slowly and are
        shared across cells. */
-    if (t === tf && chart.bars && chart.bars.length) { series.set(t, chart.bars); return; }
-    try { series.set(t, await getSeries(symbol, t)); } catch { /* leave pending */ }
+    if (t === tf && ownBars.length) { series.set(t, ownBars); return; }
+    try { series.set(t, cutHtf(await getSeries(symbol, t))); }
+    catch { /* leave pending */ }
   }));
   /* A slower fetch for a symbol or timeframe you have already navigated away
      from must not repaint the panel with a stale read. */
@@ -378,7 +587,8 @@ async function loadTrendRead(chart) {
        is worse than one naming no level at all. */
     try {
       lines.push(...liveLines(bars, t, {
-        params: SENS[app.auto.sens] || SENS.normal, minDraw: app.auto.minDraw ?? 70,
+        params: SENS[autoFor(symbol, t).sens] || SENS.normal,
+        minDraw: autoFor(symbol, t).minDraw ?? 70,
       }));
     }
     catch { /* a frame that cannot be detected on simply contributes nothing */ }
@@ -388,11 +598,13 @@ async function loadTrendRead(chart) {
     lines,
     digits: (app.spec && app.spec.digits != null) ? app.spec.digits : 3,
     execTf: tf,
+    asOf: scrolled ? asOfT : null,
   });
   /* The chart's own frame, not tfs[0]: on an H4 chart the ladder starts at 1h,
      and feeding those bars here labelled "H4" would compute the whole signal
      engine on a series the user is not looking at. */
-  signalPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf));
+  signalPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf),
+                     scrolled ? asOfT : null);
 }
 
 async function loadSpec(symbol) {
@@ -446,12 +658,75 @@ async function getSeries(symbol, tf) {
 
 /** Which series feed one chart: its own timeframe, then anything above it. */
 function autoSources(chart) {
+  const auto = autoFor(chart.symbol, chart.tf);
   const rank = TF.indexOf(chart.tf);
-  const out = app.auto.own ? [chart.tf] : [];
-  for (const tf of app.auto.htf) {
+  const out = auto.own ? [chart.tf] : [];
+  for (const tf of auto.htf) {
     if (TF.indexOf(tf) > rank) out.push(tf);
   }
   return out;
+}
+
+/* AS OF THE RIGHT EDGE, not as of now.
+ *
+ * The detectors used to run on the full series regardless of where the chart
+ * was scrolled, so panning back through history showed TODAY's lines drawn over
+ * year-old bars. That is unfalsifiable by construction: the lines were fitted
+ * knowing what the bars to their right did, so of course they looked well
+ * placed. You could not use the chart to check the detector.
+ *
+ * The visible right edge is treated as "the present" instead. Slice the series
+ * there and the chart draws what the engine WOULD have drawn standing on that
+ * bar, with no knowledge of anything after it -- the same rule the backtests
+ * run under, which makes scrolling a genuine test rather than a tour of
+ * hindsight.
+ *
+ * Shared by the AUTO stack and the side panels, so the two cannot disagree
+ * about what "now" means -- which they did, visibly, when only the chart was
+ * cut and the panels went on reading the live edge beside it.
+ *
+ * At the live edge the slice is the whole array and nothing changes.
+ */
+/* How far the right edge must travel before the detectors re-run.
+ *
+ * Re-detecting on EVERY bar of a pan made the chart unusable to look at:
+ * dragging 100 bars left changed the channel set at all five sample points --
+ * two corridors, then the same two with their anchors moved 5 bars, then one
+ * different corridor, then three, then one, then none. The corridor you were
+ * examining moved while you examined it.
+ *
+ * The jitter is not noise in the drawing, it is the detector genuinely
+ * re-estimating from a sliding window, and each answer is correct at its own
+ * instant. But 25 is the cadence the MEASUREMENTS use -- zone_remeasure.py and
+ * zone_rank.py both re-detect every 25 bars -- so a chart refitting every bar
+ * was showing something no backtest here has ever tested. Snapping to the same
+ * grid makes the picture hold still while you read it AND makes it the picture
+ * that was measured.
+ *
+ * The live edge is exempt and stays exact: "now" is a real bar, not a grid
+ * point, and rounding it would make the newest bars stop updating the read.
+ */
+const ASOF_STEP = 25;
+
+function asOfCut(chart) {
+  const bars = chart.bars || [];
+  if (!bars.length) {
+    return { scrolled: false, ownBars: bars, asOfT: null, cutHtf: (b) => b };
+  }
+  const raw = Math.round(chart.view.right);
+  const live = raw >= bars.length - 1;
+  const asOf = live
+    ? bars.length - 1
+    : Math.max(60, Math.min(bars.length - 1,
+      Math.floor(raw / ASOF_STEP) * ASOF_STEP));
+  const scrolled = asOf < bars.length - 1;
+  const ownBars = scrolled ? bars.slice(0, asOf + 1) : bars;
+  const asOfT = ownBars[ownBars.length - 1].t;
+  /* Higher timeframes are cut by TIME, not by index: 500 bars back on 15m is
+     not 500 bars back on 4h, and slicing both by the same count would show a
+     4h line built from bars the 15m chart has not reached yet. */
+  const cutHtf = (b) => (scrolled ? b.filter((x) => x.t <= asOfT) : b);
+  return { scrolled, ownBars, asOfT, cutHtf };
 }
 
 function computeAuto(chart, delay = 250) {
@@ -460,19 +735,23 @@ function computeAuto(chart, delay = 250) {
 }
 
 async function runAuto(chart) {
-  if (!app.auto.on) {
+  // FIRST line: the on/off guard immediately below reads it
+  const auto = autoFor(chart.symbol, chart.tf);
+  if (!auto.on) {
     chart.setAutoLines([]); chart.setChannels([]); chart.setZones([]);
     chart.setSegments([]); chart.setSdZones([]);
     chart.setMsEvents([]); chart.setSwings([]);
     return;
   }
   if (!chart.bars.length) return;
+
+  const { scrolled, ownBars, asOfT, cutHtf } = asOfCut(chart);
   // the engine keeps its own holding pool and offers its best few; the budget
   // below then keeps the best across all source timeframes
-  const opts = { ...(SENS[app.auto.sens] || SENS.normal) };
+  const opts = { ...(SENS[auto.sens] || SENS.normal) };
   /* Draw down to 70 but keep flagging at the engine's measured 90 -- see
      liveLines(). Structure you can see, quality you can judge. */
-  const minDraw = app.auto.minDraw ?? 70;
+  const minDraw = auto.minDraw ?? 70;
 
   /* Two calibrations of the same instrument.
      
@@ -495,7 +774,8 @@ async function runAuto(chart) {
 
   for (const source of autoSources(chart)) {
     try {
-      const bars = source === chart.tf ? chart.bars : await getSeries(symbol, source);
+      const raw = source === chart.tf ? chart.bars : await getSeries(symbol, source);
+      const bars = source === chart.tf ? ownBars : cutHtf(raw);
       // the chart may have moved on while a higher timeframe was fetching
       if (chart.symbol !== symbol || chart.tf !== tf) return;
       if (!bars || bars.length < 40) continue;
@@ -504,7 +784,7 @@ async function runAuto(chart) {
          instrument's units. */
       const ll = liveLines(bars, source, {
         params: opts, minDraw,
-        offerSensitivity: app.auto.adaptive ? offerSens(bars) : null,
+        offerSensitivity: auto.adaptive ? offerSens(bars) : null,
       });
       for (const l of ll) lines.push(l);
     } catch { /* a missing higher timeframe just contributes nothing */ }
@@ -515,8 +795,95 @@ async function runAuto(chart) {
   // ACTIVE (retested since confirming) outranks merely CONFIRMED at equal score
   const rank = (l) => l.score + (l.status === 'ACTIVE' ? 2 : 0);
   lines.sort((a, b) => rank(b) - rank(a));
-  const budget = { support: app.auto.maxLines, resistance: app.auto.maxLines };
-  const keep = lines.filter((l) => (budget[l.kind]-- > 0));
+
+  /* TWO LINES THAT ARRIVE AT THE SAME PRICE ARE ONE LINE.
+   *
+   * The engine's own dedupe runs per SOURCE and asks whether two candidates
+   * agree at both their endpoint and the midpoint of their own span. Lines that
+   * converge on today from different angles pass it -- measured on gold H1, a
+   * pair 0.21 ATR apart at the current bar and 2.96 ATR apart 250 bars back --
+   * and lines from DIFFERENT source timeframes never meet that dedupe at all.
+   * Both cases put a second line on top of the first exactly where the reader
+   * is looking.
+   *
+   * So the last filter before drawing is about NOW: whatever a line did in the
+   * past, its job on the right-hand edge is to say where the level is, and two
+   * lines saying the same thing there are one signal drawn twice. The
+   * better-scoring one survives.
+   *
+   * WHAT THIS DISCARDS is the convergence itself -- a wedge closing into the
+   * current price reads as a single line here. That is a real loss, and it is
+   * the price of the chart being legible; the geometry is still in the engine
+   * for anything that wants to measure it.
+   *
+   * Applied BEFORE the budget, not after, so a dropped duplicate frees its slot
+   * for a genuinely different line rather than simply leaving the chart emptier.
+   *
+   * The 0.35 ATR threshold is not delicate: across 12 symbol/timeframe cells,
+   * 0.25 and 0.75 removed the same lines in all but one. Duplicates sit far
+   * inside the band and real neighbours far outside it, so there is no edge for
+   * the number to sit on.
+   */
+  const atrNow = (() => {
+    try {
+      const a = atrSeries(ownBars, 14);
+      const v = a[a.length - 1];
+      return Number.isFinite(v) && v > 0 ? v : null;
+    } catch { return null; }
+  })();
+  const tNow = asOfT;
+  /* NEAR ENOUGH TO MATTER, MEASURED ON THIS CHART.
+   *
+   * The engine drops a line "the market has walked away from" at
+   * `maxDistanceAtr`, and computes that distance in the ATR of the series it
+   * detected on. For the chart's own frame that is the same thing. For a
+   * projected line it is not, and the gap is enormous -- measured on XAUUSD H4:
+   *
+   *     source   its own ATR   its allowance, in CHART ATR
+   *     4h            42.4          10.0
+   *     1d           100.2          23.6
+   *     1w           223.6          52.7
+   *
+   * So a weekly line may sit FIFTY-TWO chart-ATRs from price and still pass its
+   * own proximity test. That is what put twelve lines on an H4 gold chart with
+   * the nearest one 6.3 ATR (270 points) away and the furthest 13.4 -- lines
+   * crowding the axis, none of them reachable, which reads as the detector
+   * being broken when it is the units that are.
+   *
+   * Same family as `max_distance_atr` in zones.py and `dedupeAtr` in
+   * channels.js: a fixed ATR budget means different things at different scales.
+   *
+   * The threshold is the engine's OWN detection threshold, applied in the
+   * chart's units, so every source obeys the rule the chart's own frame already
+   * obeys. When that leaves nothing, nothing is drawn -- an empty chart is the
+   * honest answer when price has just travelled into open space, and is better
+   * than a dozen lines that cannot be reached.
+   */
+  const DRAW_MAX_ATR = 5;          // = trendlines.js DEFAULTS.maxDistanceAtr
+  /* The AS-OF close, not today's. Reading `chart.bars` here compared a line
+     valued at `tNow` against the price at the LIVE edge, so scrolling back made
+     every line look astronomically far away and the whole set vanished -- on
+     M15 gold, 1000 bars back is ~300 points, which is ~40 ATR, against a 5 ATR
+     budget. Everything else in this block already uses the cut (`tNow`,
+     `atrNow`); this one line did not, and that is exactly the class of bug the
+     shared `asOfCut` exists to prevent. */
+  const spot = ownBars.length ? ownBars[ownBars.length - 1].c : NaN;
+
+  const distinct = [];
+  for (const l of lines) {
+    if (atrNow && tNow != null) {
+      const v = l.valueAt(tNow);
+      if (Number.isFinite(v) && Number.isFinite(spot)
+        && Math.abs(v - spot) / atrNow > DRAW_MAX_ATR) continue;
+      const dup = distinct.some((k) => k.kind === l.kind
+        && Math.abs(k.valueAt(tNow) - v) / atrNow < 0.35);
+      if (dup) continue;
+    }
+    distinct.push(l);
+  }
+
+  const budget = { support: auto.maxLines, resistance: auto.maxLines };
+  const keep = distinct.filter((l) => (budget[l.kind]-- > 0));
   chart.setAutoLines(keep);
 
   /* Channels come from the chart's OWN line population only. A corridor
@@ -525,8 +892,75 @@ async function runAuto(chart) {
      appears to make. Detected from the engine's own population rather than the
      budgeted `keep`, because a rail dropped by the per-side line budget is
      still a real rail and its corridor should not vanish with it. */
+  /* CHANNEL HISTORY.
+   *
+   * `liveChannels` answers "what corridors are visible NOW" -- it detects at
+   * one bar, the last. A corridor that formed and died 400 bars ago is not
+   * returned at all, which is why the older half of a chart is bare while the
+   * right-hand edge has bands. Seeing a finished ascending channel next to the
+   * descending one now forming is only possible today by accident, when both
+   * happen to still be alive.
+   *
+   * So when the toggle is on, detection is repeated back across the visible
+   * window on the same 25-bar grid the as-of cut uses, and every corridor that
+   * was live at any of those bars is kept.
+   *
+   * THE MERGE IS STRUCTURAL, not a tuned distance. A corridor re-detected as it
+   * ages reappears with the same end bar and an ever-later start, so the raw
+   * sweep is full of the same band three or four times. Two rules, neither of
+   * which needs a price threshold:
+   *
+   *   same direction + same tEnd  -> keep the longest span
+   *   spans overlapping >= 60%    -> keep the longer
+   *
+   * Measured on 15m gold over 600 bars: 33 raw detections collapse to 9. The
+   * overlap fraction is not delicate -- 0.5 and 0.7 return the identical nine
+   * bands, so there is no edge for the number to balance on.
+   *
+   * Cost is ~15ms per detection, and the sweep is capped at 30 of them.
+   */
   try {
-    chart.setChannels(liveChannels(chart.bars, chart.tf, { params: opts }));
+    /* `live` marks the corridors the CURRENT detection returned, as opposed to
+       ones the history sweep dug up. It is what "still forming" means -- a
+       bar-count test on `tEnd` cannot say it, because `tEnd` is the last PIVOT
+       and pivots confirm several bars late: measured on 15m gold, live
+       corridors were ending 22 bars back and a two-bar tolerance called every
+       one of them finished. The renderer uses this to decide how far right a
+       corridor may be drawn. */
+    if (!auto.channels) {
+      chart.setChannels([]);
+    } else if (!auto.channelHistory) {
+      const now = liveChannels(ownBars, chart.tf, { params: opts });
+      for (const ch of now) ch.live = true;
+      chart.setChannels(now);
+    } else {
+      const visible = Math.max(120, Math.round(chart.view.span));
+      const steps = Math.min(30, Math.floor(visible / ASOF_STEP));
+      const seen = new Map();
+      for (let k = 0; k < steps; k++) {
+        const end = ownBars.length - 1 - k * ASOF_STEP;
+        if (end < 120) break;
+        for (const c of liveChannels(ownBars.slice(0, end + 1), chart.tf,
+          { params: opts })) {
+          c.live = (k === 0);        // k === 0 is the as-of bar: still forming
+          if (!seen.has(c.id) || c.live) seen.set(c.id, c);
+        }
+      }
+      const span = (c) => (c.tEnd - c.tStart);
+      // longest first, so a survivor is always the fullest version of itself
+      const byLen = [...seen.values()].sort((a, b) => span(b) - span(a));
+      const kept = [];
+      for (const c of byLen) {
+        const dup = kept.some((k) => {
+          if (k.direction !== c.direction) return false;
+          if (k.tEnd === c.tEnd) return true;
+          const ov = Math.min(c.tEnd, k.tEnd) - Math.max(c.tStart, k.tStart);
+          return ov > 0 && ov / Math.max(1, span(c)) >= 0.6;
+        });
+        if (!dup) kept.push(c);
+      }
+      chart.setChannels(kept);
+    }
   } catch { chart.setChannels([]); }
 
   /* Zones come from the chart's own pivots at its own timeframe. They are
@@ -534,8 +968,9 @@ async function runAuto(chart) {
      from a higher frame -- a 4h zone and a 15m zone at the same price are the
      same band, and drawing both would double-count one level. */
   try {
-    chart.setZones(liveZones(chart.bars, chart.tf,
-                             { strengthPivots: opts.strength ?? 3 }));
+    chart.setZones(auto.zones
+      ? liveZones(ownBars, chart.tf, { strengthPivots: opts.strength ?? 3 })
+      : []);
   } catch { chart.setZones([]); }
 
   /* BOS / CHoCH. A close through the last confirmed swing carries ~+4 pp
@@ -544,9 +979,52 @@ async function runAuto(chart) {
      BOS in two eras and lost decisively in the third, so the state machine is
      bookkeeping rather than information. Both are drawn; neither is ranked. */
   try {
-    if (app.auto.ms) {
-      const r = detectMS(chart.bars, { strength: opts.strength ?? 3 });
-      chart.setMsEvents(r.events.slice(-(app.auto.msMax ?? 12)));
+    if (auto.ms) {
+      const r = detectMS(ownBars, { strength: opts.strength ?? 3 });
+      /* HOW FAR the close actually went past the level, in ATR.
+       *
+       * The detector's rule is a close through the last swing with
+       * `bufferAtr: 0`, so a close a tenth of a point beyond a level earns the
+       * same BOS label as one that displaced a full ATR. Measured on XAUUSD:
+       * about a third of BOS marks are closes under 0.25 ATR through, on both
+       * M15 and H1, and only 11-22% clear 1.0 ATR.
+       *
+       * 1.0 ATR is not a new number -- it is `DISPLACEMENT_V1.displacement_atr`,
+       * the threshold behind the only cell in this project that ever showed
+       * positive expectancy. So the chart can say which of its own marks are
+       * the event the backtests trade, rather than implying they all are. */
+      const a = atrSeries(ownBars, 14);
+      for (const e of r.events) {
+        const v = a[e.i];
+        e.dispAtr = (v > 0 && ownBars[e.i])
+          ? Math.abs(ownBars[e.i].c - e.level) / v : NaN;
+      }
+
+      /* INTERNAL vs EXTERNAL STRUCTURE.
+       *
+       * One structure layer cannot answer "hasn't price already broken that
+       * level?", because it has only one notion of which levels count. A break
+       * of a three-bar pivot and a break of the swing that defined the last
+       * leg are both printed `BOS`, and the reader is left to guess which one
+       * the chart meant.
+       *
+       * EXTERNAL is a break of a swing that survives the MAJOR window -- the
+       * same `MAJOR_STRENGTH` that puts rings on swing points, so the two
+       * agree by construction: an external break is a break of a RINGED swing.
+       * INTERNAL is everything else: real structure inside the leg.
+       *
+       * The second pass runs on the same `ownBars`, so it inherits the as-of
+       * cut. Matching is by the broken LEVEL's bar (`levelI`) rather than by
+       * the breaking bar, because the two layers can notice the same break on
+       * different bars while agreeing entirely about which swing was taken. */
+      if ((opts.strength ?? 3) < MAJOR_STRENGTH) {
+        const major = detectMS(ownBars, { strength: MAJOR_STRENGTH });
+        const majorLevels = new Set(major.events.map((e) => e.levelI));
+        for (const e of r.events) e.external = majorLevels.has(e.levelI);
+      } else {
+        for (const e of r.events) e.external = true;
+      }
+      chart.setMsEvents(r.events.slice(-(auto.msMax ?? 12)));
     } else {
       chart.setMsEvents([]);
     }
@@ -558,9 +1036,32 @@ async function runAuto(chart) {
      scorer, BOS/CHoCH and the Trend read panel are all working from. Giving
      this its own strength dial would let the picture drift from the engine. */
   try {
-    chart.setSwings(app.auto.swings
-      ? swingPoints(chart.bars, { strength: opts.strength ?? 3 })
-      : []);
+    /* TWO PASSES, ONE VOCABULARY.
+     *
+     * At `fine` every turn of three bars is a swing, and a few hundred
+     * identical dots say nothing about which of them the market actually
+     * pivoted on. The app already has a word for the difference -- `major`
+     * sensitivity is strength 6 -- so a swing is MAJOR when it also survives
+     * that window. No new parameter, and the mark means exactly what picking
+     * `Major structure` in the menu would show.
+     *
+     * The second pass runs on the same `ownBars`, so it inherits the as-of cut
+     * and cannot see past the bar being drawn. It is cheap next to the
+     * trendline walk.
+     *
+     * At `major` itself the two passes coincide and every swing is major --
+     * which is the honest reading of that setting, not a bug.
+     */
+    const strength = opts.strength ?? 3;
+    const swings = auto.swings ? swingPoints(ownBars, { strength }) : [];
+    if (swings.length && strength < MAJOR_STRENGTH) {
+      const major = new Set(
+        swingPoints(ownBars, { strength: MAJOR_STRENGTH }).map((x) => x.i));
+      for (const sw of swings) sw.major = major.has(sw.i);
+    } else {
+      for (const sw of swings) sw.major = true;
+    }
+    chart.setSwings(swings);
   } catch { chart.setSwings([]); }
 
   /* Supply/demand zones: the base an impulse departed from. A second, unrelated
@@ -569,12 +1070,12 @@ async function runAuto(chart) {
      detectors that barely overlap converging on the same ~5pp is why both are
      drawn rather than one replacing the other. */
   try {
-    chart.setSdZones(app.auto.sdZones ? liveSDZones(chart.bars, chart.tf) : []);
+    chart.setSdZones(auto.sdZones ? liveSDZones(ownBars, chart.tf) : []);
   } catch { chart.setSdZones([]); }
 
   /* Regime episodes, from the chart's own frame. */
   try {
-    chart.setSegments(buildSegments(chart.bars));
+    chart.setSegments(auto.segments ? buildSegments(ownBars) : []);
   } catch { chart.setSegments([]); }
 }
 
@@ -654,7 +1155,7 @@ function syncToolbar() {
   $('#typeBtn').textContent = CHART_TYPES[c.type] + ' ▾';
   $('#indBtn').classList.toggle('active', c.studies.length > 0);
   $('#drawBtn').classList.toggle('active', app.tool !== 'cursor');
-  $('#autoBtn').classList.toggle('active', app.auto.on);
+  $('#autoBtn').classList.toggle('active', activeAuto().on);
   document.title = `${c.symbol} ${TF_LABEL[c.tf]} — DiaNurFx`;
 }
 
@@ -695,8 +1196,17 @@ function openSymbol(sym) {
     return;
   }
   persist();
+  /* A symbol you have opened before comes back the way you left it -- its own
+     timeframe, type, studies and zoom. Only a symbol with no history inherits
+     the focused chart, because "show me GBPUSD" then has nothing better to
+     mean than "the way I am looking at things now". */
+  const remembered = loadSymbolSettings(sym);
   const from = app.active ? app.active.state() : structuredClone(app.tabs[0]);
-  app.tabs.push({ ...structuredClone(from), symbol: sym });
+  app.tabs.push(remembered
+    ? { symbol: sym, tf: remembered.tf, type: remembered.type,
+        studies: structuredClone(remembered.studies || []),
+        span: remembered.span }
+    : { ...structuredClone(from), symbol: sym });
   save('tabs', app.tabs);
   showTab(app.tabs.length - 1);
   wl.setActive(sym);
@@ -774,55 +1284,86 @@ function wireToolbar() {
     const c = app.active;
     const rank = TF.indexOf(c.tf);
     const higher = TF.filter((tf) => TF.indexOf(tf) > rank);
+    const a = activeAuto();     // the chart in front of you, not a global
     const items = [
       { kind: 'cap', label: 'Algorithmic trendlines' },
-      { label: app.auto.on ? 'On' : 'Off', value: 'on', checked: app.auto.on },
+      { label: a.on ? 'On' : 'Off', value: 'on', checked: a.on },
       { kind: 'cap', label: 'Sensitivity' },
       { kind: 'sep' },
       { label: 'Adaptive sensitivity', value: 'adaptive',
-        checked: app.auto.adaptive, keepOpen: true,
+        checked: a.adaptive, keepOpen: true,
         hint: 'per-instrument' },
+      { label: 'Support / resistance zones', value: 'zones',
+        checked: a.zones, keepOpen: true,
+        hint: 'levels price turned at repeatedly' },
+      { label: 'Channels', value: 'channels',
+        checked: a.channels, keepOpen: true,
+        hint: 'parallel corridor around a line' },
+      { label: 'Channel history', value: 'chanhist',
+        checked: a.channelHistory, keepOpen: true,
+        hint: 'keep corridors that have already ended' },
+      { label: 'Regime segments', value: 'segments',
+        checked: a.segments, keepOpen: true,
+        hint: 'trending / ranging runs' },
       { label: 'Supply / demand zones', value: 'sdzones',
-        checked: app.auto.sdZones, keepOpen: true,
+        checked: a.sdZones, keepOpen: true,
         hint: 'impulse origin' },
       { label: 'Swing points (HH/HL/LH/LL)', value: 'swings',
-        checked: app.auto.swings, keepOpen: true,
-        hint: 'the pivots everything else is built on' },
+        checked: a.swings, keepOpen: true,
+        hint: 'ringed = major (survives the Major-structure window)' },
       { label: 'BOS / CHoCH', value: 'ms',
-        checked: app.auto.ms, keepOpen: true,
+        checked: a.ms, keepOpen: true,
         hint: 'structure breaks' },
       { kind: 'sep' },
       ...Object.entries(SENS).map(([k, v]) => ({
-        label: v.label, value: 'sens:' + k, checked: app.auto.sens === k,
+        label: v.label, value: 'sens:' + k, keepOpen: true,
+        checked: a.sens === k,
       })),
       { kind: 'cap', label: 'Lines per side' },
-      ...[2, 3, 4, 6].map((n) => ({ label: String(n), value: 'max:' + n, checked: app.auto.maxLines === n })),
+      ...[2, 3, 4, 6].map((n) => ({ label: String(n), value: 'max:' + n, checked: a.maxLines === n })),
       { kind: 'cap', label: 'Sources' },
-      { label: `Own timeframe (${TF_LABEL[c.tf]})`, value: 'own', checked: app.auto.own, keepOpen: true },
+      { label: `Own timeframe (${TF_LABEL[c.tf]})`, value: 'own', checked: a.own, keepOpen: true },
       ...higher.map((tf) => ({
         label: `Project from ${TF_LABEL[tf]}`, value: 'htf:' + tf,
-        checked: app.auto.htf.includes(tf), keepOpen: true,
+        checked: a.htf.includes(tf), keepOpen: true,
       })),
     ];
     if (!higher.length) items.push({ kind: 'cap', label: 'already the highest timeframe' });
-    items.push({ kind: 'sep' }, { label: 'Recompute now', value: 'recompute' });
+    /* No 'Recompute now'. It matched no branch in the handler below and fell
+       through to the same `recomputeAll()` that every other menu action ends
+       with -- so toggling anything already did it, and the item only ever
+       repeated work that had just been done. `recomputeAll()` itself stays:
+       the 'l' shortcut and every toggle still call it. */
 
     openMenu(e.currentTarget, items, (v, item) => {
-      if (v === 'on') app.auto.on = !app.auto.on;
-      else if (v === 'own') app.auto.own = !app.auto.own;
-      else if (v === 'adaptive') app.auto.adaptive = !app.auto.adaptive;
-      else if (v === 'sdzones') app.auto.sdZones = !app.auto.sdZones;
-      else if (v === 'swings') app.auto.swings = !app.auto.swings;
-      else if (v === 'ms') app.auto.ms = !app.auto.ms;
-      else if (v.startsWith('sens:')) app.auto.sens = v.slice(5);
-      else if (v.startsWith('max:')) app.auto.maxLines = Number(v.slice(4));
+      /* Every write goes to the ACTIVE chart's instrument. `cur` is what that
+         instrument currently resolves to -- its own overrides on top of the
+         global defaults -- so a toggle flips what the menu just showed. */
+      const sym = app.active && app.active.symbol;
+      const tf = app.active && app.active.tf;
+      const cur = autoFor(sym, tf);
+      const set = (patch) => setAutoFor(sym, tf, patch);
+
+      if (v === 'on') set({ on: !cur.on });
+      else if (v === 'own') set({ own: !cur.own });
+      else if (v === 'adaptive') set({ adaptive: !cur.adaptive });
+      else if (v === 'zones') set({ zones: !cur.zones });
+      else if (v === 'channels') set({ channels: !cur.channels });
+      else if (v === 'chanhist') set({ channelHistory: !cur.channelHistory });
+      else if (v === 'segments') set({ segments: !cur.segments });
+      else if (v === 'sdzones') set({ sdZones: !cur.sdZones });
+      else if (v === 'swings') set({ swings: !cur.swings });
+      else if (v === 'ms') set({ ms: !cur.ms });
+      else if (v.startsWith('sens:')) set({ sens: v.slice(5) });
+      else if (v.startsWith('max:')) set({ maxLines: Number(v.slice(4)) });
       else if (v.startsWith('htf:')) {
         const tf = v.slice(4);
-        app.auto.htf = app.auto.htf.includes(tf)
-          ? app.auto.htf.filter((x) => x !== tf)
-          : [...app.auto.htf, tf];
+        set({
+          htf: cur.htf.includes(tf)
+            ? cur.htf.filter((x) => x !== tf)
+            : [...cur.htf, tf],
+        });
       }
-      save('auto', app.auto);
       syncToolbar();
       if (item && item.keepOpen) $('#autoBtn').click();   // re-render the ticks
       recomputeAll();
@@ -998,11 +1539,13 @@ function wireKeys() {
       return;
     }
     if (e.key.toLowerCase() === 'l') {
-      app.auto.on = !app.auto.on;
-      save('auto', app.auto);
+      const sym = app.active && app.active.symbol;
+      const tf = app.active && app.active.tf;
+      const now = !autoFor(sym, tf).on;
+      setAutoFor(sym, tf, { on: now });
       syncToolbar();
       recomputeAll();
-      toast(`auto trendlines ${app.auto.on ? 'on' : 'off'}`, 1400);
+      toast(`auto trendlines ${now ? 'on' : 'off'}`, 1400);
       return;
     }
   });
@@ -1067,9 +1610,14 @@ const tick = {
 
   panels() {
     if (document.hidden || !app.active) return;
-    trendRead.repaint(app.active.bars);
-    panelTick = (panelTick + 1) % 4;
-    if (panelTick === 0) signalPanel.repaint(app.active.bars);
+    /* A tick repaint reads the LIVE bar by definition, so it has nothing to
+       say about a chart parked in history -- and running it would quietly
+       replace the as-of read with today's, banner and all. */
+    if (!asOfCut(app.active).scrolled) {
+      trendRead.repaint(app.active.bars);
+      panelTick = (panelTick + 1) % 4;
+      if (panelTick === 0) signalPanel.repaint(app.active.bars);
+    }
   },
 
   async daily() {
@@ -1154,7 +1702,33 @@ async function boot(refresh = false) {
   tick.daily();
 }
 
-boot();
+installTips();     // delegated, so panel rows rendered later are covered
+/* Debug handle. The workspace is otherwise unreachable from the console, which
+   makes "what is actually on this canvas" an unanswerable question -- and that
+   is the first question whenever the chart looks wrong. Read-only by
+   convention; nothing in the app reads it back. */
+window.dnfx = app;
+
+/* The workspace file is read BEFORE boot, and boot is what builds the grid from
+   saved state. Nothing above this point may depend on localStorage having its
+   final contents -- which is why `app` is populated lazily by boot() rather
+   than at module level. */
+hydrateWorkspace().then((n) => {
+  if (n > 0) {
+    // the module-level snapshot was taken from a pre-hydration localStorage
+    BOOT_LOCKS.clear();
+    for (const k of Object.keys(localStorage)) {
+      if (!k.startsWith('dnfx.sym.')) continue;
+      try {
+        const v = JSON.parse(localStorage.getItem(k) || 'null');
+        if (v && v.priceLock) {
+          BOOT_LOCKS.set(k.slice('dnfx.sym.'.length), { lock: v.priceLock, tf: v.tf });
+        }
+      } catch { /* skip a corrupt entry */ }
+    }
+  }
+  boot();
+});
 
 // exposed for console poking during development
 window.DiaNurFx = { app, api, status, tick, boot };

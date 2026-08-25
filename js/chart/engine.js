@@ -15,11 +15,48 @@
 import { INDICATORS, runStudy, studyTitle, heikinAshi } from './indicators.js';
 import { TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp, withZone, zoneLabel } from '../util.js';
 
-const AXIS_W = 64;        // right-hand price axis
+/* Right-hand price axis. Sized from the widest label it must actually hold,
+   measured at the axis font: a 7-character price ("4659.58", "1.16637") is
+   40px and an 8-character one ("53478.90") is 46px, drawn at plot.r + 5. 54
+   leaves a couple of pixels of breathing room and hands 10px back to the
+   candles -- 64 was inherited from a larger font and never re-measured. */
+const AXIS_W = 54;
 const TIME_H = 22;        // bottom time axis
 const PANE_GAP = 6;
 const MIN_SPAN = 12;
-const MAX_SPAN = 4000;
+/* 4800 rather than 4000 so `fitAll` can still frame a freshly extended chart:
+   history doubles on demand and a 4h series reaches ~4800 bars after two
+   rounds. Beyond this a bar is under half a pixel and candles stop being
+   candles, so the cap is a RENDERING limit, not a data one -- scrolling still
+   reaches everything loaded. */
+const MAX_SPAN = 4800;
+
+/**
+ * 350 bars, on every timeframe.
+ *
+ * Two earlier versions got the invariant wrong. A fixed 160 bars meant a
+ * different WINDOW per frame; fixing the window instead (five days) meant a
+ * different CANDLE WIDTH per frame, because width is plot width divided by
+ * span -- M1 drew 4800 hair-thin bars and D1 drew 12 fat ones.
+ *
+ * Holding the span constant holds the candle width constant, and lets the
+ * period on screen be the thing that varies: ~1 day on M5, ~5 on M15, ~460 on
+ * D1. That is the right way round. A timeframe switch should change how much
+ * history one screen holds, not how the chart looks.
+ *
+ * Takes `tf` although it ignores it, so a future per-frame exception lands here
+ * rather than in a new branch at each call site.
+ */
+export function defaultSpan(tf) {          // eslint-disable-line no-unused-vars
+  return clamp(350, MIN_SPAN, MAX_SPAN);
+}
+
+/* What the two RESET gestures return to -- the button and the double-click.
+   Deliberately separate from `defaultSpan`: a chart OPENS at 350 and RESETS to
+   300, which is the one asked for and is the only place the two differ. */
+export function resetSpan(tf) {            // eslint-disable-line no-unused-vars
+  return clamp(300, MIN_SPAN, MAX_SPAN);
+}
 
 const COL = {
   bg: '#02101f',
@@ -87,13 +124,6 @@ export const DRAW_TOOLS = {
 
 const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 
-/* Dash length grows with the source timeframe, so a projected line reads as
-   "from higher up" at a glance without reading its label. */
-const AUTO_DASH = {
-  '1m': [4, 3], '5m': [6, 3], '15m': [8, 4], '30m': [10, 4],
-  '1h': [12, 5], '4h': [16, 6], '1d': [20, 7], '1w': [26, 8],
-};
-
 /** mm:ss (or h:mm above an hour) left in the bar that opened at `t`. */
 function timeLeft(t, tf) {
   const step = TF_MS[tf] || 60e3;
@@ -127,6 +157,11 @@ export class Chart {
     this.tool = 'cursor';
     this.onChange = opts.onChange || (() => {});
     this.onActivate = opts.onActivate || (() => {});
+    /* Fired when the visible RANGE moves. One notifier in the paint path rather
+       than a call at each of the six places that mutate `view`, so a new pan,
+       zoom or keyboard path cannot forget to announce itself. */
+    this.onView = opts.onView || (() => {});
+    this._lastViewRight = null;
     this.onSymbolClick = opts.onSymbolClick || (() => {});
 
     this.bars = [];
@@ -173,6 +208,12 @@ export class Chart {
     this.legend.className = 'legend';
     this.msgEl = document.createElement('div');
     this.msgEl.className = 'cell-msg';
+    /* Tooltip as DOM, not canvas. A canvas tooltip would have to be redrawn on
+       every frame and would clip at the cell edge; a positioned div costs one
+       style write on hover and nothing at all otherwise. */
+    this.tip = document.createElement('div');
+    this.tip.className = 'zone-tip';
+    this.tip.hidden = true;
 
     this.tools = document.createElement('div');
     this.tools.className = 'cell-tools';
@@ -183,10 +224,10 @@ export class Chart {
       this.tools.append(b);
     };
     btn('⤢', 'Fit all bars', () => { this.fitAll(); });
-    btn('⟳', 'Reset scale', () => { this.resetView(); });
+    btn('⟳', 'Reset scale', () => { this.resetScale(); });
     btn('⌫', 'Clear drawings', () => { this.drawings = []; this._persist(); this.draw(); });
 
-    this.host.append(this.canvas, this.legend, this.msgEl, this.tools);
+    this.host.append(this.canvas, this.legend, this.msgEl, this.tip, this.tools);
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.host);
     this.resize();
@@ -269,7 +310,19 @@ export class Chart {
     this.draw();
   }
 
-  setTimeframe(tf) { this.tf = tf; this.bars = []; this.drawings = this._loadDrawings(); this.onChange(this); }
+  setTimeframe(tf) {
+    this.tf = tf;
+    this.bars = [];
+    /* Re-frame for the NEW timeframe. The span used to carry over, so fitting
+       all bars on 4h and then switching to M15 kept a 1273-bar window on a
+       series that had nothing like that much to show, and the chart opened onto
+       empty space. `right = 0` is the flag setData reads to re-position. */
+    this.view.span = defaultSpan(tf);
+    this.view.right = 0;
+    this.view.priceLock = null;
+    this.drawings = this._loadDrawings();
+    this.onChange(this);
+  }
   setType(t) { this.type = t; this._recalc(); this.draw(); this.onChange(this); }
   setTool(t) { this.tool = t; this.pending = null; this.canvas.style.cursor = t === 'cursor' ? 'crosshair' : 'copy'; }
 
@@ -300,6 +353,28 @@ export class Chart {
 
   rightPad() { return Math.max(2, Math.round(this.view.span * 0.06)); }
 
+  /**
+   * Back to how this chart opens: default zoom, live edge, no price lock.
+   *
+   * SEPARATE FROM `resetView`, which cannot do this. `setData` calls resetView
+   * on the first payload, and main.js applies the symbol's REMEMBERED span
+   * before the bars arrive -- so forcing a default span in there would throw
+   * away the saved view every time a chart opened.
+   *
+   * `resetView` keeps the current span on purpose, which is right for the data
+   * path and wrong for a button labelled Reset: after fitting 4800 bars it left
+   * the reader at 4800 bars wide. This puts the current price back on screen at
+   * a readable zoom, which is what the button is for, and persists the result
+   * so the symbol reopens that way.
+   */
+  resetScale() {
+    this.view.span = resetSpan(this.tf);
+    this.view.right = this.bars.length - 1 + this.rightPad();
+    this.view.priceLock = null;
+    this.draw();
+    this._persist();
+  }
+
   resetView() {
     this.view.span = clamp(this.view.span || 160, MIN_SPAN, MAX_SPAN);
     this.view.right = Math.max(this.view.span - 1, this.bars.length - 1 + this.rightPad());
@@ -308,8 +383,16 @@ export class Chart {
 
   fitAll() {
     if (!this.bars.length) return;
-    this.view.span = clamp(this.bars.length, MIN_SPAN, MAX_SPAN);
-    this.view.right = this.bars.length - 1 + this.rightPad();
+    /* "Fit all bars" did not fit all bars. `span` was the bar count and `right`
+       was the last bar PLUS the right pad, so the left edge landed at `pad` and
+       the oldest bars fell off the screen -- 72 of them on a 1201-bar 4h chart,
+       because the pad is 6% of the span. The span has to carry the pad too.
+       The pad is derived from the intended span rather than read back from
+       `rightPad()`, which would use the span still being computed. */
+    const base = clamp(this.bars.length, MIN_SPAN, MAX_SPAN);
+    const pad = Math.max(2, Math.round(base * 0.06));
+    this.view.span = clamp(base + pad, MIN_SPAN, MAX_SPAN);
+    this.view.right = this.bars.length - 1 + pad;
     this.view.priceLock = null;
     this.draw();
   }
@@ -440,6 +523,15 @@ export class Chart {
   }
 
   _paint() {
+    /* Rounded, so sub-pixel drift during a drag does not fire on every frame;
+       the consumer debounces anyway, but this keeps the common case free.
+       Safe against recursion: the consumer's response sets lines and calls
+       draw(), and by then the right edge has not moved again. */
+    const vr = Math.round(this.view.right);
+    if (vr !== this._lastViewRight) {
+      this._lastViewRight = vr;
+      this.onView(this);
+    }
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.w, this.h);
     /* On export the backdrop comes from _exportBg: a solid colour is BAKED IN
@@ -481,6 +573,7 @@ export class Chart {
       }
       ctx.restore();
       this._axisY(pane);
+      if (pane.isMain) this._zoneAxisLabels(pane);
       if (!pane.isMain) this._paneTitle(pane);
     }
 
@@ -866,7 +959,14 @@ export class Chart {
       }
       ctx.setLineDash([]);
 
-      const label = `${role === 'support' ? 'DEMAND' : 'SUPPLY'} ×${z.touches}`;
+      /* SUPPORT / RESISTANCE, not DEMAND / SUPPLY. This renderer draws
+         pivot-cluster zones -- a horizontal level price has TURNED AT
+         repeatedly -- while _sdZones draws impulse-origin zones, a base price
+         LEFT IN A HURRY. Two unrelated detectors both labelled DEMAND made the
+         chart look like it was reporting the same thing twice. The suffix
+         disambiguates too: `×N` is a touch count, `●` on an s/d zone means
+         fresh. */
+      const label = `${role === 'support' ? 'SUPPORT' : 'RESISTANCE'} ×${z.touches}`;
       ctx.font = '9px "Roboto Mono", monospace';
       ctx.globalAlpha = 0.8;
       ctx.fillStyle = col;
@@ -912,9 +1012,17 @@ export class Chart {
     let lastLabelX = -Infinity;
 
     ctx.save();
-    ctx.font = '8.5px "Roboto Mono", monospace';
     ctx.textAlign = 'center';
-    for (const s of this.swings) {
+
+    /* MAJOR SWINGS ARE DRAWN FIRST, and that ordering is the whole point.
+       Labels are rationed by horizontal spacing -- first come, first served --
+       so drawing in index order let a minor pivot three bars earlier take the
+       slot its major neighbour needed. Majors claim their labels before minors
+       are considered. */
+    const ordered = [...this.swings].sort(
+      (a, b) => (b.major === true) - (a.major === true));
+
+    for (const s of ordered) {
       if (s.i < i0 || s.i > i1) continue;
       const x = this.x(s.i);
       const y = this.y(pane, s.price);
@@ -923,17 +1031,41 @@ export class Chart {
 
       const bull = s.label === 'HH' || s.label === 'HL';
       const col = s.label ? (bull ? COL.up : COL.down) : COL.textFaint;
-      ctx.fillStyle = col;
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath();
-      ctx.arc(x, y, 2, 0, Math.PI * 2);
-      ctx.fill();
+      const major = s.major === true;
 
-      if (!s.label || !roomy || x - lastLabelX < 30) continue;
+      ctx.fillStyle = col;
+      ctx.globalAlpha = major ? 1 : 0.45;
+      ctx.beginPath();
+      ctx.arc(x, y, major ? 3.4 : 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      /* A ring, not just a bigger dot: size alone is hard to judge against a
+         candle wick, and the hollow centre survives being drawn over one. */
+      if (major) {
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      if (!s.label || !roomy) continue;
+      // minors never outbid a major for a label slot
+      const gap = major ? 26 : 34;
+      if (x - lastLabelX < gap && !major) continue;
+      if (major && this._labelTaken && this._labelTaken.some(
+        (lx) => Math.abs(lx - x) < 22)) continue;
+      if (!major && this._labelTaken && this._labelTaken.some(
+        (lx) => Math.abs(lx - x) < 30)) continue;
+      (this._labelTaken = this._labelTaken || []).push(x);
       lastLabelX = x;
-      ctx.globalAlpha = 0.95;
-      ctx.fillText(s.label, x, s.isHigh ? y - 6 : y + 13);
+      ctx.font = major ? 'bold 9px "Roboto Mono", monospace'
+        : '8.5px "Roboto Mono", monospace';
+      ctx.globalAlpha = major ? 1 : 0.6;
+      ctx.fillText(s.label, x, s.isHigh ? y - (major ? 10 : 6)
+        : y + (major ? 17 : 13));
     }
+    this._labelTaken = null;
     ctx.restore();
   }
 
@@ -952,10 +1084,33 @@ export class Chart {
       const col = bull ? COL.up : COL.down;
       const choch = e.kind === 'choch';
 
+      /* DISPLACEMENT DECIDES THE WEIGHT.
+       *
+       * A break is a break by the detector's rule -- a close through the level
+       * -- but a close 0.16 ATR past it and one 1.4 ATR past it are not the
+       * same event, and printing both as `BOS` says they are. Marks that clear
+       * `Chart.DISPLACEMENT_ATR` draw at full weight with a bolder label;
+       * marginal ones stay on the chart at roughly half, because they ARE
+       * structure, just weak structure.
+       *
+       * Nothing is hidden and nothing is filtered: the label a reader has been
+       * looking at for months still appears in the same place. What changes is
+       * that the ones worth acting on stop looking identical to the ones that
+       * are not. */
+      const disp = Number.isFinite(e.dispAtr) ? e.dispAtr : 0;
+      const strong = disp >= Chart.DISPLACEMENT_ATR;
+      /* TWO INDEPENDENT AXES, and they are deliberately not merged into one
+         score. Displacement asks how HARD the level broke; external asks how
+         much the LEVEL was worth. A hard break of an internal pivot and a
+         gentle break of a major swing are different events, and a single
+         combined weight would render them identically. */
+      const external = e.external === true;
+      const w8 = (strong ? 1 : 0.45) * (external ? 1 : 0.7);
+
       ctx.save();
       ctx.strokeStyle = col;
-      ctx.globalAlpha = choch ? 0.9 : 0.55;
-      ctx.lineWidth = choch ? 1.4 : 1;
+      ctx.globalAlpha = (choch ? 0.9 : 0.55) * w8;
+      ctx.lineWidth = (choch ? 1.4 : 1) * (strong ? 1 : 0.8);
       ctx.setLineDash(choch ? [] : [4, 3]);
       ctx.beginPath();
       ctx.moveTo(Math.max(pane.x, xa), y);
@@ -963,10 +1118,14 @@ export class Chart {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.font = '8.5px "Roboto Mono", monospace';
+      ctx.font = strong ? 'bold 8.5px "Roboto Mono", monospace'
+        : '8.5px "Roboto Mono", monospace';
       ctx.fillStyle = col;
-      ctx.globalAlpha = choch ? 0.95 : 0.7;
-      const label = choch ? 'CHoCH' : 'BOS';
+      ctx.globalAlpha = (choch ? 0.95 : 0.7) * w8;
+      /* The prefix is the cheapest possible way to carry the distinction, and
+         it survives being read in greyscale or by someone who never learns what
+         the weights mean. */
+      const label = (external ? '' : 'i') + (choch ? 'CHoCH' : 'BOS');
       const w = ctx.measureText(label).width;
       const lx = clamp(xb - w - 2, pane.x + 2, pane.x + pane.w - w - 2);
       ctx.fillText(label, lx, bull ? y - 3 : y + 9);
@@ -1031,58 +1190,264 @@ export class Chart {
 
      The fill is deliberately faint. It sits under the candles in z-order and
      under the trendlines, because it is context for them, not a competitor. */
+  /* How far past its own data a channel may be extrapolated, as a fraction of
+     its measured length. A corridor is a claim about the bars it was fitted to;
+     beyond them it is a guess, and the guess should not outgrow the evidence.
+     Measured before this cap existed, every channel on a 15m gold chart ran
+     54-108% past its own span -- a 98-bar channel extended another 106 bars. */
+  static PROJECT_FRACTION = 0.25;
+
+  /* The close-beyond-level, in ATR, at which a structure break is drawn as a
+     real one. Not a taste: it is `DISPLACEMENT_V1.displacement_atr` from
+     sim/tl/experiments.py, the threshold behind the only positive-expectancy
+     cell this project has measured. Changing it here would decouple the chart
+     from the spec, which is the whole point of it being the same number. */
+  static DISPLACEMENT_ATR = 1.0;
+
+  /*
+   * Which colour each channel gets, when two of them cover the same prices.
+   *
+   * Colour normally encodes DIRECTION -- ascending green, descending pink. That
+   * is useless for telling two channels apart at the moment you most need to,
+   * because overlapping corridors are usually overlapping precisely BECAUSE
+   * they are the same shape, so both come out the same colour and the reader
+   * sees four rails of one hue with no way to pair them up.
+   *
+   * So inside an overlapping group, colour switches to POSITION: the upper
+   * corridor green, the lower one red. Outside a group, direction still rules,
+   * because a lone channel has nothing to be confused with.
+   *
+   * Green now means two things depending on context, which is exactly the sort
+   * of quiet ambiguity worth refusing -- so the label says which reading
+   * applies, appending UPPER or LOWER whenever position took over. A reader who
+   * sees neither word is looking at a direction colour.
+   *
+   * Bands are compared over the VISIBLE window, not at the last bar: two
+   * corridors converging off-screen right are not overlapping anywhere the
+   * reader can see, and two that cross mid-screen are, even if they happen to
+   * be a hair apart at the edge.
+   */
+  /**
+   * Which overlapping corridor is on top, for colouring.
+   *
+   * TWO CORRIDORS OVERLAP WHEN THEY SHARE A PRICE AT THE SAME X. The first
+   * version compared bounding boxes -- min and max of each corridor's rails
+   * across the whole visible window -- which is the classic AABB false
+   * positive: two steep bands can each sweep 400 points over the window,
+   * "overlap" on paper, and never come within 200 points of each other at any
+   * single x. Sampling the pair at the same instants answers the question the
+   * eye is actually asking.
+   *
+   * ORDER IS TAKEN AT THE RIGHT EDGE, not from a window average. Corridors
+   * cross: measured on 15m gold, a pair 700 bars back swapped vertical order
+   * once mid-window, so an average put one of them on top when it was below for
+   * half the chart. The right edge is where the label sits and where the reader
+   * is standing, so that is the x the words UPPER and LOWER describe.
+   *
+   * A pair that crosses inside the view is still labelled from the right edge,
+   * and the crossing is visible on its own -- the bands physically swap. What
+   * is fixed here is that the label now agrees with at least one definite
+   * place, rather than with an average that can match neither end.
+   */
+  _channelColours(leftT, rightT) {
+    const chans = this.channels || [];
+    const SAMPLES = 48;
+    const span = rightT - leftT;
+
+    /* Every corridor sampled at the SAME instants, so pairs are comparable
+       column by column. `mid` is the right edge alone. */
+    const track = chans.map((c) => {
+      const lo = new Array(SAMPLES + 1);
+      const hi = new Array(SAMPLES + 1);
+      for (let k = 0; k <= SAMPLES; k++) {
+        const t = leftT + (span * k) / SAMPLES;
+        lo[k] = c.lowerAt(t);
+        hi[k] = c.upperAt(t);
+      }
+      const rLo = c.lowerAt(rightT), rHi = c.upperAt(rightT);
+      if (!Number.isFinite(rLo) || !Number.isFinite(rHi)) return null;
+      return { lo, hi, mid: (rLo + rHi) / 2 };
+    });
+
+    const sharesAnX = (a, b) => {
+      for (let k = 0; k <= SAMPLES; k++) {
+        const aL = a.lo[k], aH = a.hi[k], bL = b.lo[k], bH = b.hi[k];
+        if (!Number.isFinite(aL) || !Number.isFinite(aH)
+            || !Number.isFinite(bL) || !Number.isFinite(bH)) continue;
+        if (aL <= bH && bL <= aH) return true;
+      }
+      return false;
+    };
+
+    // Small n (max 3 per timeframe), so pairwise grouping is cheaper than a
+    // union-find and easier to read.
+    const group = chans.map(() => -1);
+    let next = 0;
+    for (let i = 0; i < chans.length; i++) {
+      if (!track[i]) continue;
+      if (group[i] < 0) group[i] = next++;
+      for (let j = i + 1; j < chans.length; j++) {
+        if (!track[j]) continue;
+        if (!sharesAnX(track[i], track[j])) continue;
+        if (group[j] < 0) group[j] = group[i];
+        else if (group[j] !== group[i]) {           // merge the two groups
+          const from = group[j], to = group[i];
+          for (let k = 0; k < group.length; k++) if (group[k] === from) group[k] = to;
+        }
+      }
+    }
+
+    const members = new Map();
+    group.forEach((g, i) => {
+      if (g < 0 || !track[i]) return;
+      if (!members.has(g)) members.set(g, []);
+      members.get(g).push(i);
+    });
+
+    const out = chans.map((c) => ({
+      col: c.direction === 'up' ? COL.up : c.direction === 'down' ? COL.down : COL.text,
+      role: null,
+    }));
+    for (const idxs of members.values()) {
+      if (idxs.length < 2) continue;                // alone: keep direction
+      idxs.sort((a, b) => track[b].mid - track[a].mid);   // highest at the right edge
+      idxs.forEach((i, k) => {
+        if (k === 0) { out[i].col = COL.up; out[i].role = 'UPPER'; }
+        else if (k === idxs.length - 1) { out[i].col = COL.down; out[i].role = 'LOWER'; }
+        /* Three or more in one group: only the outermost two get a position
+           colour. Anything between them is neither upper nor lower, and naming
+           it either would be a lie told in colour. */
+        else { out[i].col = COL.text; out[i].role = 'MIDDLE'; }
+      });
+    }
+    return out;
+  }
+
   _channels(pane) {
     if (!this.channels || !this.channels.length) return;
     const ctx = this.ctx;
     const rightT = this.tAt(Math.min(this.i1, this.bars.length - 1 + this.rightPad()));
-    for (const c of this.channels) {
+    const leftT = this.tAt(this.i0);
+    const paint = this._channelColours(leftT, rightT);
+    for (const [ci, c] of this.channels.entries()) {
       const own = c.timeframe === this.tf;
-      const col = c.direction === 'up' ? COL.up : c.direction === 'down' ? COL.down : COL.text;
-      const t0 = Math.max(c.tStart, this.tAt(this.i0));
-      const t1 = rightT;
-      const x0 = this.x(this.idxOfTime(t0));
-      const x1 = this.x(this.idxOfTime(t1));
-      const lo0 = this.y(pane, c.lowerAt(t0)), hi0 = this.y(pane, c.upperAt(t0));
-      const lo1 = this.y(pane, c.lowerAt(t1)), hi1 = this.y(pane, c.upperAt(t1));
-      if (![lo0, hi0, lo1, hi1].every(Number.isFinite)) continue;
+      const col = paint[ci].col;
+      const role = paint[ci].role;
 
-      ctx.save();
-      /* A projected channel has one assumed rail. It is drawn fainter and its
-         label says so, because presenting an assumption at the same weight as a
-         measurement is how a chart lies quietly. */
+      /* THREE times, not two. The old code drew from the view's left edge to
+         the view's right edge, which quietly turned every corridor into an
+         infinite one: a channel whose data ended 148 bars ago was still drawn
+         to the current price as though it were live.
+
+           t0    where drawing starts   (its own start, or the view edge)
+           tMid  where its DATA ends    (c.tEnd -- the last bar it was fitted to)
+           t1    where drawing stops    (a bounded projection past tMid) */
+      const t0 = Math.max(c.tStart, leftT);
+      const tMid = Math.min(c.tEnd, rightT);
+      /* The cap is measured in BARS, not wall-clock milliseconds. Gold stops
+         over the weekend, so a channel spanning 98 bars can span 298 bars'
+         worth of clock -- and a fraction of the clock span projects three times
+         too far. Same index-vs-time trap the slope conversion documents.
+         `tAt` indexes the bar array, so the index has to be whole. */
+      const iEnd = this.idxOfTime(c.tEnd);
+      const spanBars = Math.max(0, iEnd - this.idxOfTime(c.tStart));
+      const lastT = this.bars.length ? this.bars[this.bars.length - 1].t : rightT;
+
+      /* A corridor that is STILL FORMING runs to the right edge; one that has
+         already finished stops at the 25% cap.
+
+         The cap exists so a dead channel cannot pretend to reach current price.
+         It has no business shortening a live one: those rails are where the
+         next bars would sit if the corridor holds, which is the only forward
+         statement a channel makes and the reason to draw it at all.
+
+         `c.live` is set by the detector in main.js, not inferred here. A
+         bar-count test on `tEnd` cannot answer it: `tEnd` is the last PIVOT and
+         pivots confirm several bars late, so live corridors routinely end 20+
+         bars back and any tolerance tight enough to be meaningful calls them
+         all finished. */
+      const live = c.live === true;
+      const t1 = live ? rightT : Math.min(rightT,
+        this.tAt(Math.round(iEnd + spanBars * Chart.PROJECT_FRACTION)));
+      if (tMid <= t0 && t1 <= t0) continue;     // entirely off-screen left
+
+      const X = (t) => this.x(this.idxOfTime(t));
+      const LO = (t) => this.y(pane, c.lowerAt(t));
+      const HI = (t) => this.y(pane, c.upperAt(t));
+
       const weak = c.kind === 'projected';
-      ctx.globalAlpha = (own ? 0.10 : 0.06) * (weak ? 0.6 : 1);
-      ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.moveTo(x0, hi0); ctx.lineTo(x1, hi1);
-      ctx.lineTo(x1, lo1); ctx.lineTo(x0, lo0);
-      ctx.closePath();
-      ctx.fill();
+      ctx.save();
 
-      ctx.globalAlpha = (own ? 0.75 : 0.5) * (weak ? 0.65 : 1);
-      ctx.strokeStyle = col;
-      ctx.lineWidth = own ? 1.4 : 1.1;
-      for (const [ya, yb] of [[hi0, hi1], [lo0, lo1]]) {
-        ctx.beginPath(); ctx.moveTo(x0, ya); ctx.lineTo(x1, yb); ctx.stroke();
-      }
-      // the median, dashed, as every hand-drawn channel carries
-      ctx.globalAlpha *= 0.6;
-      ctx.setLineDash([5, 5]);
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x0, (hi0 + lo0) / 2); ctx.lineTo(x1, (hi1 + lo1) / 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      /* THREE segments, because there are three different claims:
+       *
+       *   measured     the bars the corridor was fitted to
+       *   projected    past the fit, but still over bars that EXIST
+       *   future       past the last bar, where there is no data at all
+       *
+       * Only the third is dashed. Dashing the second read as a different KIND
+       * of line rather than the same rail with less behind it -- and this chart
+       * already spends dashes on higher-timeframe lines and on the median, so a
+       * third pattern over real bars is a vocabulary rather than a hint. Beyond
+       * the last bar the dash means something no weight could: there is nothing
+       * here yet.
+       *
+       * A projected channel already has one assumed RAIL and is drawn fainter
+       * for it. That is a separate axis and both apply. */
+      const seg = (ta, tb, mode) => {
+        const solid = mode !== 'future';
+        if (!(tb > ta)) return;
+        const xa = X(ta), xb = X(tb);
+        const loA = LO(ta), hiA = HI(ta), loB = LO(tb), hiB = HI(tb);
+        if (![loA, hiA, loB, hiB].every(Number.isFinite)) return;
+
+        const dim = mode === 'measured' ? 1 : mode === 'projected' ? 0.45 : 0.3;
+        ctx.globalAlpha = (own ? 0.10 : 0.06) * (weak ? 0.6 : 1) * dim;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(xa, hiA); ctx.lineTo(xb, hiB);
+        ctx.lineTo(xb, loB); ctx.lineTo(xa, loA);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.globalAlpha = (own ? 0.75 : 0.5) * (weak ? 0.65 : 1)
+          * (mode === 'measured' ? 1 : mode === 'projected' ? 0.55 : 0.7);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = own ? 1.4 : 1.1;
+        ctx.setLineDash(solid ? [] : [5, 4]);
+        for (const [ya, yb] of [[hiA, hiB], [loA, loB]]) {
+          ctx.beginPath(); ctx.moveTo(xa, ya); ctx.lineTo(xb, yb); ctx.stroke();
+        }
+        // the median, dashed, as every hand-drawn channel carries
+        ctx.globalAlpha *= 0.6;
+        ctx.setLineDash([5, 5]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(xa, (hiA + loA) / 2); ctx.lineTo(xb, (hiB + loB) / 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      };
+
+      const onBars = (t) => Math.min(t, lastT);   // clip to where data exists
+      seg(t0, onBars(tMid), 'measured');
+      seg(Math.max(t0, onBars(tMid)), onBars(t1), 'projected');
+      seg(Math.max(t0, lastT), t1, 'future');    // dashed: no bars out here
 
       const name = c.direction === 'up' ? 'ASCENDING' : c.direction === 'down' ? 'DESCENDING' : 'RANGE';
-      const label = `${TF_LABEL[c.timeframe] || c.timeframe} ${name} CHANNEL${weak ? ' (proj)' : ''}`;
+      const label = `${TF_LABEL[c.timeframe] || c.timeframe} ${name} CHANNEL`
+        + `${weak ? ' (proj)' : ''}${role ? ` · ${role}` : ''}`;
       ctx.font = '9px "Roboto Mono", monospace';
       ctx.globalAlpha = 0.75;
       ctx.fillStyle = col;
-      const my = (hi1 + lo1) / 2;
+      // anchored to where the drawing actually STOPS, which is no longer the
+      // right edge of the pane
+      const tLab = Math.max(t0, t1);
+      const xLab = X(tLab);
+      const my = (HI(tLab) + LO(tLab)) / 2;
       const w = ctx.measureText(label).width;
-      ctx.fillText(label, Math.max(pane.x + 6, x1 - w - 8),
-                   clamp(my - 4, pane.y + 10, pane.y + pane.h - 6));
+      if (Number.isFinite(my)) {
+        ctx.fillText(label, Math.max(pane.x + 6, xLab - w - 8),
+                     clamp(my - 4, pane.y + 10, pane.y + pane.h - 6));
+      }
       ctx.restore();
     }
   }
@@ -1111,7 +1476,14 @@ export class Chart {
       ctx.globalAlpha = (own ? 0.95 : 0.62) * (l.status === 'ACTIVE' ? 1 : 0.82)
                         * (weak ? 0.45 : 1);
       ctx.lineWidth = (own ? 1.5 : 2) * (weak ? 0.7 : 1);
-      ctx.setLineDash(own ? [] : (AUTO_DASH[l.tf] || [8, 4]));
+      /* EVERY auto line is solid, whatever frame it came from. Dash length
+         used to grow with the source timeframe, which made a projected line
+         readable as "from higher up" at a glance -- but the line already
+         carries its frame in its own label (`M30 S x3`), so the pattern was a
+         second encoding of something already on screen, and it cost the
+         legibility of the line itself. Frame now shows in weight and alpha
+         only: a projected line is dimmer and slightly heavier. */
+      ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(xr, yr);
@@ -1222,18 +1594,230 @@ export class Chart {
     ctx.moveTo(this.plot.r + 0.5, pane.y); ctx.lineTo(this.plot.r + 0.5, pane.y + pane.h);
     ctx.stroke();
     ctx.fillStyle = COL.text;
-    ctx.font = '10.5px "Roboto Mono", monospace';
+    ctx.font = '9.5px "Roboto Mono", monospace';
     ctx.textAlign = 'left';
     const step = pane.step || niceStep((pane.max - pane.min) / 4);
     const compactAxis = pane.runs.some((r) => r.plots.some((p) => p.fmt === 'compact'));
+    /* A zone tag is a specific, named level; a round-number tick is scenery.
+       When they collide the tick yields -- drawn underneath, both end up
+       unreadable, which is worse than losing one gridline number. */
+    const taken = pane.isMain ? this._zoneLabelSlots(pane) : [];
     for (let v = Math.ceil(pane.min / step) * step; v <= pane.max; v += step) {
       const y = this.y(pane, v);
       if (y < pane.y + 6 || y > pane.y + pane.h - 2) continue;
+      if (taken.some((t) => Math.abs(t.y - y) < 12)) continue;
       const label = compactAxis ? compact(v)
         : pane.isMain ? v.toFixed(this.digits)
           : Math.abs(v) >= 1000 ? compact(v) : v.toFixed(step < 0.01 ? 4 : step < 1 ? 2 : 1);
       ctx.fillText(label, this.plot.r + 6, y + 3.5);
     }
+  }
+
+  /* Zone edges, priced on the axis.
+   *
+   * The bands alone say WHERE a level is but not WHAT it is -- reading a price
+   * off one meant hovering the crosshair. Every visible edge now gets its own
+   * tag, so the chart answers "what is that level" without an interaction.
+   *
+   * Three things this has to get right or it becomes noise:
+   *   - the LAST-PRICE tag wins. It is drawn later and would paint over a zone
+   *     tag anyway; a half-covered number reads as a bug, so anything within
+   *     its box (and the countdown under it) is suppressed instead.
+   *   - edges closer than a label's height collapse to one tag. Two numbers
+   *     three pixels apart are unreadable, and a tight zone -- the strongest
+   *     kind -- is exactly where both edges nearly coincide.
+   *   - strongest first, so when tags do compete the weaker one drops.
+   */
+  /** Where the zone tags will sit. Computed separately from drawing them so
+   *  the AXIS can consult it and skip its own ticks -- otherwise a round-number
+   *  tick renders directly under a zone tag and both become unreadable. */
+  _zoneLabelSlots(pane) {
+    if (!this.zones || !this.zones.length) return [];
+    const last = this.bars.length ? this.bars[this.bars.length - 1].c : NaN;
+    if (!Number.isFinite(last)) return [];
+    const lastY = this.y(pane, last);
+    const LAB_H = 13;
+
+    const wanted = [];
+    for (const z of [...this.zones].sort((a, b) => b.strength - a.strength)) {
+      /* ONE tag per zone, at the edge price meets FIRST -- not the midpoint.
+         The mid is an average of pivot prices and nothing ever turned there;
+         the edges are the extremes that formed the cluster, and the near edge
+         is the level the detector itself uses for every approach it measures.
+         Two tags eight pixels apart also read as two separate levels, which a
+         zone is not.
+         Price INSIDE the zone is the exception: it can leave either way, so
+         both edges are live and both are labelled. */
+      const inside = last >= z.low && last <= z.high;
+      const edges = inside ? [z.high, z.low] : [last > z.high ? z.high : z.low];
+      for (const price of edges) {
+        const y = this.y(pane, price);
+        if (!Number.isFinite(y) || y < pane.y + 7 || y > pane.y + pane.h - 7) continue;
+        /* BOX overlap, not centre distance. The live price tag occupies
+           lastY-8..lastY+8 and the countdown lastY+9..lastY+24; a zone tag is
+           12px tall centred on its own y. Comparing centres let a tag whose
+           centre cleared the region still have its top half clipped by the
+           countdown. A level within ~15px of the current price genuinely
+           cannot be labelled at its true height -- the price tag has to win --
+           so it is dropped rather than nudged, since a number drawn beside the
+           wrong line is worse than no number. */
+        if (y + 6 > lastY - 8 && y - 6 < lastY + 24) continue;
+        if (wanted.some((w) => Math.abs(w.y - y) < LAB_H)) continue;
+        wanted.push({ y, price, above: price > last, strength: z.strength });
+      }
+    }
+    return wanted;
+  }
+
+  _zoneAxisLabels(pane) {
+    const wanted = this._zoneLabelSlots(pane);
+    if (!wanted.length) return;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.font = '9.5px "Roboto Mono", monospace';
+    ctx.textAlign = 'left';
+    for (const w of wanted) {
+      const col = w.above ? COL.down : COL.up;
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = col;
+      ctx.fillRect(this.plot.r, w.y - 6, AXIS_W, 12);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#02101f';
+      ctx.fillText(w.price.toFixed(this.digits), this.plot.r + 5, w.y + 3.5);
+    }
+    ctx.restore();
+  }
+
+  /* What the band under the cursor IS.
+   *
+   * Two detectors draw bands and they answer different questions -- one finds
+   * levels price has TURNED AT repeatedly, the other finds bases price LEFT IN
+   * A HURRY. The labels say which is which; this says what that means, plus the
+   * evidence behind this particular band, so a zone can be judged rather than
+   * just noticed.
+   *
+   * Supply/demand is checked FIRST: its bands are narrower and usually sit
+   * inside the broader pivot clusters, so testing the wide one first would
+   * always win and the specific object would be unreachable.
+   */
+  /*
+   * A tooltip that explains itself.
+   *
+   * The numbers a zone is scored on -- ATR width, ATR reaction, a 0-100
+   * strength -- are the detector's vocabulary, not a reader's. "0.64 ATR wide"
+   * is only meaningful to someone who already knows what ATR is on this
+   * instrument; "6.9 pts -- tight" is meaningful to anyone. So every row here
+   * carries a LABEL, a value in the instrument's own units, and a plain-word
+   * reading, with the raw ratio kept in parentheses for anyone who wants it.
+   *
+   * The opening line is a full sentence about THIS zone rather than a
+   * definition of the zone type, because the first question is always "what is
+   * this band telling me", not "what is a supply zone".
+   */
+  _units(diff) {
+    // FX quotes in pips (5- and 3-digit); metals and indices in price points.
+    const d = this.digits;
+    if (d >= 5) return `${Math.round(diff / 0.0001)} pips`;
+    if (d === 3) return `${Math.round(diff / 0.01)} pips`;
+    const v = Math.abs(diff);
+    return `${v >= 10 ? Math.round(v) : v.toFixed(1)} pts`;
+  }
+
+  /* NOT a confidence, and the words are chosen to stop it reading as one.
+     Measured over 21,800 approaches: the correlation between this score and
+     whether the zone actually held is -0.0097, and the best-scoring quartile
+     held 60.5% against the worst quartile's 61.0%. It ranks how cleanly a zone
+     is DRAWN -- tight, repeatedly touched, near price. That is a real property
+     and it is what decides which six survive the cap; it is not a forecast, and
+     "strong" would have said it was. */
+  _rating(v) {
+    const s = Math.round(v);
+    const word = s >= 75 ? 'textbook' : s >= 60 ? 'clean'
+      : s >= 45 ? 'rough' : 'marginal';
+    return `${s} / 100 &mdash; ${word}`;
+  }
+
+  _thickness(widthAtr, diff) {
+    const word = widthAtr <= 0.5 ? 'tight, a clear line'
+      : widthAtr <= 1.0 ? 'normal'
+        : 'wide &mdash; more a region than a line';
+    return `${this._units(diff)} &mdash; ${word}`;
+  }
+
+  _row(label, value, note) {
+    return `<span><em>${label}</em>${value}`
+      + (note ? `<small> ${note}</small>` : '') + `</span>`;
+  }
+
+  _zoneTip(p) {
+    const pane = this.main;
+    if (!pane || p.y < pane.y || p.y > pane.y + pane.h) { this.tip.hidden = true; return; }
+    const price = this.valAt(pane, p.y);
+    const last = this.bars.length ? this.bars[this.bars.length - 1].c : NaN;
+    const d = this.digits;
+    let html = null;
+
+    for (const z of (this.sdZones || [])) {
+      if (price < z.low || price > z.high) continue;
+      const buyers = z.kind === 'demand';
+      const kind = buyers ? 'DEMAND' : 'SUPPLY';
+      const atr = z.atr > 0 ? z.atr : (z.high - z.low) / Math.max(z.widthAtr, 1e-9);
+      const imp = z.impulseAtr ?? 0;
+      // `kind` IS the direction: supplydemand.js sets DEMAND when the impulse
+      // out of the base was up, SUPPLY when it was down. Saying "the move"
+      // without naming which way it went throws that away.
+      html = `<b>${kind}${z.fresh ? ' &#9679;' : ''}</b>`
+        + `<i>Price paused here, then ran ${buyers ? 'UP' : 'DOWN'} hard &mdash; `
+        + `${buyers ? 'buyers' : 'sellers'} took control. ${z.fresh
+          ? `Nothing has traded back through since, so the ${buyers ? 'buy' : 'sell'} `
+            + `orders behind that ${buyers ? 'rally' : 'sell-off'} may still be waiting here.`
+          : `Price has been back ${z.touches} time${z.touches === 1 ? '' : 's'} `
+            + `since, so some of that ${buyers ? 'buying' : 'selling'} is already used up.`}</i>`
+        + this._row('Zone', `${z.low.toFixed(d)} &ndash; ${z.high.toFixed(d)}`)
+        + this._row('Thickness', this._thickness(z.widthAtr, z.high - z.low),
+          `(${z.widthAtr.toFixed(2)} ATR)`)
+        + this._row('Departure',
+          `${this._units(imp * atr)} ${buyers ? 'up' : 'down'} in a few bars`,
+          `(${imp.toFixed(1)}&times; a normal bar)`)
+        + this._row('Shape', this._rating(z.strength));
+      break;
+    }
+    if (!html) {
+      for (const z of (this.zones || [])) {
+        if (price < z.low || price > z.high) continue;
+        const sup = z.roleAt(last) === 'support';
+        const atr = z.atr > 0 ? z.atr : (z.high - z.low) / Math.max(z.widthAtr, 1e-9);
+        const react = z.reactionAtr;
+        html = `<b>${sup ? 'SUPPORT' : 'RESISTANCE'} &times;${z.touches}</b>`
+          + `<i>Price has come back to this level ${z.touches} times and turned `
+          + `${sup ? 'back up' : 'back down'} each time. `
+          + `${sup ? 'Buyers' : 'Sellers'} keep showing up here.</i>`
+          + this._row('Zone', `${z.low.toFixed(d)} &ndash; ${z.high.toFixed(d)}`)
+          + this._row('Thickness', this._thickness(z.widthAtr, z.high - z.low),
+            `(${z.widthAtr.toFixed(2)} ATR)`)
+          + (Number.isFinite(react)
+            ? this._row('Typical bounce', `${this._units(react * atr)} away`,
+              `(${react.toFixed(1)}&times; a normal bar)`)
+            : '')
+          + this._row('Shape', this._rating(z.strength))
+          + `<u>How cleanly the zone is drawn &mdash; not a forecast. Measured `
+          + `over 21,800 approaches, a high score holds no more often than a `
+          + `low one.</u>`;
+        break;
+      }
+    }
+    if (!html) { this.tip.hidden = true; return; }
+
+    this.tip.innerHTML = html;
+    this.tip.hidden = false;
+    // flip to the other side of the cursor near an edge, or it clips
+    const w = this.tip.offsetWidth || 220;
+    const h = this.tip.offsetHeight || 60;
+    const left = p.x + 14 + w > this.w ? p.x - 14 - w : p.x + 14;
+    const top = p.y + 12 + h > this.h ? p.y - 12 - h : p.y + 12;
+    this.tip.style.left = `${Math.max(2, left)}px`;
+    this.tip.style.top = `${Math.max(2, top)}px`;
   }
 
   _paneTitle(pane) {
@@ -1269,7 +1853,7 @@ export class Chart {
     ctx.moveTo(0, this.plot.b + 0.5); ctx.lineTo(this.w, this.plot.b + 0.5);
     ctx.stroke();
     ctx.fillStyle = COL.text;
-    ctx.font = '10.5px "Roboto Mono", monospace';
+    ctx.font = '9.5px "Roboto Mono", monospace';
     ctx.textAlign = 'center';
     for (const tick of (this.xTicks || [])) {
       ctx.fillText(axisTime(this.tAt(tick.i), this.tf), tick.x, this.plot.b + 14);
@@ -1296,13 +1880,13 @@ export class Chart {
     ctx.fillStyle = up ? COL.up : COL.down;
     ctx.fillRect(this.plot.r, y - 8, AXIS_W, 16);
     ctx.fillStyle = '#02101f';
-    ctx.font = '600 10.5px "Roboto Mono", monospace';
+    ctx.font = '600 9.5px "Roboto Mono", monospace';
     ctx.fillText(last.c.toFixed(this.digits), this.plot.r + 5, y + 3.5);
 
     // countdown to the close of the forming bar, directly under the price tag
     const txt = timeLeft(last.t, this.tf);
     if (txt) {
-      ctx.font = '600 10.5px "Roboto Mono", monospace';
+      ctx.font = '600 9.5px "Roboto Mono", monospace';
       const boxY = y + 9;
       ctx.fillStyle = COL.crossBg;
       ctx.fillRect(this.plot.r, boxY, AXIS_W, 15);
@@ -1336,13 +1920,13 @@ export class Chart {
     ctx.fillStyle = COL.crossBg;
     ctx.fillRect(this.plot.r, y - 8, AXIS_W, 16);
     ctx.fillStyle = '#fff';
-    ctx.font = '10.5px "Roboto Mono", monospace';
+    ctx.font = '9.5px "Roboto Mono", monospace';
     ctx.fillText(pane.isMain ? v.toFixed(this.digits) : (Math.abs(v) >= 1000 ? compact(v) : v.toFixed(2)),
                  this.plot.r + 5, y + 3.5);
 
     // time tag
     const label = stamp(this.tAt(this.cross.i));
-    ctx.font = '10.5px "Roboto Mono", monospace';
+    ctx.font = '9.5px "Roboto Mono", monospace';
     const w = ctx.measureText(label).width + 12;
     ctx.fillStyle = COL.crossBg;
     ctx.fillRect(clamp(cx - w / 2, 0, this.plot.r - w), this.plot.b + 2, w, 16);
@@ -1415,7 +1999,14 @@ export class Chart {
       if (p.x > this.plot.r) { drag = { mode: 'scaleY', y: p.y, min: this.main.min, max: this.main.max }; return; }
       if (p.y > this.plot.b) { drag = { mode: 'scaleX', x: p.x, span: this.view.span }; return; }
       if (this.tool !== 'cursor') { this._toolClick(p); return; }
-      drag = { mode: 'pan', x: p.x, y: p.y, right: this.view.right, moved: false };
+      /* The price range is captured too, so a drag can move the chart UP and
+         DOWN as well as left and right. Taken from `this.main` at grab time
+         rather than read live, or each frame would pan relative to the range
+         the previous frame just set and the chart would accelerate away. */
+      drag = {
+        mode: 'pan', x: p.x, y: p.y, right: this.view.right, moved: false,
+        min: this.main.min, max: this.main.max, movedY: false,
+      };
     });
 
     c.addEventListener('pointermove', (e) => {
@@ -1424,6 +2015,28 @@ export class Chart {
         drag.moved = true;
         this.view.right = drag.right - (p.x - drag.x) / this.barW;
         this.view.right = clamp(this.view.right, this.view.span * 0.4, this.bars.length + this.view.span * 0.6);
+
+        /* VERTICAL PAN. The content follows the cursor: drag down and the bars
+           move down, which means the visible price WINDOW moves up.
+
+             price(y) = max - (y / h) * (max - min)
+
+           so holding a bar's price at a cursor moved by `dy` needs the window
+           shifted by dy * (max - min) / h -- both edges, so the scale is
+           unchanged and only the offset moves.
+
+           Setting `priceLock` is what makes it stick: without it the next
+           repaint re-fits the range to the bars and the drag springs back. That
+           also means a vertical pan turns auto-scaling off, which is what the
+           reset gestures exist to undo. */
+        const dy = p.y - drag.y;
+        if (dy || drag.movedY) {
+          const pane = this.main;
+          const h = Math.max(1, pane.h);
+          const shift = (dy * (drag.max - drag.min)) / h;
+          this.view.priceLock = { min: drag.min + shift, max: drag.max + shift };
+          drag.movedY = true;
+        }
         this.draw();
         return;
       }
@@ -1449,17 +2062,26 @@ export class Chart {
         this.pending.p2 = { t: this.tAt(this.cross.i), price: this.valAt(pane, p.y) };
       }
       this.hoverDrawing = this._hitDrawing(p);
+      this._zoneTip(p);
       c.style.cursor = this.tool !== 'cursor' ? 'copy' : this.hoverDrawing ? 'pointer' : 'crosshair';
       this.draw();
     });
 
     const endDrag = () => {
       if (drag && drag.mode === 'pan' && !drag.moved) { /* plain click */ }
+      // a finished Y-scale drag is the only way to SET a price lock, so it is
+      // also the only place that has to remember one
+      // a vertical pan sets a price lock, and a price lock is a saved setting
+      if (drag && (drag.mode === 'scaleY' || drag.movedY)) this._persist();
       drag = null;
     };
     c.addEventListener('pointerup', endDrag);
     c.addEventListener('pointercancel', endDrag);
-    c.addEventListener('pointerleave', () => { this.cross = null; this.draw(); });
+    c.addEventListener('pointerleave', () => {
+      this.cross = null;
+      this.tip.hidden = true;
+      this.draw();
+    });
 
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
@@ -1468,17 +2090,40 @@ export class Chart {
         this.view.right = clamp(this.view.right + Math.sign(e.deltaY) * Math.max(1, this.view.span * 0.06),
                                 this.view.span * 0.4, this.bars.length + this.view.span * 0.6);
       } else {
-        const anchor = this.idxAt(p.x);
+        /* ZOOM PRESERVES THE RIGHT EDGE.
+         *
+         * It used to anchor on the cursor, which moved the right edge -- and
+         * since the AUTO stack now runs AS OF that edge, magnifying the chart
+         * silently changed WHEN you were standing. Measured: parked 700 bars
+         * back, four notches in moved the edge from 1301 to 1260 and the
+         * channel count from 1 to 3; four notches back out landed on 1306, not
+         * 1301, so the original picture was unrecoverable by zooming.
+         *
+         * Keeping the anchor and freezing the as-of point instead would be
+         * worse: the chart would draw lines fitted to bar 1301 while showing
+         * only up to 1260, which is 41 bars of hindsight on screen -- the exact
+         * thing the as-of cut exists to remove.
+         *
+         * So panning chooses WHEN, zoom chooses how much of it you see. The
+         * cost is cursor-anchored zoom, which is a real convenience; panning
+         * after the zoom recovers it, and an unstable analysis is the worse
+         * trade.
+         */
         const k = e.deltaY > 0 ? 1.12 : 1 / 1.12;
         const span = clamp(Math.round(this.view.span * k), MIN_SPAN, MAX_SPAN);
-        const frac = (anchor - this.i0) / this.view.span;
+        const atLive = this.view.right >= this.bars.length - 1;
         this.view.span = span;
-        this.view.right = anchor + (1 - frac) * span;
+        // rightPad scales with span, so staying live means re-deriving it
+        this.view.right = atLive
+          ? this.bars.length - 1 + this.rightPad()
+          : clamp(this.view.right, span * 0.4, this.bars.length + span * 0.6);
       }
       this.draw();
     }, { passive: false });
 
-    c.addEventListener('dblclick', () => { this.resetView(); this.draw(); });
+    // the full reset, same as the button: a half-reset that kept the zoom was
+    // two different meanings for one gesture
+    c.addEventListener('dblclick', () => { this.resetScale(); });
 
     c.addEventListener('contextmenu', (e) => {
       const p = local(e);
@@ -1689,6 +2334,8 @@ export class Chart {
     return {
       symbol: this.symbol, tf: this.tf, type: this.type,
       studies: this.studies, span: this.view.span,
+      // a hand-set price scale is a setting, not a transient
+      priceLock: this.view.priceLock,
     };
   }
 }

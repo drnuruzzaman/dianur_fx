@@ -166,7 +166,10 @@ export function computeRead(reads, lines, close, atr) {
   let capped = null;
   if (Number.isFinite(geo.rr) && geo.rr < 1 && score > 35) {
     score = 35;
-    capped = `capped by ${geo.rr.toFixed(2)}:1 geometry`;
+    /* Displayed text: names the RATIO rather than the word "geometry", which
+       is the module's own vocabulary and meant nothing to a reader of the
+       panel. The function keeps its name. */
+    capped = `capped by 1:${geo.rr.toFixed(2)} risk-to-reward`;
   }
 
   /* A frame trending AGAINST the call demotes it to WATCH however good the

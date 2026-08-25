@@ -22,12 +22,25 @@ export const DEFAULT_ZONE_PARAMS = {
   strengthPivots: 3,
   lookback: 500,
   clusterAtr: 0.35,
-  minTouches: 3,
+  /* 2 rather than 3: a clean double top IS a level a human draws, and score()
+     already gives it 11 points against 35 for four touches, so a weak zone
+     loses on merit instead of being excluded before it can compete. */
+  minTouches: 2,
   minSeparation: 8,
   maxWidthAtr: 1.2,
   maxZones: 6,
   minStrength: 25,
+  /* How far price travelled AWAY from a pivot before turning back, in ATR. A
+     level that produced 3 ATR bounces is not the same object as one price
+     grazed and drifted from, and a raw touch count cannot tell them apart. */
+  reactionBars: 20,
+  reactionFullAtr: 2.0,
+  /* "12 ATR" meant 19% of the actual price range on USDJPY 1h and 54% on
+     XAUUSD 4h -- a trader draws what is ON THE CHART, not a count of ATR. The
+     allowance is the LARGER of the ATR budget and a fraction of the range price
+     actually covered; the ATR term is a floor for unusually quiet windows. */
   maxDistanceAtr: 12,
+  maxDistanceRange: 0.75,
 };
 
 const round2 = (v) => Math.round(v * 100) / 100;
@@ -54,14 +67,51 @@ export class Zone {
   }
 }
 
-function score(touches, spanBars, widthAtr, lookback, distAtr, p) {
-  const touchPts = Math.min(35, (touches - 2) * 12 + 11);
-  const spanPts = Math.min(20, 20 * (spanBars / Math.max(lookback, 1)));
+/* Median excursion away from a zone's pivots, in ATR. Median, not mean, so one
+   violent bounce cannot carry a level that otherwise did nothing.
+   CAUSAL: every bar read lies between the pivot and `i`, and the window is
+   clipped at `i` so a recent pivot is not credited with an excursion that has
+   not happened yet. */
+function reactionAtr(kept, bars, atr, i, p) {
+  const out = [];
+  // JS `kept` holds {price, i, kind} objects; the Python mirror uses tuples
+  for (const lv of kept) {
+    const price = lv.price, k = lv.i, kind = lv.kind;
+    const a = k < atr.length ? atr[k] : NaN;
+    if (!(Number.isFinite(a) && a > 0)) continue;
+    const end = Math.min(i, k + p.reactionBars);
+    if (end <= k) continue;
+    let move;
+    if (kind === 'low') {
+      let hi = -Infinity;
+      for (let m = k + 1; m <= end; m++) if (bars[m].h > hi) hi = bars[m].h;
+      move = hi - price;
+    } else {
+      let lo = Infinity;
+      for (let m = k + 1; m <= end; m++) if (bars[m].l < lo) lo = bars[m].l;
+      move = price - lo;
+    }
+    out.push(Math.max(0, move) / a);
+  }
+  if (!out.length) return NaN;
+  out.sort((x, y) => x - y);
+  const mid = out.length >> 1;
+  return out.length % 2 ? out[mid] : (out[mid - 1] + out[mid]) / 2;
+}
+
+function score(touches, spanBars, widthAtr, lookback, dist, allow, reaction, p) {
+  const touchPts = Math.min(28, (touches - 2) * 10 + 9);
+  const spanPts = Math.min(15, 15 * (spanBars / Math.max(lookback, 1)));
+  const reactPts = (p.reactionFullAtr > 0 && Number.isFinite(reaction))
+    ? 17 * Math.min(1, Math.max(0, reaction / p.reactionFullAtr)) : 0;
   const tightPts = p.maxWidthAtr <= 0 ? 0
-    : 25 * Math.max(0, 1 - (widthAtr / p.maxWidthAtr));
-  const proxPts = (p.maxDistanceAtr <= 0 || !Number.isFinite(distAtr)) ? 0
-    : 20 * Math.max(0, 1 - (distAtr / p.maxDistanceAtr));
-  return round2(Math.max(0, Math.min(100, touchPts + spanPts + tightPts + proxPts)));
+    : 22 * Math.max(0, 1 - (widthAtr / p.maxWidthAtr));
+  // scored against the SAME allowance the filter uses, so a zone that barely
+  // survives the cut also scores near zero for closeness
+  const proxPts = (allow <= 0 || !Number.isFinite(dist)) ? 0
+    : 18 * Math.max(0, 1 - (dist / allow));
+  return round2(Math.max(0, Math.min(100,
+    touchPts + spanPts + tightPts + reactPts + proxPts)));
 }
 
 /** Agglomerate a price-sorted list, breaking wherever the gap exceeds `tol`. */
@@ -88,6 +138,12 @@ export function detect(bars, i, timeframe, atrArr, params = {}) {
 
   const lastClose = bars[i].c;
   const i0 = Math.max(0, i - p.lookback);
+  let winHi = -Infinity, winLo = Infinity;
+  for (let k = i0; k <= i; k++) {
+    if (bars[k].h > winHi) winHi = bars[k].h;
+    if (bars[k].l < winLo) winLo = bars[k].l;
+  }
+  const allow = Math.max(p.maxDistanceAtr * a, p.maxDistanceRange * (winHi - winLo));
   const { highs, lows } = findPivots(bars, p.strengthPivots);
 
   /* findPivots does not carry confirmedI — it is shared with the batch scorer
@@ -126,9 +182,13 @@ export function detect(bars, i, timeframe, atrArr, params = {}) {
       fromHighs: kept.filter((x) => x.kind === 'high').length,
       fromLows: kept.filter((x) => x.kind === 'low').length,
     });
-    const dist = z.distanceAtr(lastClose, a);
-    if (Number.isFinite(dist) && dist > p.maxDistanceAtr) continue;
-    z.strength = score(z.touches, lastI - firstI, widthAtr, p.lookback, dist, p);
+    const dist = Math.abs(lastClose - z.mid);
+    if (Number.isFinite(dist) && allow > 0 && dist > allow) continue;
+    const reaction = reactionAtr(kept, bars, atrArr, i, p);
+    z.reactionAtr = reaction;
+    z.atr = a;
+    z.strength = score(z.touches, lastI - firstI, widthAtr, p.lookback,
+                       dist, allow, reaction, p);
     if (z.strength < p.minStrength) continue;
     out.push(z);
   }

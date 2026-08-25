@@ -63,6 +63,9 @@ class Zone:
     last_t: int
     width_atr: float = 0.0
     strength: float = 0.0
+    #: median excursion away from this zone's pivots, in ATR
+    reaction_atr: float = float('nan')
+    atr: float = float('nan')     # ATR at detection; lets a UI talk in points
     # Pivot prices that formed it, so a chart can mark the evidence.
     levels: tuple = ()
     from_highs: int = 0
@@ -104,6 +107,8 @@ class Zone:
             'first_t': self.first_t, 'last_t': self.last_t,
             'width_atr': round(self.width_atr, 3),
             'strength': self.strength,
+            'reaction_atr': self.reaction_atr,
+            'atr': self.atr,
         }
 
 
@@ -113,36 +118,104 @@ class ZoneParams:
     close_confirm: bool = False   # see sim/tl/pivots.py find_pivots
     lookback: int = 500           # bars considered
     cluster_atr: float = 0.35     # levels closer than this are one zone
-    min_touches: int = 3          # distinct reactions required
+    # 2 rather than 3. A clean double top IS a level a human draws, and the
+    # scorer already ranks it accordingly -- touch_pts gives 2 touches 11 points
+    # against 35 for four -- so a weak zone loses on merit instead of being
+    # excluded before it can compete. Hard-gating at 3 removed 23 of 33 clusters
+    # on gold H1 before anything had a chance to be judged.
+    min_touches: int = 2          # distinct reactions required
     min_separation: int = 8       # bars apart before two touches count as two
     max_width_atr: float = 1.2    # wider than this is not a level, it is a range
     max_zones: int = 6            # best first
     min_strength: float = 25.0
-    # A zone 20 ATR away is true and untradeable. The line engine already
-    # discounts distance for exactly this reason; without it the strongest
-    # zones on a trending instrument are all historic ones price left long ago.
+    # How far price travelled AWAY from a pivot before turning back, in ATR,
+    # measured over this many bars. A level that produced 3 ATR bounces is not
+    # the same object as one price grazed and drifted from, and a raw touch
+    # count cannot tell them apart.
+    reaction_bars: int = 20
+    reaction_full_atr: float = 2.0    # the excursion that earns full marks
+    # HOW FAR IS TOO FAR. A zone price cannot reach is true and untradeable,
+    # but "12 ATR" turned out to mean wildly different things per instrument:
+    # measured over the same 500-bar window it covered 19% of the actual price
+    # range on USDJPY 1h and 54% on XAUUSD 4h. A trader does not think in ATR
+    # here -- they draw the levels that are ON THE CHART.
+    #
+    # So the allowance is the LARGER of an ATR budget and a fraction of the
+    # range price has actually covered in the lookback. The range term is what
+    # normally binds and self-scales with the instrument; the ATR term is a
+    # floor that keeps the allowance sane through an unusually quiet window,
+    # where the recent range can collapse to almost nothing.
     max_distance_atr: float = 12.0
+    max_distance_range: float = 0.75
 
 
-def _score(touches, span_bars, width_atr, lookback, dist_atr, p: ZoneParams) -> float:
+def _score(touches, span_bars, width_atr, lookback, dist, allow, reaction,
+           p: ZoneParams) -> float:
     """
-    0-100. Touches lead, but TIGHTNESS is weighted heavily because it is what
-    separates a zone from a vague area: a band price turned at four times within
-    0.15 ATR is a level, the same four touches spread over a full ATR is a
-    neighbourhood. Distance from price then discounts the whole thing, because a
-    level you cannot reach today is not a level you can trade today.
+    0-100 over five terms.
+
+    TIGHTNESS is weighted heavily because it separates a zone from a vague area:
+    a band price turned at four times within 0.15 ATR is a level, the same four
+    touches spread over a full ATR is a neighbourhood.
+
+    REACTION is what a raw touch count cannot express. Three pivots that each
+    produced a 3 ATR bounce and three that barely turned score the same on
+    `touches` and are not the same object -- the first is a level being defended,
+    the second is price passing through a price. Weight had to come from
+    somewhere: touches gives up 7 points and span 5, because both were already
+    proxies for the same underlying thing this measures directly.
+
+    Distance discounts the whole thing last: a level you cannot reach today is
+    not a level you can trade today.
     """
-    touch_pts = min(35.0, (touches - 2) * 12.0 + 11.0)
-    span_pts = min(20.0, 20.0 * (span_bars / max(lookback, 1)))
+    touch_pts = min(28.0, (touches - 2) * 10.0 + 9.0)
+    span_pts = min(15.0, 15.0 * (span_bars / max(lookback, 1)))
+    react_pts = 0.0
+    if p.reaction_full_atr > 0 and np.isfinite(reaction):
+        react_pts = 17.0 * min(1.0, max(0.0, reaction / p.reaction_full_atr))
     if p.max_width_atr <= 0:
         tight_pts = 0.0
     else:
-        tight_pts = 25.0 * max(0.0, 1.0 - (width_atr / p.max_width_atr))
-    if p.max_distance_atr <= 0 or not np.isfinite(dist_atr):
+        tight_pts = 22.0 * max(0.0, 1.0 - (width_atr / p.max_width_atr))
+    # Proximity is scored against the SAME allowance the filter uses, so a zone
+    # that just survives the cut also scores near zero for closeness. Scoring it
+    # against a different yardstick would let a zone be "far" for one purpose
+    # and "near" for the other.
+    if allow <= 0 or not np.isfinite(dist):
         prox_pts = 0.0
     else:
-        prox_pts = 20.0 * max(0.0, 1.0 - (dist_atr / p.max_distance_atr))
-    return round(max(0.0, min(100.0, touch_pts + span_pts + tight_pts + prox_pts)), 2)
+        prox_pts = 18.0 * max(0.0, 1.0 - (dist / allow))
+    return round(max(0.0, min(100.0, touch_pts + span_pts + tight_pts
+                              + react_pts + prox_pts)), 2)
+
+
+def _reaction_atr(kept, high, low, atr, i, p: ZoneParams) -> float:
+    """
+    Median excursion away from the zone's pivots, in ATR.
+
+    For a swing LOW the reaction is how far price rose afterwards; for a swing
+    HIGH how far it fell. Median rather than mean, so one violent bounce cannot
+    carry a level that otherwise did nothing.
+
+    CAUSAL. Every bar read lies between the pivot and `i`, both already in the
+    past at the moment the zone is computed. The window is also clipped at `i`,
+    so a recent pivot is scored on the bars that actually exist rather than
+    being credited with an excursion that has not happened yet.
+    """
+    out = []
+    for price, k, kind in kept:
+        a = atr[k] if k < len(atr) and np.isfinite(atr[k]) and atr[k] > 0 else np.nan
+        if not np.isfinite(a):
+            continue
+        end = min(i, k + p.reaction_bars)
+        if end <= k:
+            continue
+        if kind == 'low':
+            move = float(np.max(high[k + 1:end + 1])) - price
+        else:
+            move = price - float(np.min(low[k + 1:end + 1]))
+        out.append(max(0.0, move) / a)
+    return float(np.median(out)) if out else float('nan')
 
 
 def _cluster(levels, tol):
@@ -182,6 +255,11 @@ def detect(bars, i, timeframe, atr, params: ZoneParams = None, times=None):
         times = np.asarray(bars.index.astype('int64') // 1_000_000)
 
     i0 = max(0, i - p.lookback)
+    # The distance allowance, computed once: the larger of the ATR budget and a
+    # fraction of the range price actually covered in the lookback.
+    win_hi = float(np.max(high[i0:i + 1]))
+    win_lo = float(np.min(low[i0:i + 1]))
+    allow = max(p.max_distance_atr * a, p.max_distance_range * (win_hi - win_lo))
     piv_hi, piv_lo = find_pivots(high, low, p.strength_pivots, close=close,
                                  close_confirm=getattr(p, 'close_confirm', False))
     piv_hi = [q for q in pivots_confirmed_by(piv_hi, i) if q['i'] >= i0]
@@ -220,11 +298,14 @@ def detect(bars, i, timeframe, atr, params: ZoneParams = None, times=None):
             from_highs=sum(1 for x in kept if x[2] == 'high'),
             from_lows=sum(1 for x in kept if x[2] == 'low'),
         )
-        dist = z.distance_atr(last_close, a)
-        if np.isfinite(dist) and dist > p.max_distance_atr:
+        dist = abs(last_close - z.mid)
+        if np.isfinite(dist) and allow > 0 and dist > allow:
             continue
+        reaction = _reaction_atr(kept, high, low, atr, i, p)
+        z.reaction_atr = reaction
+        z.atr = a
         z.strength = _score(z.touches, last_i - first_i, width_atr, p.lookback,
-                            dist, p)
+                            dist, allow, reaction, p)
         if z.strength < p.min_strength:
             continue
         out.append(z)

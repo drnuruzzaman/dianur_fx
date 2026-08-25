@@ -135,7 +135,14 @@ function build(kind, lower, upper, timeframe, times, i0, i1, widthAtr, cont,
   const slope = 0.5 * (lower.slope + upper.slope);
   const nBars = i1 - i0 + 1;
   return new Channel({
-    id: `${timeframe}-CH-${kind === 'paired' ? 'P' : 'J'}-${i0}-${i1}`,
+/* The overlap window alone does NOT identify a channel: two different rail
+     PAIRS can share the same i0..i1 and did -- observed on 15m gold as two
+     corridors both calling themselves `15m-CH-P-1165-1382` with upper rails 29
+     points apart. Nothing keys on the id today, so it was invisible; the first
+     Map keyed by it would silently drop a corridor. The rails' own anchors
+     disambiguate. */
+    id: `${timeframe}-CH-${kind === 'paired' ? 'P' : 'J'}-${i0}-${i1}`
+      + `-${lower.pivot1.i}.${upper.pivot1.i}`,
     timeframe, kind, direction: lower.direction, lower, upper, slope,
     tStart: times[i0], tEnd: times[i1], widthAtr, containment: cont,
     touchesLower: tLo, touchesUpper: tHi, bars: nBars,

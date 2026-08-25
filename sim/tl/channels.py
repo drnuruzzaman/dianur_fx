@@ -319,7 +319,11 @@ def _build(kind, lower, upper, timeframe, times, i0, i1, width_atr, cont,
     slope = 0.5 * (lower.slope + upper.slope)
     direction = lower.direction
     ch = Channel(
-        id='%s-CH-%s-%d-%d' % (timeframe, 'P' if kind == 'paired' else 'J', i0, i1),
+        # See the JS mirror: two different rail PAIRS can share one i0..i1
+        # window, so the rails' own anchors disambiguate.
+        id='%s-CH-%s-%d-%d-%d.%d' % (
+            timeframe, 'P' if kind == 'paired' else 'J', i0, i1,
+            lower.pivot_1['i'], upper.pivot_1['i']),
         timeframe=timeframe, kind=kind, direction=direction,
         lower=lower, upper=upper, slope=slope,
         t_start=int(times[i0]), t_end=int(times[i1]),

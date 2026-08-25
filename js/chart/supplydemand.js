@@ -129,7 +129,7 @@ export function detect(bars, tf, atr, params = {}, upto = null) {
       baseI0: b0, baseI1: b1, impulseI1: i, confirmedI: i,
       tBase: bars[b0].t, tConfirmed: bars[i].t,
       impulseAtr: imp, baseBars: b1 - b0 + 1, widthAtr,
-      touches: 0, broken: false, strength: 0,
+      touches: 0, broken: false, strength: 0, atr: a,
     });
 
     // --- 3. how has it been used SINCE it formed? ---

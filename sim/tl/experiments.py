@@ -57,6 +57,9 @@ class ExperimentSpec:
 
     # --- what it measured, at freeze time -------------------------------- #
     baseline: Optional[dict] = None
+    # A frozen baseline is never edited. When re-measurement changes what it
+    # means, the new numbers land here and both stay readable.
+    revision: Optional[dict] = None
     universe: Tuple[str, ...] = ()
 
     def to_row(self):
@@ -110,6 +113,45 @@ DISPLACEMENT_V1_4H = ExperimentSpec(
         'net_avg_R': 0.102,
         'cells_positive': '8 of 30 across all timeframes',
         'caveat': '307 trades across 6 cells; ~51 per cell',
+    },
+    # The frozen baseline above is left exactly as recorded -- that is what
+    # freezing is for. What it MEANT changed, and the re-measure sits beside it.
+    revision={
+        'measured_at': '2026-08-25',
+        'what_changed': (
+            'AUDUSD 4h bars now load. In the original run AUDUSD produced 1h '
+            'cells only, so its 4h data was silently absent, and five further '
+            'cells fell under the len(trades) < 30 reporting filter in '
+            'metrics(). The +0.102 headline was therefore pooled over 6 of the '
+            '12 cells that exist today. Reproduced exactly on all 6 -- the '
+            'trade counts and per-cell R match the recorded CSV to the digit, '
+            'so the arithmetic was right and the population was partial.'),
+        'recorded_6_cells': {'trades': 307, 'net_avg_R': 0.1015},
+        'same_filter_today': {'trades': 354, 'net_avg_R': 0.0469,
+                              'note': 'the only cell the >=30 filter newly '
+                                      'admits is AUDUSD 1999-2010, n=47, '
+                                      'net -0.310 -- the worst cell in the '
+                                      'study'},
+        'all_cells': {'trades': 449, 'net_avg_R': 0.0767,
+                      'ci95': (-0.0570, 0.2108),
+                      'verdict': 'indistinguishable from zero'},
+        'by_era_net_R': {'1999-2010': -0.0237, '2011-2020': 0.1634,
+                         '2021-2026': 0.1136,
+                         'note': 'every era CI spans zero'},
+        'drop_best_cell': {'trades': 380, 'net_avg_R': 0.0395,
+                           'ci95': (-0.1099, 0.1890)},
+        'neighbourhood': (
+            'not a spike -- stop 0.75 gives +0.104 and atr-pct 10-90 gives '
+            '+0.103, both above the frozen point. But neighbours range 0.001 '
+            'to 0.104, a spread the size of the effect, so the parameter '
+            'choice does as much work as the signal.'),
+        'friction_breakeven': '2.06x the modelled friction',
+        'power': (
+            'CI half-width 0.134 at n=449. Clearing zero at this effect size '
+            'needs ~1368 trades, ~3x current, i.e. roughly 12 instruments. '
+            'Only 4 have bars on disk and the history already runs 1999-2026, '
+            'so the sample is exhausted: this question cannot be settled with '
+            'more history, only with more instruments.'),
     },
     universe=('EURUSD.a', 'USDJPY.a', 'XAUUSD.a', 'AUDUSD.a'),
 )

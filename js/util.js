@@ -158,13 +158,106 @@ export function debounce(fn, ms = 180) {
 
 /* ---- localStorage with a namespace and safe fallbacks ---- */
 const NS = 'dnfx.';
+/* THE WORKSPACE FILE.
+ *
+ * localStorage is scoped to a browser profile: clear the site data, switch
+ * browser, or open the app from another host and every setting is gone. The
+ * workspace belongs to the PROJECT, so it is mirrored to `data/workspace.json`
+ * through the dev server.
+ *
+ * localStorage stays the working store -- every `load()` in the app reads it
+ * synchronously and none of them had to change. The file is a DURABLE COPY:
+ * written after each change, read once at boot to repopulate an empty or
+ * out-of-date browser.
+ *
+ * Debounced, because a single drag can fire dozens of saves and the file only
+ * needs the settled result.
+ */
+let flushTimer = null;
+/* Nothing is written to the file until the file has been READ. A save that
+   fires during module init would otherwise flush a pre-hydration snapshot over
+   the durable copy -- the same shape as the priceLock bug, where the app
+   erased the value it was about to ask for. */
+let hydrated = false;
+/* Keys removed since the last flush. The file only shrinks when a client says
+   so explicitly -- see the merge in serve.py. */
+const pendingDeletes = new Set();
+
+function snapshot() {
+  const out = {};
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith(NS)) out[k.slice(NS.length)] = localStorage.getItem(k);
+    }
+  } catch { /* private mode */ }
+  return out;
+}
+
+function scheduleFlush() {
+  if (!hydrated) return;
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => {
+    const set = snapshot();
+    const del = [...pendingDeletes];
+    pendingDeletes.clear();
+    if (!Object.keys(set).length && !del.length) return;
+    try {
+      fetch('/workspace', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ set, del }),
+      }).catch(() => { /* no server: localStorage still holds everything */ });
+    } catch { /* ditto */ }
+  }, 600);
+}
+
+/**
+ * Load the project's workspace file into localStorage, once, before boot.
+ *
+ * LOCALSTORAGE WINS where it already has the key. It is the working store and
+ * therefore never STALER than the file -- the file trails it by the 600ms
+ * debounce and nothing else. The file's job is to fill what the browser is
+ * missing: a fresh profile, cleared site data, a different machine.
+ *
+ * Taking the file first would be wrong in the one case that matters. A browser
+ * mid-session holds changes the file has not received yet, and overwriting them
+ * on reload would undo the last thing you did.
+ *
+ * Keys the file does not mention are left alone rather than deleted -- a
+ * half-written file should not erase settings it never knew about.
+ *
+ * Returns the number of keys adopted FROM THE FILE, or -1 when there is no
+ * server.
+ */
+export async function hydrateWorkspace() {
+  try {
+    hydrated = false;
+    const res = await fetch('/workspace', { cache: 'no-store' });
+    if (!res.ok) { hydrated = true; return -1; }
+    const data = await res.json();
+    if (!data || typeof data !== 'object') { hydrated = true; return 0; }
+    let n = 0;
+    for (const [k, v] of Object.entries(data)) {
+      if (typeof v !== 'string') continue;
+      if (localStorage.getItem(NS + k) !== null) continue;   // browser wins
+      localStorage.setItem(NS + k, v);
+      n += 1;
+    }
+    hydrated = true;
+    return n;
+  } catch { hydrated = true; return -1; }
+}
+
 export const save = (key, value) => {
   try { localStorage.setItem(NS + key, JSON.stringify(value)); } catch { /* quota / private mode */ }
+  scheduleFlush();
 };
 /** Delete one namespaced key. Callers must not touch localStorage directly:
     every key here is prefixed, and a raw removeItem silently does nothing. */
 export const drop = (key) => {
   try { localStorage.removeItem(NS + key); } catch { /* private mode */ }
+  pendingDeletes.add(key);
+  scheduleFlush();
 };
 
 export const load = (key, fallback = null) => {

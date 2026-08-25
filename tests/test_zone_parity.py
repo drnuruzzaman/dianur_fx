@@ -78,6 +78,11 @@ def test_same_zones_found(stem, csv, expected):
         assert a.first_i == b['first_i'] and a.last_i == b['last_i'], where
         assert a.first_t == b['first_t'] and a.last_t == b['last_t'], where
         assert a.width_atr == pytest.approx(b['width_atr'], rel=1e-9, abs=TOL), where
+        # reaction feeds 17 of the 100 strength points, so a divergence here
+        # would surface as a strength mismatch WITHOUT saying which term drifted
+        if b.get('reaction_atr') is not None and a.reaction_atr == a.reaction_atr:
+            assert a.reaction_atr == pytest.approx(
+                b['reaction_atr'], rel=1e-9, abs=TOL), where + ' reaction'
         assert abs(a.strength - b['strength']) <= S_TOL, (
             '%s strength: python=%s js=%s' % (where, a.strength, b['strength']))
 

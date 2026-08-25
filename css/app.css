@@ -92,7 +92,9 @@ kbd{
   color:var(--text-faint)}
 .acct-cell b{font-family:var(--mono); font-size:11px; font-weight:500}
 .acct-btn{margin-left:6px; margin-right:2px; border:1px solid var(--line);
-  border-radius:4px; width:24px}
+  border-radius:4px; width:24px;
+  /* A bare "$" in the UI face renders thin beside the other glyph buttons. */
+  font-family:var(--mono); font-size:12px; font-weight:700}
 .acct-btn[aria-expanded="true"]{background:var(--accent-soft); color:#fff;
   border-color:transparent}
 
@@ -157,13 +159,19 @@ body.right-collapsed .rail-toggle-r{ display:none }
 /* The handle floats over the chart edge rather than sitting in the grid, so a
    collapsed rail leaves no gutter behind. */
 .rail-toggle{
-  position:absolute; top:8px; z-index:6; width:16px; height:34px;
+  /* Vertically CENTRED, not pinned to the top: the top-left of a chart is where
+     the legend lives, and the handle sat straight on the instrument name. The
+     middle of a rail edge is empty by construction. */
+  position:absolute; top:50%; transform:translateY(-50%);
+  z-index:6; width:16px; height:38px;
   display:grid; place-items:center; cursor:pointer; padding:0;
   background:var(--surface); color:var(--text-faint);
   border:1px solid var(--line); border-radius:3px;
   font-size:11px; line-height:1;
   transition:left .16s ease, right .16s ease, color .12s ease;
+  opacity:.55;
 }
+.rail-toggle:hover{opacity:1}
 .rail-toggle:hover{color:var(--text); background:var(--surface-2)}
 /* Amber sits between up and down: a margin level of 150% is not healthy and
    not yet a margin call, and colouring it green or red would say otherwise. */
@@ -211,15 +219,20 @@ body.right-collapsed .rightbar{ border:0; overflow:hidden }
 .icon-btn:hover{background:var(--surface-2); color:var(--text)}
 
 .wl-head,.tape-head{
-  display:grid; padding:4px 10px; font-size:9.5px; letter-spacing:1.5px;
+  display:grid; padding:4px 10px; font-size:9px; letter-spacing:1.4px;
   text-transform:uppercase; color:var(--text-faint); border-bottom:1px solid var(--line-soft);
 }
 .wl-head{grid-template-columns:1fr 72px 54px 14px}
 .wl-head span+span,.tape-head span+span{text-align:right}
 .wl{overflow-y:auto; flex:1 1 auto; min-height:80px}
+/* One step down across the rail and the bottom tables. These are reference
+   surfaces you scan rather than read, and at the old size the watchlist and the
+   positions grid were competing with the chart for attention. The row padding
+   comes down with the text so the rows tighten instead of gaining dead space. */
 .wl-row{
-  display:grid; grid-template-columns:1fr 72px 54px 14px; gap:4px; align-items:center;
-  padding:5px 10px; cursor:pointer; border-left:2px solid transparent;
+  display:grid; grid-template-columns:1fr 68px 50px 14px; gap:4px; align-items:center;
+  padding:4px 10px; cursor:pointer; border-left:2px solid transparent;
+  font-size:10.5px;
 }
 .wl-x{
   background:transparent; border:0; color:var(--text-faint); cursor:pointer;
@@ -230,7 +243,7 @@ body.right-collapsed .rightbar{ border:0; overflow:hidden }
 .wl-row:hover{background:var(--surface-2)}
 .wl-row.active{background:var(--accent-soft); border-left-color:var(--pink)}
 .wl-row .sym{font-weight:700; letter-spacing:.3px}
-.wl-row .px,.wl-row .chg{font-family:var(--mono); font-size:11.5px; text-align:right}
+.wl-row .px,.wl-row .chg{font-family:var(--mono); font-size:10.5px; text-align:right}
 .up{color:var(--up)} .down{color:var(--down)}
 .flash-up{animation:fu .45s ease-out} .flash-down{animation:fd .45s ease-out}
 @keyframes fu{from{background:rgba(147,201,15,.28)}to{background:transparent}}
@@ -291,6 +304,92 @@ body.right-collapsed .rightbar{ border:0; overflow:hidden }
 }
 .ct-x:hover{background:var(--down); color:#fff}
 .cell{position:relative; background:var(--bg); min-width:0; min-height:0; overflow:hidden}
+/* Zone tooltip. pointer-events:none is essential -- the div sits under the
+   cursor by construction, and without it every mouse-move would hit the tooltip
+   instead of the canvas and the chart would stop tracking. */
+.zone-tip{
+  position:absolute; z-index:5; pointer-events:none; max-width:290px;
+  display:flex; flex-direction:column; gap:2px; padding:6px 8px;
+  background:rgba(2,16,31,.96); border:1px solid var(--line);
+  border-radius:4px; box-shadow:0 4px 14px rgba(0,0,0,.5);
+}
+.zone-tip[hidden]{display:none}
+.zone-tip u{
+  text-decoration:none; font-size:9.5px; color:var(--text-faint);
+  line-height:1.35; padding-top:4px; margin-top:2px;
+  border-top:1px solid var(--line);
+}
+/* info-tip — the shared panel tooltip; same visual family as .zone-tip, but
+   position:fixed because it is anchored to elements inside scrolling panels. */
+.info-tip{
+  position:fixed; z-index:60; pointer-events:none; max-width:280px;
+  display:flex; flex-direction:column; gap:3px; padding:7px 9px;
+  background:rgba(2,16,31,.97); border:1px solid var(--line);
+  border-radius:4px; box-shadow:0 4px 16px rgba(0,0,0,.55);
+}
+.info-tip[hidden]{display:none}
+.info-tip b{
+  font-family:var(--mono); font-size:10px; letter-spacing:1.1px; color:var(--text);
+}
+.info-tip i{font-style:normal; font-size:10.5px; color:var(--text-dim); line-height:1.4}
+.info-tip u{
+  text-decoration:none; font-family:var(--mono); font-size:9.5px;
+  /* NOT --accent: pink is --down here, and a bearish-coloured note would
+     read as a verdict on the number it is explaining. */
+  color:var(--text); line-height:1.35; padding-top:3px; margin-top:1px;
+  border-top:1px solid var(--line);
+}
+[data-tip-title]{cursor:help}
+
+/* Orange, not pink: pink is --down, and a bearish-coloured banner over a BULL
+   read would fight the very number it is qualifying. Orange is the only brand
+   colour here with no directional meaning. */
+.panel-asof{
+  display:flex; align-items:baseline; gap:6px; margin:-2px 0 5px;
+  padding:3px 5px; border-radius:3px;
+  background:rgba(255,158,27,.13); border:1px solid rgba(255,158,27,.34);
+}
+.panel-asof b{
+  font-family:var(--mono); font-size:8.5px; letter-spacing:1.1px;
+  color:var(--orange);
+}
+.panel-asof span{font-size:9.5px; color:var(--text)}
+
+/* The arrow: a rotated square with two of its four borders removed, so the
+   corner that pokes out of the tooltip carries the same 1px edge as the body
+   and the other two sides stay open onto the tooltip's own background. A CSS
+   triangle (border-width trick) cannot do that -- it has no border of its own,
+   so it would read as a floating blob against the panel behind it.
+
+   `top` is set from JS per row; only the horizontal placement is static. */
+.info-tip .tip-arrow{
+  position:absolute; width:9px; height:9px; transform:rotate(45deg);
+  background:rgba(2,16,31,.97); border:1px solid var(--line);
+}
+.info-tip.from-left  .tip-arrow{right:-5px; border-left:0;  border-bottom:0}
+.info-tip.from-right .tip-arrow{left:-5px;  border-right:0; border-top:0}
+
+/* The row being explained. The arrow says WHICH WAY the tooltip points; this
+   says WHAT IT POINTS AT, which matters in the Signal engine where six
+   near-identical rows sit 14px apart. */
+[data-tip-title].tip-on{
+  background:var(--surface-2); border-radius:3px;
+  box-shadow:-2px 0 0 0 var(--text-faint);
+}
+
+.zone-tip b{font-family:var(--mono); font-size:10.5px; letter-spacing:1.2px; color:var(--text)}
+.zone-tip i{font-style:normal; font-size:10.5px; color:var(--text-dim); line-height:1.35}
+.zone-tip span{
+  display:flex; align-items:baseline; gap:5px;
+  font-family:var(--mono); font-size:9.5px; color:var(--text);
+}
+/* fixed-width label column, so the values line up into a readable table */
+.zone-tip em{
+  flex:0 0 66px; font-style:normal; text-transform:uppercase;
+  letter-spacing:.6px; font-size:8.5px; color:var(--text-faint);
+}
+.zone-tip small{font-size:9px; color:var(--text-faint)}
+.zone-tip i + span{margin-top:4px}
 .cell.active::after{
   content:""; position:absolute; inset:0; pointer-events:none;
   border:1px solid rgba(227,28,121,.55);
@@ -342,14 +441,14 @@ body.right-collapsed .rightbar{ border:0; overflow:hidden }
 .tab b{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:3px}
 .panel{overflow:auto; flex:1 1 auto; min-height:0}
 body.bottom-collapsed .panel{display:none}
-table.grid{width:100%; border-collapse:collapse; font-size:12px}
+table.grid{width:100%; border-collapse:collapse; font-size:11px}
 table.grid th{
   position:sticky; top:0; z-index:2; background:var(--bg); text-align:right; font-weight:400;
-  font-size:9.5px; letter-spacing:1.5px; text-transform:uppercase; color:var(--text-faint);
-  padding:5px 10px; border-bottom:1px solid var(--line-soft); white-space:nowrap;
+  font-size:9px; letter-spacing:1.4px; text-transform:uppercase; color:var(--text-faint);
+  padding:4px 10px; border-bottom:1px solid var(--line-soft); white-space:nowrap;
 }
 table.grid th:first-child,table.grid td:first-child{text-align:left}
-table.grid td{padding:4px 10px; text-align:right; font-family:var(--mono); font-size:11.5px;
+table.grid td{padding:3px 10px; text-align:right; font-family:var(--mono); font-size:10.5px;
   border-bottom:1px solid rgba(13,58,107,.4); white-space:nowrap}
 table.grid tr:hover td{background:var(--surface-2)}
 table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
