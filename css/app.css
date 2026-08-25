@@ -25,6 +25,7 @@
   --mono:"Roboto Mono",ui-monospace,Consolas,monospace;
 
   --topbar-h:46px; --bottom-h:210px; --side-w:232px; --right-w:246px;
+  --status-h:26px;
   --r:4px;
 }
 
@@ -35,10 +36,15 @@ html,body{height:100%}
 body{
   margin:0; background:var(--bg); color:var(--text);
   font-family:var(--sans); font-size:13px; line-height:1.35;
-  display:grid; grid-template-rows:var(--topbar-h) 1fr auto;
+  /* topbar / workspace / footer panel / status bar */
+  display:grid; grid-template-rows:var(--topbar-h) 1fr auto var(--status-h);
   overflow:hidden; -webkit-font-smoothing:antialiased;
 }
-body.bottom-collapsed{--bottom-h:34px}
+/* Collapsed, the status bar has nothing left in it -- its cells have moved up
+   into the tab row -- so it takes no height and the tab strip becomes the
+   bottom edge of the app. */
+body.bottom-collapsed{--bottom-h:34px; --status-h:0px}
+body.bottom-collapsed .statusbar{display:none}
 .mono{font-family:var(--mono)}
 .dim{color:var(--text-dim)}
 .spacer{flex:1}
@@ -84,8 +90,108 @@ kbd{
    the header: the numbers are account state, they sit with the account tabs
    (Positions / Orders / History), and they are hidden until asked for so a
    shared screen does not lead with a balance. */
-.acct{display:flex; gap:2px; align-items:center}
-.acct[hidden]{display:none}
+/* ---------------- status bar ---------------- */
+/* Always visible, always the same five numbers, at the bottom edge where a
+   terminal's account state belongs. Its own grid row rather than an overlay, so
+   it can never sit on top of the panel it reports on. */
+/* The strip is a control -- double-click collapses -- so it takes the hand,
+   not the two-headed resize arrow: nothing here is dragged, and an arrow that
+   promises dragging is a worse lie than no cursor at all. */
+/* Both strips are controls, so both take the pointer. */
+#tabs, .statusbar{cursor:pointer}
+#tabs .tab, .statusbar button{cursor:pointer}
+
+.acct-cells{display:flex; align-items:center; gap:2px}
+/* In the tab row the cells sit at the right, before the size buttons. */
+.tabs-acct{display:flex; align-items:center}
+.statusbar{
+  display:flex; align-items:center; gap:2px;
+  height:var(--status-h); padding:0 8px;
+  background:var(--surface); border-top:1px solid var(--line);
+}
+.status-btn{
+  display:flex; align-items:center; gap:5px;
+  height:19px; padding:0 9px; cursor:pointer;
+  background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px;
+  font-family:var(--sans); font-size:10.5px; letter-spacing:.3px;
+}
+.status-btn:hover{border-color:var(--accent); color:#fff}
+.status-btn.on{background:var(--accent-soft); border-color:transparent; color:#fff}
+
+/* ---------------- Ask panel ---------------- */
+.chat-panel{
+  /* ANCHORED AT THE BOTTOM, beside the Ask button that opens it, and it grows
+     UPWARD. `bottom` is the fixed edge and `top` is left auto, so increasing
+     the height moves the TOP edge up -- which is also what makes `resize`
+     extend it upward rather than down over the status bar. */
+  position:fixed; right:0; bottom:var(--status-h); top:auto; z-index:70;
+  /* Same width as the right rail, so the two read as one column of chrome
+     down the right edge rather than as two overlapping ideas. */
+  /* Tall enough for a real exchange. The read-back of the current state runs
+     to a dozen lines on its own, and at 520px it arrived already scrolled --
+     the answer scrolling itself out of view the moment it appears. Runs from
+     just under the top bar down to the status bar. */
+  /* Opens exactly as tall as the footer, so its top edge lands on the tab
+     strip -- the double-click header -- and nothing above it is covered.
+
+     RESIZE IS VERTICAL ONLY, and upward. The width is not a free choice: it
+     matches the right rail on purpose, and a corner grip that let both go would
+     break that alignment by accident. Dragging grows the panel up towards the
+     top bar, where `max-height` pins it.
+
+     `min-height` matters because `--bottom-h` drops to 34px when the panel is
+     collapsed, and a 34px chat box is not a chat box. */
+  width:var(--right-w);
+  height:var(--bottom-h);
+  min-height:180px;
+  max-height:calc(100vh - var(--topbar-h) - var(--status-h));
+  overflow:hidden;      /* the grip below replaces `resize` */
+  display:flex; flex-direction:column;
+  background:rgba(2,16,31,.98); border:1px solid var(--line);
+  border-radius:5px; box-shadow:0 8px 28px rgba(0,0,0,.55);
+}
+.chat-panel[hidden]{display:none}
+/* Top-LEFT, on the edge that actually moves. The native `resize` grip can only
+   sit bottom-right, which on a bottom-anchored panel is the fixed corner. */
+.chat-grip{
+  position:absolute; top:0; left:0; width:22px; height:22px;
+  cursor:ns-resize; z-index:1;
+  background:linear-gradient(135deg,
+    var(--text-faint) 0 1px, transparent 1px 4px,
+    var(--text-faint) 4px 5px, transparent 5px 8px,
+    var(--text-faint) 8px 9px, transparent 9px);
+  opacity:.5; border-top-left-radius:5px;
+}
+.chat-grip:hover{opacity:1}
+/* THE CHAT STOPS ABOVE THE ASK BUTTON, always. Open, `bottom:var(--status-h)`
+   already rests it on the status bar. Collapsed, the status bar is gone and that
+   resolves to 0, which buried the button under the panel -- so it rests on the
+   tab row instead. A control you cannot see is a control you cannot press to
+   close the thing covering it. */
+body.bottom-collapsed .chat-panel{bottom:var(--bottom-h)}
+.status-right{display:flex; align-items:center; margin-left:6px}
+.chat-head{
+  padding:6px 9px; font-size:9.5px; color:var(--text-faint);
+  border-bottom:1px solid var(--line); line-height:1.4;
+}
+.chat-log{flex:1; overflow-y:auto; padding:8px 9px; display:flex;
+  flex-direction:column; gap:8px}
+.chat-msg{font-size:11px; line-height:1.45; white-space:pre-wrap}
+.chat-you{color:var(--text); align-self:flex-end; text-align:right;
+  background:var(--surface-2); padding:4px 8px; border-radius:4px; max-width:85%}
+.chat-bot{color:var(--text-dim); font-family:var(--mono); font-size:10.5px}
+/* A refusal is styled as its own thing rather than as an answer, because the
+   one failure mode that matters here is a guess wearing the voice of a fact. */
+.chat-cannot{color:var(--orange); font-size:11px;
+  border-left:2px solid rgba(255,158,27,.5); padding-left:7px}
+.chat-form{border-top:1px solid var(--line); padding:6px}
+.chat-input{
+  width:100%; padding:5px 7px; font-family:var(--sans); font-size:11px;
+  background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px;
+}
+.chat-input:focus{outline:none; border-color:var(--accent)}
 .acct-cell{display:flex; align-items:baseline; gap:5px;
   padding:1px 8px; border-left:1px solid var(--line-soft)}
 .acct-cell span{font-size:9px; text-transform:uppercase; letter-spacing:1.5px;
@@ -341,6 +447,13 @@ body.right-collapsed .rightbar{ border:0; overflow:hidden }
 }
 [data-tip-title]{cursor:help}
 
+/* The pin button while the analysis is frozen. Orange like the AS OF banner,
+   because they are the same state seen from two places. */
+.cell-tools button.on{
+  color:var(--orange); border-color:rgba(255,158,27,.5);
+  background:rgba(255,158,27,.14);
+}
+
 /* Orange, not pink: pink is --down, and a bearish-coloured banner over a BULL
    read would fight the very number it is qualifying. Orange is the only brand
    colour here with no directional meaning. */
@@ -440,7 +553,31 @@ body.right-collapsed .rightbar{ border:0; overflow:hidden }
 .tab.active{color:#fff; border-bottom-color:var(--pink)}
 .tab b{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:3px}
 .panel{overflow:auto; flex:1 1 auto; min-height:0}
-body.bottom-collapsed .panel{display:none}
+/* PEEK, the same contract as the two side rails: hovering the strip shows the
+   panel, clicking the strip pins it. The tab row IS the stub -- it is what stays
+   on screen when the panel is collapsed, it carries the names of what is inside,
+   and it is already where the pointer goes.
+
+   The peeked panel OVERLAYS the chart rather than growing the grid row, for the
+   same reason the rails overlay: widening a track on hover re-renders every
+   canvas underneath it. A glance should cost a transform, not a repaint. */
+body.bottom-collapsed .panel{
+  display:block; position:absolute; left:0; right:0; bottom:100%;
+  height:calc(210px - 34px); z-index:8;
+  background:var(--surface); border-top:1px solid var(--line);
+  box-shadow:0 -14px 22px rgba(0,0,0,.5);
+  /* Hidden by fade rather than by sliding off an edge: this panel has no screen
+     edge to slide behind, so a translated copy would just sit on top of the tab
+     strip on its way out. */
+  opacity:0; transform:translateY(6px); pointer-events:none;
+  transition:opacity .14s ease, transform .14s ease;
+}
+body.bottom-collapsed.bottom-peek .panel{
+  opacity:1; transform:none; pointer-events:auto;
+}
+/* The footer is the positioning context for that overlay, and it must not clip
+   it -- the panel is drawn entirely outside the 34px strip. */
+.bottom{position:relative}
 table.grid{width:100%; border-collapse:collapse; font-size:11px}
 table.grid th{
   position:sticky; top:0; z-index:2; background:var(--bg); text-align:right; font-weight:400;
@@ -507,7 +644,7 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
 *::-webkit-scrollbar-thumb:hover{background:#155093}
 
 @media (max-width:1280px){ body:not(.right-collapsed){--right-track:var(--stub-w)} }
-@media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} .acct{display:none} }
+@media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} }
 
 /* ---------------- backtest tab ---------------- */
 body.bottom-expanded{--bottom-h:min(72vh,720px)}

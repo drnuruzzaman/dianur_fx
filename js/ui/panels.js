@@ -23,6 +23,9 @@ export class Panels {
        one thing in the footer that did not survive a reload -- open History,
        come back, and you are looking at Positions again. */
     this.tab = load('panelTab', 'positions');
+    /* What to return to when a hover-preview ends; null when nothing is being
+       previewed, so it doubles as the "is this a preview" flag. */
+    this.peekTab = null;
     this.data = { positions: [], orders: [], deals: [], calendar: [] };
     this.currency = '';
     // the Backtest tab is a viewer over runs/index.json; see js/ui/backtest.js
@@ -36,6 +39,14 @@ export class Panels {
       if (this.tab === 'backtest' && b.dataset.tab !== 'backtest') this.backtest.hide();
       if (b.dataset.tab === 'calendar') this.calScrolled = false;   // land on now again
       this.tab = b.dataset.tab;
+      /* Clicking a tab COMMITS whatever was being previewed: there is no longer
+         a tab to fall back to when the pointer leaves. */
+      this.peekTab = null;
+      /* Clicking a tab on a collapsed strip pins the panel open on it, which is
+         what the click meant. Peeking History and having to click twice -- once
+         for the tab, once for the strip -- would be a gesture that reads as
+         choosing something and does not choose it. */
+      if (this.size === 'collapsed') this.setSize('normal');
       save('panelTab', this.tab);
       [...$('#tabs').querySelectorAll('.tab')].forEach((x) => x.classList.toggle('active', x === b));
       this.render();
@@ -44,8 +55,7 @@ export class Panels {
     /* index.html marks Positions active, so a restored tab has to be applied to
        the buttons as well as to `this.tab` -- otherwise the panel renders
        History while the footer highlights Positions. */
-    [...$('#tabs').querySelectorAll('.tab')].forEach(
-      (x) => x.classList.toggle('active', x.dataset.tab === this.tab));
+    this.paintTabs();
 
     /* Three panel sizes, one source of truth. The buttons previously toggled two
        independent classes, so expanded+collapsed could both be set and the
@@ -53,30 +63,144 @@ export class Panels {
     const setSize = (size) => {
       document.body.classList.toggle('bottom-collapsed', size === 'collapsed');
       document.body.classList.toggle('bottom-expanded', size === 'expanded');
-      const collapse = $('#bottomToggle');
-      const expand = $('#bottomExpand');
-      collapse.textContent = size === 'collapsed' ? '\u25b4' : '\u2013';
-      collapse.title = size === 'collapsed' ? 'Restore panel' : 'Collapse panel';
-      collapse.classList.toggle('on', size === 'collapsed');
-      expand.textContent = size === 'expanded' ? '\u2750' : '\u25a1';
-      expand.title = size === 'expanded' ? 'Restore panel' : 'Expand panel';
-      expand.classList.toggle('on', size === 'expanded');
+      /* Nothing to repaint: there is no button. The panel's own height is the
+         indicator, and the tab strip carries the affordance in its title. */
+      const hint = size === 'collapsed'
+        ? 'Hover a tab to peek · click to pin the panel open'
+        : 'Click to collapse the panel';
+      $('#tabs').title = hint;
+      $('#statusbar').title = hint;
+      /* A pinned panel is never also peeking, or leaving the strip afterwards
+         would run the fade-out on a panel that is now part of the layout. */
+      if (size !== 'collapsed') document.body.classList.remove('bottom-peek');
+
+      /* COLLAPSED, THE TWO BARS BECOME ONE.
+       *
+       * A collapsed panel is a 34px strip of tab buttons sitting directly on
+       * top of a 26px strip of account numbers -- sixty pixels of chrome to say
+       * almost nothing, and two horizontal rules where the eye expects the
+       * bottom of the app. So the account cells MOVE into the tab row, at the
+       * right end, and the status bar collapses to zero height.
+       *
+       * The nodes are relocated rather than duplicated: two copies of a live
+       * number is two things to keep in sync, and the id lookups that write
+       * them (`#acBal` and friends) would find whichever came first in the
+       * document. Moving keeps exactly one of each. */
+      const host = size === 'collapsed'
+        ? document.getElementById('tabsAcct')
+        : document.getElementById('statusbar');
+      /* The Ask button travels with them. Left behind it goes down with the
+         hidden status bar, and a collapsed panel means no way to open the chat
+         -- measured as a 0x0 button before this. */
+      for (const id of ['acctCells', 'statusRight']) {
+        const node = document.getElementById(id);
+        if (node && host && node.parentElement !== host) host.append(node);
+      }
       this.size = size;
     };
     this.setSize = setSize;
-    this.size = 'normal';
+    /* Through setSize, not by assignment: it is what writes the strip's title,
+       and a hint that only appears after you have already found the gesture is
+       no hint at all. */
+    setSize('normal');
 
-    $('#bottomExpand').addEventListener('click', () =>
-      setSize(this.size === 'expanded' ? 'normal' : 'expanded'));
-    $('#bottomToggle').addEventListener('click', () =>
-      setSize(this.size === 'collapsed' ? 'normal' : 'collapsed'));
+    /* HOVER PEEKS, CLICK PINS -- the contract the two side rails already use,
+       and the tab row is this panel's stub: the part that stays on screen when
+       it is collapsed.
+
+       Either strip takes the click. They are the top and bottom edges of the
+       same panel, and collapsed they are stacked together, so binding only one
+       means guessing which band the pointer is in. Clicks landing on a button
+       are ignored, or choosing a tab would collapse the panel out from under
+       the choice. */
+    const toggle = (e) => {
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      /* ALT keeps the expanded state reachable without a control. Three states
+         need two gestures somewhere; this is the one that adds no chrome. */
+      if (e.altKey) setSize(this.size === 'expanded' ? 'normal' : 'expanded');
+      else setSize(this.size === 'collapsed' ? 'normal' : 'collapsed');
+    };
+    $('#tabs').addEventListener('click', toggle);
+    $('#statusbar').addEventListener('click', toggle);
+
+    /* THE TAB BUTTONS ARE THE HOVER TARGET, not the strip. Peeking is a
+       question -- "what is in History?" -- and the empty half of the strip does
+       not ask it. Opening the panel there meant sweeping the pointer along the
+       bottom of the window flashed the panel up over the chart for no reason.
+
+       The buttons and the peeked panel are one hover region with a gap between
+       them in event terms: leaving a button to enter the panel fires mouseleave
+       before mouseenter. The same 140ms grace the rails use bridges it -- and
+       it doubles as the bridge from one button to the next, so sliding across
+       the strip does not flicker. */
+    let shut = null;
+    const hold = () => { clearTimeout(shut); shut = null; };
+
+    /* HOVERING A TAB PREVIEWS THAT TAB. Peeking is a glance at what is down
+       there, and on a five-tab strip the answer depends on which tab. The
+       selection itself is NOT changed: `peekTab` remembers what to go back to,
+       nothing is saved, and leaving restores it. A hover that silently
+       re-pointed the panel would make the pointer a mode switch. */
+    const preview = (name) => {
+      if (this.size !== 'collapsed' || name === this.tab) return;
+      if (!this.peekTab) this.peekTab = this.tab;
+      this.tab = name;
+      this.paintTabs();
+      this.render();
+    };
+    const unpreview = () => {
+      if (!this.peekTab) return;
+      this.tab = this.peekTab;
+      this.peekTab = null;
+      this.paintTabs();
+      this.render();
+    };
+    this.unpreview = unpreview;
+
+    const release = () => {
+      hold();
+      /* Closing and un-previewing are the same event: the panel that fades out
+         is the one showing the previewed tab, so putting the selection back any
+         earlier would swap its contents on the way out. */
+      shut = setTimeout(() => {
+        document.body.classList.remove('bottom-peek');
+        unpreview();
+      }, 140);
+    };
+    const peek = (name) => {
+      hold();
+      if (this.size !== 'collapsed') return;
+      document.body.classList.add('bottom-peek');
+      if (name) preview(name);
+    };
+    for (const b of $('#tabs').querySelectorAll('.tab')) {
+      b.addEventListener('mouseenter', () => peek(b.dataset.tab));
+      b.addEventListener('mouseleave', release);
+    }
+    /* The panel keeps itself open while the pointer is in it. Closed it is
+       `pointer-events:none`, so this can never open one. */
+    $('#panel').addEventListener('mouseenter', () => peek());
+    $('#panel').addEventListener('mouseleave', release);
   }
 
   set(kind, rows) {
     this.data[kind] = rows || [];
     if (kind === 'positions') $('#posCount').textContent = this.data.positions.length;
     if (kind === 'orders') $('#ordCount').textContent = this.data.orders.length;
+    /* Only repaint if this is the tab on screen -- including when that is a
+       hover-preview, so live rows keep ticking under the pointer. */
     if (this.tab === kind) this.render();
+  }
+
+  /* The buttons follow `this.tab` wherever it points -- including at a preview,
+     so the highlight says which tab you are looking at rather than which one is
+     pinned. index.html marks Positions active, so a restored tab has to be
+     applied here too or the panel renders History under a Positions highlight. */
+  paintTabs() {
+    for (const x of $('#tabs').querySelectorAll('.tab')) {
+      x.classList.toggle('active', x.dataset.tab === this.tab);
+    }
   }
 
   render() {
@@ -84,7 +208,15 @@ export class Panels {
     document.body.classList.toggle('bt-active', this.tab === 'backtest');
     document.body.classList.toggle('cal-active', this.tab === 'calendar');
     if (this.tab === 'backtest') {
-      if (this.size !== 'expanded') this.setSize('expanded');   // it needs room
+      /* Not while PREVIEWING, and not while COLLAPSED. Backtest asks for the
+         expanded panel, and a hover that throws the layout to 72vh -- then puts
+         it back when the pointer moves on -- is the page jumping under the
+         mouse. Worse, with Backtest as the pinned tab the RESTORE re-rendered it
+         and this line un-collapsed a panel the user had just closed. A peek
+         stays a peek; clicking it pins the panel first, and then it gets its
+         room. */
+      const asked = this.size !== 'expanded' && this.size !== 'collapsed';
+      if (asked && !this.peekTab) this.setSize('expanded');
       this.backtest.show(h);
       return;
     }

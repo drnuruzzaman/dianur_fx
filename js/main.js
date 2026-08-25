@@ -29,6 +29,7 @@ import { Panels } from './ui/panels.js';
 import { TrendRead, readTfs } from './ui/trendread.js';
 import { SignalPanel } from './ui/signalpanel.js';
 import { installTips } from './ui/tips.js';
+import { installChat } from './ui/chat.js';
 
 /* Sensitivity presets, expressed as engine parameters. Pivot strength is the
    real control: 2 finds minor swings, 6 finds structural ones. */
@@ -1432,15 +1433,8 @@ function wireToolbar() {
   /* Balances are hidden until the icon is pressed, and the choice sticks. A
      balance is the one number on screen that is nobody else's business, and
      this app is often on a shared or recorded screen. */
-  const acct = $('#acct'), acctBtn = $('#acctToggle');
-  const showAcct = (on) => {
-    acct.hidden = !on;
-    acctBtn.setAttribute('aria-expanded', String(on));
-    acctBtn.title = on ? 'Hide account balances' : 'Show account balances';
-    save('acct.shown', on);
-  };
-  showAcct(load('acct.shown', false) === true);
-  acctBtn.addEventListener('click', () => showAcct(acct.hidden));
+  /* The account values live in the status bar now and are always shown, so
+     there is no toggle to wire and nothing to remember. */
 
   $('#layoutBtn').addEventListener('click', (e) => {
     openMenu(e.currentTarget, [
@@ -1703,6 +1697,7 @@ async function boot(refresh = false) {
 }
 
 installTips();     // delegated, so panel rows rendered later are covered
+installChat();     // the Ask panel; grounded on this app only, see chat.js
 /* Debug handle. The workspace is otherwise unreachable from the console, which
    makes "what is actually on this canvas" an unanswerable question -- and that
    is the first question whenever the chart looks wrong. Read-only by

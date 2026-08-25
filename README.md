@@ -1822,6 +1822,165 @@ reverse. The row is now labelled `Risk : reward` and reads `1 : 0.16`. The 1 is
 always what you put up, so there is nothing left to invert. The capped note
 follows: `capped by 1:0.16 risk-to-reward`.
 
+### The status bar, and the Ask panel
+
+The account numbers -- balance, equity, floating, margin free, margin level --
+sat behind a `$` toggle in the tab row, default OFF. That made the one thing you
+must never lose track of, how much room the account has left, the one thing
+hidden by default. They now live in a permanent status bar in its own grid row
+at the bottom edge, so it can never overlap the panel it reports on.
+
+    Balance AUD 6,066.61 · Equity AUD 2,497.29 · Floating -3,569.32
+    · Margin free -AUD 112.75 · Margin level 95.7%
+
+COLLAPSED, THE TWO BARS BECOME ONE. A collapsed panel was a 34px strip of tab
+buttons sitting directly on a 26px strip of account numbers -- sixty pixels of
+chrome saying almost nothing, with two horizontal rules where the eye expects
+the bottom of the app. Collapsing now MOVES the account cells into the tab row
+at the right end and takes the status bar to zero height, so the tab strip
+becomes the bottom edge.
+
+The cells are RELOCATED, not duplicated. Two copies of a live number is two
+things to keep in sync, and the id lookups that write them (`#acBal` and
+friends) would silently feed whichever came first in the document. Verified:
+one copy of `#acBal` in both states, same value, and the cells return to the
+status bar on restore.
+
+#### No handle for the bottom panel
+
+It went from two glyph buttons to one chevron to none. The panel had `–` and
+`□`, which made two independent-looking controls out of one three-state thing
+and neither said which way a press would go; then a single chevron; and now the
+gesture every docked panel already has:
+
+    double-click the tab strip        collapse / restore
+    ALT + double-click                expand / restore
+
+Zero chrome. The strip takes the HAND cursor, not the two-headed resize arrow
+it first had: nothing there is dragged, and an arrow promising a drag is a worse
+lie than no cursor at all. Its `title` says which way the next double-click will
+go -- set through `setSize` at startup rather than by assignment, because a hint
+that only appears after you have already found the gesture is no hint.
+
+DOUBLE-CLICKS ON THE TAB BUTTONS ARE IGNORED. A quick second click while
+choosing a tab would otherwise collapse the panel out from under the choice --
+the gesture and the tabs share a surface, so one of them has to yield, and it is
+the one that did not ask for the click.
+
+#### Ask: grounded, and it refuses
+
+`js/ui/chat.js` answers two kinds of question and declines a third, and the
+declining is the design rather than a limitation to apologise for.
+
+    TERMINOLOGY     from a glossary written in this project, the same wording
+                    the tooltips use, so the chat and the chart cannot disagree
+    CURRENT STATE   by READING the live panels -- every number it quotes is one
+                    already on screen
+    NEWS, SENTIMENT declined
+
+The panel sits on the status bar, beside the button that opens it, and GROWS
+UPWARD. `bottom` is the fixed edge with `top` left auto, so increasing the
+height moves the top edge up -- which is also what makes the drag extend it
+upward instead of down through the status bar.
+
+It opens exactly as tall as the footer, so its top edge lands on the tab strip
+and nothing above is covered: measured 246x210, bottom 883 on a status bar at
+883, top 673 against a tab strip at 674.
+
+THE GRIP IS HAND-BUILT AND SITS TOP-LEFT, because `resize: vertical` can only
+put its handle in the bottom-right corner -- which on a bottom-anchored panel is
+the one corner that never moves. The grip belongs on the edge that travels, and
+the width stays locked to the right rail rather than being a free choice.
+
+    drag up 250px     210 -> 460, bottom unmoved
+    drag up 2000px    clamped at 837, top edge on the top bar
+    drag down 2000px  clamped at the 180px floor
+
+The CEILING IS CAPTURED AT POINTERDOWN, from the bottom edge, and the first
+version got that wrong in a way worth keeping: it derived the limit from
+`offsetTop` inside the move handler, and `offsetTop` IS the top edge -- the
+thing the drag is moving. The limit shrank as fast as the panel grew, so a
+250px drag yielded 26.
+
+`min-height` is 180px because `--bottom-h` drops to 34 when the panel is
+collapsed, and a 34px chat box is not a chat box.
+
+THE CHAT STOPS ABOVE THE ASK BUTTON IN BOTH STATES. Open, `bottom:var(--status-h)`
+rests it on the status bar. Collapsed, the status bar is `display:none` and that
+variable is 0 -- which first hid the button (measured 0x0, inside the hidden bar),
+then, once the button had been rescued into the tab row, buried it under the
+panel instead. Collapsed the chat rests on the tab row: a control you cannot see
+is a control you cannot press to close the thing covering it.
+
+THE ACCOUNT NUMBERS ARE RIGHT-ALIGNED IN BOTH STRIPS, so collapsing the panel
+does not slide them across the screen. Their position is the one thing that
+should not move when the layout changes underneath them.
+
+HOVER A TAB PEEKS, CLICK PINS -- the same contract the two side rails use,
+because the tab row IS this panel's stub: the part that stays on screen when it
+is collapsed, carrying the names of what is inside, already where the pointer
+goes.
+
+THE TAB BUTTONS ARE THE HOVER TARGET, not the strip. Peeking asks a question --
+"what is in History?" -- and the empty half of the strip does not ask it. Bound
+to the whole strip, sweeping the pointer along the bottom of the window flashed
+the panel up over the chart for no reason. The footer bar does nothing on hover
+for the same reason; it still takes the click.
+
+The peeked panel OVERLAYS the chart instead of growing the grid row, for the same
+reason the rails overlay: widening a track on hover re-renders every canvas under
+it, and a glance should cost a transform, not a repaint. It fades rather than
+sliding off an edge -- this panel has no screen edge to slide behind, so a
+translated copy would sit on top of the tab strip on its way out. The 140ms grace
+window is the rails' again: leaving the strip to enter the panel fires mouseleave
+before mouseenter, and without it the panel shuts under the cursor on the way in.
+
+HOVERING A TAB PREVIEWS THAT TAB -- History shows history, Calendar shows the
+calendar. A glance at a five-tab strip has five possible answers, so the button
+under the pointer decides which one. The selection is NOT
+changed: `peekTab` remembers what to go back to, nothing is written to storage,
+and leaving restores it. A hover that silently re-pointed the panel would make
+the pointer a mode switch. Clicking a tab commits the preview AND pins the panel
+open, because a gesture that reads as choosing something should choose it.
+
+One thing the preview must not do is resize the page. Backtest asks for the
+expanded panel, and running that from a hover threw the layout to 72vh and back
+as the pointer moved on -- and with Backtest as the pinned tab, the RESTORE
+re-rendered it and un-collapsed a panel that had just been closed. The expand is
+now skipped while previewing and while collapsed.
+
+EITHER STRIP TAKES THE CLICK -- the tab row or the footer. They are the top and
+bottom edges of the same panel, and collapsed they are stacked together, so
+binding only one means guessing which band the pointer is in. Clicks landing on a
+button are ignored, or choosing a tab would collapse the panel out from under the
+choice. Alt-click still reaches the expanded state.
+
+It started 380x520 and arrived ALREADY SCROLLED: the state read-back runs to a
+dozen lines on its own, so the answer scrolled itself out of view the moment it
+appeared.
+
+There is no model behind the box and no news feed in this project. A chat that
+answered "what is the sentiment, should I buy" would be inventing a market
+narrative, which is precisely the failure this codebase spends 2,900 lines
+guarding against. So it says it cannot, in its own orange style rather than in
+the voice it uses for answers, and points at the Calendar -- the only
+forward-looking data the app actually holds.
+
+Refusals are matched BEFORE definitions, so "what is the sentiment and should I
+buy?" gets the refusal rather than a definition of a term it happens to contain.
+
+Verified live:
+
+    "what is displacement?"    -> the glossary entry, bot style
+    "what is the current read?" -> BULL 53/100, the three frames, structure,
+                                   invalidation, the scorecard, the account
+    "sentiment / should i buy"  -> refusal, orange
+    "capital of France"         -> says it has no grounded answer
+
+If an LLM is wired in later, the honest shape is a server proxy receiving this
+same grounded state as context. Until then, being unable to answer is the
+correct behaviour rather than a gap to paper over.
+
 ### The side panels explain themselves
 
 `Majority baseline 52.7%`. `R:R to first zone 0.31:1`. `Meanrev -18`. Every one

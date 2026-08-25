@@ -93,22 +93,39 @@
     <button class="tab" data-tab="calendar">Calendar</button>
     <button class="tab" data-tab="backtest">Backtest</button>
     <div class="spacer"></div>
-    <div class="acct" id="acct" hidden>
-      <div class="acct-cell"><span>Balance</span><b id="acBal">—</b></div>
-      <div class="acct-cell"><span>Equity</span><b id="acEq">—</b></div>
-      <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
-      <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
-      <div class="acct-cell"><span>Margin level</span><b id="acLevel">—</b></div>
-    </div>
-    <button class="size-btn acct-btn" id="acctToggle" aria-expanded="false"
-            title="Show account balances">$</button>
-    <div class="panel-size">
-      <button class="size-btn" id="bottomToggle" title="Collapse panel">–</button>
-      <button class="size-btn" id="bottomExpand" title="Expand panel">□</button>
-    </div>
+    <!-- Where the account cells land while the panel is collapsed. -->
+    <div class="tabs-acct" id="tabsAcct"></div>
+    <!-- No handle. Double-clicking the tab strip collapses and restores the
+         panel, which is the idiom every docked panel already uses and costs no
+         chrome at all. -->
   </div>
   <div class="panel" id="panel"></div>
 </footer>
+
+<!-- The status bar. The account numbers were behind a `$` toggle in the tab
+     row, which made the one thing you must never lose track of -- how much room
+     the account has left -- the one thing that was hidden by default. -->
+<div class="statusbar" id="statusbar">
+  <div class="spacer"></div>
+  <!-- One group, moved wholesale between here and the tab row -- and RIGHT-ALIGNED
+       in both, so collapsing the panel does not slide the numbers across the
+       screen. Their position is the one thing that should not move. -->
+  <div class="acct-cells" id="acctCells">
+    <div class="acct-cell"><span>Balance</span><b id="acBal">—</b></div>
+    <div class="acct-cell"><span>Equity</span><b id="acEq">—</b></div>
+    <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
+    <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
+    <div class="acct-cell"><span>Margin level</span><b id="acLevel">—</b></div>
+  </div>
+  <!-- Grouped so it can travel into the tab row with the account cells when the
+       panel collapses; on its own it went with the hidden status bar and left
+       no way to open the chat at all. -->
+  <div class="status-right" id="statusRight">
+    <button class="status-btn" id="chatBtn" title="Ask about a term, the current read, or the calendar">
+      <span aria-hidden="true">💬</span> Ask
+    </button>
+  </div>
+</div>
 
 <div class="modal" id="searchModal" hidden>
   <div class="modal-box">
