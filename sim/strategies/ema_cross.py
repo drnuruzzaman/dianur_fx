@@ -29,7 +29,7 @@ class EmaCross(Strategy):
         c = bars['close']
         ema = lambda n: c.ewm(span=n, adjust=False, min_periods=n).mean().to_numpy(float)
         return {'fast': ema(self.fast), 'slow': ema(self.slow),
-                'atr': atr(bars, self.atr_len).to_numpy(float)}
+                'atr': np.asarray(atr(bars, self.atr_len), dtype=float)}
 
     def on_bar(self, view, position):
         f, s = view.series('fast'), view.series('slow')

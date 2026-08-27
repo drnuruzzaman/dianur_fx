@@ -4,6 +4,7 @@
 import { $, el, hhmmss, load, money, num, px, relTime, save, stamp,
          stampTz, tzLabel, TZ_MODES } from '../util.js';
 import { Backtest } from './backtest.js';
+import { closeMenu } from './menu.js';
 
 const table = (cols, rows) => {
   const t = el('table', { class: 'grid' });
@@ -48,7 +49,10 @@ export class Panels {
          choosing something and does not choose it. */
       if (this.size === 'collapsed') this.setSize('normal');
       save('panelTab', this.tab);
-      [...$('#tabs').querySelectorAll('.tab')].forEach((x) => x.classList.toggle('active', x === b));
+      /* Through paintTabs, not an inline toggle: it also writes the BACKTEST
+         tab's label, and a second place that repaints the strip is a second
+         place that can forget to. */
+      this.paintTabs();
       this.render();
     });
 
@@ -73,6 +77,11 @@ export class Panels {
       /* A pinned panel is never also peeking, or leaving the strip afterwards
          would run the fade-out on a panel that is now part of the layout. */
       if (size !== 'collapsed') document.body.classList.remove('bottom-peek');
+      /* `size` is read by paintTabs, and it is not assigned until the end of
+         this function -- so set it before repainting rather than showing the
+         label for the state we are leaving. */
+      this.size = size;
+      this.paintTabs();
 
       /* COLLAPSED, THE TWO BARS BECOME ONE.
        *
@@ -96,13 +105,18 @@ export class Panels {
         const node = document.getElementById(id);
         if (node && host && node.parentElement !== host) host.append(node);
       }
-      this.size = size;
     };
     this.setSize = setSize;
     /* Through setSize, not by assignment: it is what writes the strip's title,
        and a hint that only appears after you have already found the gesture is
-       no hint at all. */
-    setSize('normal');
+       no hint at all.
+
+       COLLAPSED on every load, deliberately not restored from the last session.
+       The chart is what this app is for and the panel covers a third of it, so
+       a reload should hand back the chart rather than whatever was open when
+       you last closed the tab. Clicking the tab row opens it; the account
+       figures ride along into the tab row and stay visible either way. */
+    setSize('collapsed');
 
     /* HOVER PEEKS, CLICK PINS -- the contract the two side rails already use,
        and the tab row is this panel's stub: the part that stays on screen when
@@ -178,6 +192,46 @@ export class Panels {
       b.addEventListener('mouseenter', () => peek(b.dataset.tab));
       b.addEventListener('mouseleave', release);
     }
+    /* BACKTEST IS FOUR PANELS BEHIND ONE TAB, so hovering it offers them
+       directly rather than making you open the tab and then find the picker.
+       The same menu the tab's own toolbar builds -- one method, so a fifth view
+       appears in both places or neither. Picking one pins the panel open on it,
+       because choosing a view is not a peek. */
+    const btTab = $('#tabs').querySelector('.tab[data-tab="backtest"]');
+    if (btTab) {
+      /* A HOVER-OPENED MENU HAS TO CLOSE ON HOVER-OUT. `openMenu` only closes on
+         a pick or a pointerdown elsewhere, which is right for a menu you
+         clicked open and wrong for one that appeared under the pointer: leaving
+         the tab left it standing over the chart until you clicked something.
+
+         The tab and the menu are one hover region with a gap between them --
+         the menu is positioned 4px below the anchor, so crossing that gap fires
+         mouseleave before mouseenter. The same grace window the rail peek uses
+         bridges it. */
+      let shutMenu = null;
+      const holdMenu = () => { clearTimeout(shutMenu); shutMenu = null; };
+      const releaseMenu = () => {
+        holdMenu();
+        shutMenu = setTimeout(closeMenu, 160);
+      };
+      btTab.addEventListener('mouseenter', () => {
+        holdMenu();
+        this.backtest.openViewMenu(btTab, () => {
+          this.peekTab = null;
+          this.tab = 'backtest';
+          save('panelTab', this.tab);
+          if (this.size === 'collapsed') setSize('normal');
+          this.paintTabs();          // after setSize, so the label sees the new size
+          this.render();
+        });
+      });
+      btTab.addEventListener('mouseleave', releaseMenu);
+      const menuRoot = $('#menu');
+      if (menuRoot) {
+        menuRoot.addEventListener('mouseenter', holdMenu);
+        menuRoot.addEventListener('mouseleave', releaseMenu);
+      }
+    }
     /* The panel keeps itself open while the pointer is in it. Closed it is
        `pointer-events:none`, so this can never open one. */
     $('#panel').addEventListener('mouseenter', () => peek());
@@ -201,6 +255,15 @@ export class Panels {
     for (const x of $('#tabs').querySelectorAll('.tab')) {
       x.classList.toggle('active', x.dataset.tab === this.tab);
     }
+    /* THE BACKTEST TAB NAMES THE PANEL IT IS SHOWING. Four panels behind one
+       label meant the strip could not say which one was up; now the tab reads
+       `Elliott Replay` while that panel is open, and falls back to `Backtest`
+       whenever it is not the thing on screen -- another tab is selected, or the
+       panel is collapsed and there is nothing being shown at all. */
+    const bt = $('#tabs').querySelector('.tab[data-tab="backtest"]');
+    if (!bt) return;
+    const showing = this.tab === 'backtest' && this.size !== 'collapsed';
+    bt.textContent = showing ? this.backtest.viewLabel() : 'Backtest';
   }
 
   render() {

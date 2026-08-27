@@ -1030,10 +1030,710 @@ at the live bar; panning left moves it back, and that is the gesture meaning
 9609 bars, oldest 2025-11-13 -> 2020-06-09, 1272 bars on screen instead of
 blank.
 
+**AND THE LEFT EDGE WAS NEVER BOUNDED BY THE DATA.** The two fixes above made
+the fetch work, but the pan clamp underneath them read
+
+    clamp(right, span * 0.4, bars.length + span * 0.6)
+
+-- a lower bound expressed in SCREENS, which says "you may always scroll 60% of
+a screen past the oldest bar". At the default 350-bar span that is 210 empty
+columns with real candles still beside them, so it passed for headroom. After
+`fitAll` a screen IS the whole dataset, and the same rule bought 60% of the
+entire history in blank space. Measured on 15m gold: pan left from a fitted view
+and `i0` reached **-360** with 2120 columns on screen; on a wider fit it passes
+-1200. The fetch was firing correctly the whole time and simply could not
+outrun a drag.
+
+The bound now comes from the data. `_clampRight` puts the oldest bar at the left
+edge and stops there; when the span is wider than the history it stops
+immediately, which is right -- everything is already on screen.
+
+That clamp would have made `fitAll` a dead end on its own, because the fetch
+trigger needs the right edge to move back and at the wall it cannot. So pushing
+INTO the wall is recorded as `wantsHistory` and main.js treats it as the request
+it is, and `_paint` reports it even though the edge did not move. Verified on
+15m/1h/4h/1d and on XAUUSD and EURUSD: `i0` never goes below 0, and at the
+20,000-bar ceiling the view simply stops on the oldest bar.
+
 `MAX_SPAN` went 4000 -> 4800 so `fitAll` can still frame a chart that has
 extended twice. Beyond that a bar is under half a pixel and candles stop being
 candles, so the cap is a rendering limit rather than a data one: scrolling still
 reaches everything loaded.
+
+### The frozen cost model was wrong about gold
+
+`tools/session_screen.py` re-ran DISPLACEMENT_V1 on XAUUSD charging each trade
+its OWN spread -- the `spread` column has been in every bar file since the
+download and nothing had ever read it. The experiments charge a frozen constant
+instead.
+
+    XAUUSD 1h        frozen friction  0.100 R
+                   measured friction  0.051 R
+
+The frozen model is `spread/stop_price + 2*slippage_atr/stop_atr`, and it is not
+wrong as a formula -- it was calibrated where the project's other instruments
+live. Gold's spread is 5-8 points against a 1 ATR stop of several dollars, so its
+spread term is 0.011 R where a major's is several times that. Charging gold a
+major's costs overstated its friction by roughly **two to one**.
+
+With real costs the same trades read differently:
+
+    XAUUSD 1h, 687 trades, 2011-2026
+        gross                          +0.074 R
+        friction (measured, per trade)  0.051 R
+        net                            +0.023 R   CI [-0.086, +0.132]
+        net, entering at the next open +0.053 R
+
+Still not distinguishable from zero, and the caveat stands. But the project's
+standing summary -- "gross 0.05-0.17 R against friction 0.07-0.24 R" -- was
+charging this instrument twice what it costs, and every conclusion about gold
+that leaned on the gap was leaning on the wrong number.
+
+### Sessions: an hour effect that survives every test I could put to it
+
+The reason for the re-run was a cost argument: gold's spread barely moves across
+the day while its bar range varies 3.7x, so the same trade costs 5.3x more per
+unit of move at 23:00 than at 16:00, and ATR normalisation smooths exactly that
+cycle. The prediction was that London/NY entries would clear costs and the
+off-hours would not.
+
+**That prediction was wrong, and so was the artefact hypothesis I replaced it
+with.**
+
+    session      n     net R      CI                win%
+    asia       132    -0.071   [-0.320, +0.179]     33
+    london     121    -0.137   [-0.385, +0.112]     31
+    overlap    261    +0.028   [-0.145, +0.191]     36
+    ny-late    131    +0.048   [-0.182, +0.298]     37
+    off (21-24) 42    +0.666   [+0.236, +1.095]     57
+
+The cheap hours are flat. The EXPENSIVE window is the one that pays, and 29 of
+those 42 trades sit in the single hour 21:00 UTC at +1.019 R.
+
+That is the shape of a fluke, so it was tested four ways:
+
+  MULTIPLE COMPARISONS. A permutation test that shuffles the hour labels and
+  records the best BUCKET each time -- so the null distribution is of the maximum,
+  which is what selection actually produces. Observed best hour +1.019 against a
+  null mean of +0.475 and a 95th percentile of +0.752: **p = 0.004**. Best
+  session +0.666 against a null 95th of +0.378: **p = 0.002**.
+
+  ERA REPLICATION. 2011-2020: +0.682 on n=26, CI [+0.105, +1.259]. 2021-2026:
+  +0.641 on n=16, CI [-0.109, +1.389]. Same sign, same magnitude, independent
+  windows; the second era's interval includes zero on sixteen trades.
+
+  ROLLOVER ARTEFACT. My first suspicion, and it is wrong: the rollover is at
+  23:00, not 21:00. Hour 23 is followed by a non-3600-second gap 100% of the time
+  and a 0.126 ATR jump to the next open. Hours 20, 21 and 22 are ordinary bars --
+  1.4% irregular spacing and a 0.003 ATR gap -- and hour 23 contributes 2 trades.
+
+  ENTRY REALISM. Re-run entering at the NEXT bar's open rather than the signal
+  bar's close, so the price is one anyone could have traded. Hour 21 is unchanged
+  at +1.019, and the whole book improves from +0.023 to +0.053.
+
+WHAT IT IS WORTH ANYWAY: 29 trades in eight years, about three and a half a year.
+Every test above is computed on those same 29. A p-value cannot manufacture
+sample size, and an effect that passes four checks on 29 observations is a lead,
+not a result. It needs either more instruments -- which is the axis this
+instrument-specific scoping deliberately gave up -- or a mechanism that explains
+why the hour before the New York close should behave differently, and no such
+mechanism has been found here.
+
+### Cone-based trade screening: it does not rescue the edge
+
+The cone is calibrated, so the obvious use is a filter: `DISPLACEMENT_V1` misses
+its costs by a hair, and if some of its trades ask price to travel further than
+it normally travels in the holding period, removing them should lift the gross
+side without touching the detector. `tools/cone_screen.py` tests that on XAUUSD,
+per timeframe, per era, with one threshold sweep applied to every cell rather
+than the best threshold per cell.
+
+THE FIRST VERSION ASKED THE WRONG QUESTION, and the answer was worth having. A
+cone says where price is likely to BE in 96 bars; a trade with two barriers is
+decided by which one it TOUCHES first. Screening on the endpoint kept 77-100% of
+trades at every threshold and moved nothing -- because the 2.0 ATR target sits
+around the **20-35th percentile** of the 96-bar move. The targets were never
+ambitious. These trades do not fail by asking too much; they fail on the path.
+
+So the screen was rebuilt as a first-passage race: for every bar, would this
+geometry have touched its target before its stop, measured over bars whose own
+race had already finished. Screening on that historical rate:
+
+    cell               all trades           path >= 0.30
+    1h 2011-2020   n=326 net +0.032   ->  n=280 net +0.057  CI [-0.114, +0.229]
+    1h 2021-2026   n=340 net -0.085   ->  n=274 net -0.060  CI [-0.224, +0.104]
+    4h 2011-2020   n= 76 net +0.034   ->  n= 61 net -0.038  CI [-0.382, +0.306]
+    4h 2021-2026   n=105 net -0.100   ->  n= 83 net -0.095  CI [-0.420, +0.230]
+
+**No threshold improves all four cells, and every interval spans zero.** Tighter
+thresholds look spectacular and are not: `path >= 0.38` on 1h 2021-2026 reports
++0.580 R on 25 trades with a CI of [-0.020, +1.180]. That is the shape of a
+finding that would not survive being asked twice, which is why every row here
+carries a bootstrap interval -- without one, `+0.750` reads as a discovery rather
+than as twelve trades.
+
+XAUUSD'S THIRD ERA IS THIN. 1999-2010 has 3,165 4h bars against 8,851 and 8,723
+in the later two, and produces 20 trades -- under the reporting floor. On this
+instrument the replication axis is two eras, not three, and saying so is part of
+the result.
+
+### Limit at the line: settled, and negative
+
+Killed twice by earlier sessions, finished here on XAUUSD across all three eras.
+The geometry fix is real and insufficient:
+
+    arm          rows     bars      net_R              CI (by bar)
+    near        22643    10228    -0.2122   [-0.2320, -0.1917]
+    limit       18553    10228    -0.1283   [-0.1567, -0.1046]
+    per_op      22643    10228    -0.1051   [-0.1279, -0.0855]
+
+    by era (per_op)   1999-2010  -0.1304   2011-2020  -0.1283   2021-2026  -0.0811
+    by timeframe      1h -0.1095            4h -0.0917
+
+Resting the entry AT the line instead of 0.20 ATR off it halves the loss --
+-0.2122 to -0.1051 -- exactly as the geometry argument predicted. It is still
+decisively negative, in every era and both timeframes, with intervals that
+exclude zero everywhere.
+
+And the adverse selection was as predicted, to the point. Breaks fill 90.3% of
+the time, holds only 74.2%: the limit keeps every loser and misses a quarter of
+the winners, so the hold rate among FILLED approaches drops from 52.2% to 47.3%.
+Those 4.9 points are what the geometry gain is spent on.
+
+### Elliott Wave Replay
+
+`Backtest -> Elliott Replay`. Step a chart through history one bar at a time,
+record what the counter believed BEFORE each bar existed, then reveal what
+followed and score it.
+
+IT IS A SANDBOX, NOT A MODE ON THE LIVE CHART, and that is the most important
+thing about it. The first build drove the live chart directly -- sliced its bar
+array to the cursor, moved the view, released the price lock, restored
+everything on exit. It worked. It was still the wrong place: a tool for deciding
+whether a strategy is worth anything must not be able to disturb the chart you
+trade from, and "it restores correctly" is a promise that has to be re-earned
+after every future edit. The cost of it being broken once is your working
+layout.
+
+The four panels sit behind ONE MENU rather than a row of segments -- four labels
+across the top ate the width the panels underneath need, and the row would only
+grow. `Components` is now `Download market data`, named for what it is used for;
+the view key is unchanged.
+
+A HOVER-OPENED MENU HAS TO CLOSE ON HOVER-OUT, which the shared `openMenu` does
+not do: it closes on a pick or a pointerdown elsewhere, right for a menu you
+clicked open and wrong for one that appeared under the pointer -- leaving the tab
+left it standing over the chart until you clicked something. The tab and the menu
+are one hover region with a gap between them (the menu is positioned 4px below
+its anchor, so crossing that gap fires mouseleave before mouseenter), bridged by
+the same 160ms grace the rail peek uses.
+
+The menu hangs off the BACKTEST TAB, on hover, and THE TAB TAKES THE NAME of the
+panel it is showing -- `Runs`, `Elliott Replay`, `Download market data` -- so the
+strip says which of the four is up. It falls back to `Backtest` whenever that
+panel is not what you are looking at: another tab selected, or the panel
+collapsed and nothing being shown at all.
+
+That is the whole navigation now. The panel's own toolbar is gone: it held a
+duplicate view picker sitting directly under the tab that offers the same list,
+a line of index metadata, and a ⟳ button. The button was a manual step for
+something the page can see for itself, so `runs/index.json` re-reads on a timer
+and re-renders only when `generated_utc` or the run count has actually changed
+-- a periodic re-render would reset scroll and drop a half-typed symbol every
+fifteen seconds. It skips the re-render entirely while the replay is open, which
+owns a chart and a cursor that a remount would throw away.
+
+One routing note that keeps the label honest: the tab-click handler used to
+toggle the `active` class inline. It goes through `paintTabs` now, because that
+is also what writes the label -- a second place that repaints the strip is a
+second place that can forget to.
+
+THE TRANSPORT IS PLAY / BACK / STOP, not a row of nudge buttons. Watching a count
+evolve is what this view is for, and clicking `next bar` two hundred times is not
+watching it -- play runs the cursor and you read the panel as it changes, at
+0.5x to 4x. Single stepping stays on `,` and `.` (space toggles play), which is
+where it belongs: the fine adjustment, not the main gesture.
+
+Two bugs the transport turned up, both from the panel REMOUNTING on every render
+-- the Backtest tab rebuilds its DOM, and the same instance is mounted into the
+new host so the cursor and the beliefs survive. Anything bound to the document
+has to be released first: without that the key handler stacked one listener per
+render, so `.` stepped two bars and space played then immediately stopped itself.
+And `e.target?.matches?.()` is not defensive noise -- a key event delivered to
+the document has the document as its target, `document.matches` does not exist,
+and the handler threw where it looked like it was doing nothing.
+
+The belief panel sits beside the chart at 244px, which leaves the chart at 1277px
+against the live chart's 1249px -- the tab spans the full window while the live chart
+gives up both rails, so the two come out within a few pixels of each other
+without arranging it. That matters: a wave in 1231px of canvas and the same wave
+in 940px are different pictures, and the point of the sandbox is to judge what
+the live chart would show.
+
+So the replay owns a `Chart` of its own, built into the Backtest tab and never
+added to `app.charts`, with its own bars fetched separately. Its `onChange` is a
+no-op -- and since `_persist()` is nothing but `this.onChange(this)`, that one
+line is what makes a bare Chart genuinely inert: it writes no workspace key,
+touches no saved span, no timeframe, no drawing. `js/main.js` and `index.html`
+do not know the file exists.
+
+THE FUTURE IS REMOVED, NOT HIDDEN. Stepping re-slices the series to the cursor
+and hands the slice to `setData`, so the overlays and the counter see an array
+whose last bar IS the cursor. A masking flag would have meant every consumer had
+to remember to honour it, and the one that forgot would leak the answer quietly,
+in the direction that flatters the model.
+
+Two things the sandbox still has to get right, both found by testing the first
+build rather than by reading it. The price lock is released on every step: a
+dragged price axis pins the vertical range and walking the cursor back takes the
+bars straight out of it -- the lock held 4569-4714 while the replay bar closed at
+4365 and the chart drew nothing at all. And `Reveal` parks the right edge just
+past the scoring horizon rather than at the live edge, which is the one place the
+comparison cannot be made -- the count, its invalidation line and its target zone
+were all a thousand bars off screen.
+
+#### One chart, two halves — and the structure by degree
+
+The chart holds the WHOLE series. Left of the dashed marker is what the engine
+could see; right of it, washed, is what happened. The count, its projection and
+its invalidation line are drawn from the left half only.
+
+The separation that matters is not the visual one. The belief is computed from
+`full.slice(0, cursor + 1)` and never from the array the chart is holding, and
+those two lines sit next to each other in `_apply` so they cannot drift.
+Drawing the future costs nothing as long as nothing that produces a CLAIM can
+read it. This was briefly two stacked charts, which bought the same guarantee at
+the price of half the height and two price scales to reconcile by eye.
+
+STRUCTURE BY DEGREE. Elliott is self-similar, so a count is only a claim once you
+say at what degree -- the same three bars are wave 5 of a 15m impulse and noise
+inside a D1 wave 2. Four rows read the same instrument at 1D, 4H, 1H and 15M,
+each cut to the cursor's INSTANT:
+
+    tf    reads                  bias   weight
+    1D    wave 4 correction      down     37%
+    4H    wave 5 continuation    down     48%
+    1H    wave 5 continuation    up       52%
+    15M   wave 5 continuation    up       46%
+    1 of 4 degrees read up — divided
+
+Cut by time, not by index: with the cursor at 2026-06-12 19:00 the 1D row ends
+on 06-11 21:00, the 4H row on 06-12 17:00 and the 1H row on 06-12 19:00. Slicing
+all four by the same bar COUNT would have let the macro row read tomorrow.
+
+The fetch depth is derived rather than fixed. 3000 bars is 31 days of 15m and
+twelve years of D1, so a cursor two months back had a full daily series and an
+EMPTY 15m one -- and the execution row read "no count", which looks like the
+counter having nothing to say rather than the data not going back far enough.
+Each degree now asks for the distance from the cursor to now in its own bars,
+plus a warm-up, and deepens itself if a row still comes up short.
+
+THE % IN THE PANEL IS NOW THE TARGET'S REACH RATE, not the count's share. The
+share was one scoring function's weight with nothing behind it -- measured, its
+confidence was inverted, and weighting a cone by it cost 33 points of coverage.
+The reach rate is the same visual slot filled with something checkable: how often
+price actually travelled that far, in that direction, within the horizon,
+measured on windows that closed before this bar. Each degree measures against its
+OWN series and horizon, because a 4h target is not a 15m target expressed in
+different bars.
+
+WHAT THIS PANEL DELIBERATELY DOES NOT PRINT is a line like `Next 1H -> bullish
+67%`. That number has been measured on this instrument at these timeframes and
+it has no skill: fitted walk-forward and honestly calibrated it collapses onto
+the base rate and still scores a shade worse than ignoring the chart. So each
+row shows what the count IS -- direction, wave, the level that refutes it -- and
+the weight is labelled as a weight. The direction is worth reading because it is
+falsifiable at the invalidation price. The percentage is not.
+
+#### Recording a replay, and snapshotting one
+
+`⏺ Rec` records the replay as VIDEO. Press it, play, press it again, and the
+file lands in **`data/replays/<symbol>_<tf>_<stamp>.mp4`** through the dev
+server. A browser download would go wherever the browser puts downloads, which
+is not the project, and the point of a recorded replay is that it sits beside the
+runs it will be compared with.
+
+`MediaRecorder` records a canvas, and half this view is HTML -- so a COMPOSITE
+canvas is drawn on every animation frame: the chart's own canvas copied in, the
+belief panel painted beside it by the same routine the PNG snapshot uses, in the
+app's dark palette rather than the PNG's light one. Recording the chart canvas
+alone would have been one line and would have produced a video of some candles
+with no count beside them.
+
+EVERY FRAME CARRIES THE BRAND HEADER -- the mark, `DiaNurFx`, the instrument and
+timeframe, and the as-of bar and its timestamp right-aligned. A recording gets
+shared, and a shared frame with a wave count on it and no header is a chart from
+anywhere. The mark is drawn from the same 32-unit artboard as the favicon and the
+chart's own export stamp, so the three cannot drift. It sits in a band ABOVE the
+chart rather than over it: the top-left of the plot is where the count's labels
+appear, and a logo there covers the thing the video exists to show.
+
+The composite is forced to EVEN dimensions. H.264 subsamples chroma 2x2, and an
+odd width or height makes the encoder pad or refuse -- a 1579px composite fails
+silently at `start()`.
+
+#### Which video format
+
+Measured here, not assumed: the same 8-second take of this view (1578x618),
+recorded through `MediaRecorder` at a 2500 kbps cap.
+
+    codec                  fps   bytes      note
+    H.264  avc1  (mp4)     15    606,556    under-runs the cap on static content
+    AV1    av01  (mp4)     15    568,215    6% smaller, CPU-heavy to encode
+    VP9          (webm)    15  1,114,765    spends the whole budget
+    VP8          (webm)    15  1,304,871
+    H.264  avc1  (mp4)     25    922,143    +52% for frames that are duplicates
+    H.264  avc1  (mp4)     10    323,557    at a 1200 kbps cap
+
+Two things fall out of that. THE FRAME RATE IS THE REAL LEVER, not the codec:
+this is a screencast of a chart that only changes when the cursor steps, so most
+frames are duplicates, and 25 -> 15fps saves a third with nothing visibly
+different. And the codec comparison at a fixed cap measures how each encoder
+SPENDS its budget rather than its efficiency -- VP9 is not worse than H.264 in
+general, it simply took the bitrate it was offered.
+
+**The recommendation is H.264 in MP4, which is what this records by default.** It
+is the only format that is genuinely universal -- browsers, phones, VLC, Office,
+Slack, WhatsApp, every editor -- and on this content it is also the second
+smallest of the five. AV1 is 6% smaller and much better at matched quality in
+principle, but it will not open in most editors or on older phones, so it is not
+the universal answer; VP9/WebM is neither smaller here nor as portable. If a file
+needs to be smaller, drop the frame rate before changing the codec.
+
+Defaults are `FPS = 15` and `BITRATE = 2.5 Mbps`, which is ~75 KB/s -- about 9 MB
+for a two-minute replay.
+
+MP4 IF THE BROWSER WILL, WEBM OTHERWISE. H.264 in MediaRecorder is recent and not
+universal, and asking for a container the browser cannot make throws at
+`start()`. The type comes from `isTypeSupported` and THE EXTENSION FOLLOWS WHAT
+WAS NEGOTIATED, not what was asked for: a file named `.mp4` holding a WebM stream
+is worse than a `.webm`. Chromium here produces a fragmented MP4 (`ftyp`/`moov`
+then `moof`+`mdat` pairs), which plays and seeks in browsers and in VLC; a few
+older editors want a flat MP4 and will ask you to remux.
+
+Data arrives in one-second chunks so a crash costs a second rather than the take,
+and `rec` is held until `onstop` fires -- the last chunks arrive after `stop()`
+returns, and clearing it earlier drops the tail.
+
+A small JSON sidecar is written beside the video with the same basename: the
+ordered list of beliefs, each trimmed to what a later analysis reads, with the
+score included so the file is self-contained. It is ~40KB against the video's
+megabytes and it is the half that can be queried -- a video cannot tell you what
+the count claimed at bar 1804.
+
+`⤓ PNG` saves the chart AND the panel as one image. The live chart's snapshot is
+canvas-only, which is right there -- the whole picture is on the canvas. Here
+half the picture is HTML, and an image of a wave count without the count that
+produced it is a picture of some candles. The panel is REDRAWN onto the canvas
+rather than screenshotted: there is no DOM-to-image in this project, adding one
+to satisfy a caption would be a dependency, and the panel's content is three
+arrays this file already holds. What the image says is therefore what the code
+believes, not what a rasteriser made of the stylesheet. The uncalibrated-share
+caveat is drawn INTO the image, because a screenshot outlives the session that
+made it and a percentage in a picture reads as a probability unless the picture
+says otherwise.
+
+    POST /record?name=x.mp4  ->  raw bytes, written byte for byte
+    POST /record             ->  {name, payload}, written as JSON
+    GET  /records            ->  what is on disk
+
+Video is streamed to disk in 1MB reads rather than held whole in memory, and is
+never decoded: the browser has already produced a finished container, and
+re-encoding it here would be work with no purpose and one more thing to get
+wrong.
+
+The name is sanitised even though this is a dev server on 127.0.0.1: a write
+endpoint that accepts `../` can leave the folder it was pointed at, and there is
+no reason to allow it. `os.path.basename` alone would not do it on Windows,
+where a backslash is also a separator.
+
+#### The forecast cone, and the one number on this chart that is honest
+
+A projected path is a claim about where price will be to the tick, and nothing
+here supports that. A CONE is a different kind of object: at this bar, over the
+history available at this bar, how far did price actually get 1, 2, ... n bars
+later? That is a fact about the instrument, and unlike everything else in this
+panel it can be CHECKED -- a nominal 80% band should contain the outcome about
+80% of the time.
+
+Measured on XAUUSD 4H, 510 cones, 2018-2026:
+
+    horizon   coverage 80%   coverage 50%   width 80%   interval score
+       +1         79.0%          48.4%       1.49 ATR       2.65
+       +2         78.6%          48.0%       2.22 ATR       3.81
+       +4         80.8%          50.4%       3.31 ATR       5.32
+       +8         78.2%          47.8%       4.88 ATR       7.85
+      +16         81.4%          47.8%       6.95 ATR      10.93
+      +24         77.1%          48.6%       8.57 ATR      13.93
+
+Nominal 80 delivers 77-81, nominal 50 delivers 48-50, at every horizon out to a
+day and a half. **This is the first forecast object in the project that says
+what it means.** The wave count's shares miss by up to 65 points; the cone misses
+by two.
+
+Two rules make that possible. Every sample runs to `upto - ahead`, so the widest
+step is built from returns that had already finished at the cursor -- sizing a
+cone from the dispersion of the bars it is drawn over is the future leaking in
+through the one number nobody would check, and `tests/test_elliott.py` appends a
+violent future to a calm history and demands the cone not move. And returns are
+divided by the ATR at each HISTORICAL bar and multiplied by the ATR now, so a
+quiet decade and a violent one contribute the same shape.
+
+Coverage is reported with WIDTH beside it, and the interval score
+(Gneiting-Raftery) is what the two are judged on together. A band from -10 to
++10 ATR has perfect coverage and says nothing; the interval score charges for
+width and adds a penalty for how far outside the band the outcome fell, so it
+cannot be bought by widening.
+
+#### Conditioning on state did not earn its keep
+
+The obvious next step was to condition the cone on the current state -- trend,
+where price sits in its recent range, how wide that range is, momentum, and the
+volatility regime -- and take the quantiles of the nearest 400 historical
+analogues instead of all 1,716 candidates.
+
+    horizon   conditional cov80 / width   unconditional cov80 / width
+       +1        78.6%  /  1.48 ATR          79.0%  /  1.49 ATR
+       +4        80.6%  /  3.29 ATR          80.8%  /  3.31 ATR
+       +8        79.0%  /  4.88 ATR          78.2%  /  4.88 ATR
+      +24        77.6%  /  8.63 ATR          77.1%  /  8.57 ATR
+
+Within a point on coverage and within 0.06 ATR on width at every horizon. Those
+state features carry no information about DISPERSION on this cell -- the same
+answer from a quarter of the samples, which is the worse of the two. So the
+unconditional band is the one drawn, and that is a measurement rather than a
+preference. The conditional path is kept in `js/chart/cone.js` so a better
+feature set can be dropped in and re-scored rather than re-argued.
+
+#### The scenario mixture, and what a bad classifier costs
+
+The idea is the right one to test: a wave-3 continuation and a wave-4 correction
+are different futures, so blending them into one band before looking throws away
+the only thing the count claims to know. So `scenarioCones` builds a cone per
+scenario from the historical bars that RESOLVED into that scenario -- read in the
+current count's directional frame, bucketed at the same +/-0.75 ATR the scorer
+uses -- and combines them by the count's own weights.
+
+MIXING QUANTILES IS NOT AVERAGING THEM. The P10 of a mixture is not the mean of
+the components' P10s; that identity holds by coincidence at best, and using it
+gives a band that is too narrow exactly when the scenarios disagree. The mixture
+is built by pooling the samples at per-class weights and taking WEIGHTED
+quantiles of the pool, which is the mixture distribution by construction. A test
+pins it: two components at -10 and +10 mix to a band spanning both, while
+averaging their quantiles collapses to the empty middle, a band **thirteen times
+narrower** than the truth.
+
+Measured on XAUUSD 4H, 510 forecasts:
+
+    horizon   plain cone           mixture (count weights)   mixture (equal weights)
+       +1     79.0% / 1.49 / 2.65    77.5% / 1.46 /  2.70      79.6% / 1.48 /  2.65
+       +4     80.8% / 3.31 / 5.32    76.1% / 3.10 /  5.57      80.2% / 3.24 /  5.30
+       +8     78.2% / 4.88 / 7.85    66.7% / 4.29 /  8.55      77.6% / 4.69 /  7.82
+      +16     81.4% / 6.95 /10.93    59.6% / 5.20 / 13.21      78.0% / 6.49 / 10.88
+      +24     77.1% / 8.57 /13.93    43.5% / 5.02 / 20.52      73.9% / 7.85 / 14.01
+
+                        coverage 80% / width in ATR / interval score
+
+**The mixture is worse, and worse the further out it looks.** At 24 bars its 80%
+band holds the outcome 43.5% of the time -- it narrowed from 8.57 to 5.02 ATR and
+bought nothing but confidence. The interval score, which charges for exactly that
+trade, goes from 13.93 to 20.52.
+
+The equal-weight column is why this is a finding about the WEIGHTS rather than a
+bug in the mixing. Give the three scenarios 1/3 each and the mixture lands back on
+the plain cone at every horizon, within a point of coverage. The machinery is
+correct; the damage arrives entirely with the count's probabilities.
+
+What it costs is now quantified. Conditioning on a class and then weighting the
+classes with a classifier that has no skill inherits the SHARPNESS of the
+conditioning without the accuracy -- a textbook failure, and at 24 bars it is
+worth **-33.6 points of coverage**. That is the strongest argument yet for not
+shipping the count's shares as probabilities anywhere.
+
+So the drawn band stays the plain one. `scenarioCones` is kept, tested and ready:
+the day the counter earns positive skill, the mixture is one weight vector away
+from being the better cone.
+
+#### The projected path, drawn before the bars exist
+
+A wave LABEL cannot be scored. "Wave 3" is a name, not a forecast. What can be
+scored is a PATH: at bar +8 the count expects this price, at +14 this one, at
++20 this one. So each count projects its remaining legs forward into the empty
+space right of the cursor, dashed and labelled, and the view is widened to hold
+them -- parked on the last bar the forecast would be off screen, which is the
+one thing it exists not to be. Step forward, or press `Reveal`, and the actual
+bars arrive on top of it.
+
+PRICE comes from the fib relationships the guidelines are already stated in, so
+nothing new is invented. Wave 3 is projected to 1.618 of wave 1 rather than the
+middle of its 1.618-2.618 zone: the lower bound is the one the guideline names,
+and projecting to the middle of a range is quietly optimistic.
+
+TIME is the weak half and is labelled as such. It comes from the median duration
+of this count's own completed legs, because Elliott says a great deal about
+proportion in price and almost nothing testable about proportion in time. The
+scoring reports PRICE error against the path and does not pretend the timing is
+a claim.
+
+The path is scored separately from the direction, because they are separate
+questions -- a count can call the direction and still be nowhere near the prices
+it projected. Over the same 556-belief sweep on XAUUSD 1H the projected path
+misses by a MEDIAN of 2.78 ATR (median, not mean: a few counts project into a
+gap and miss by twenty, and an average would report on those rather than on the
+typical case).
+
+#### What the counter does, and what the numbers are not
+
+Three HARD RULES drop a count rather than penalise it -- wave 2 past the start of
+wave 1, wave 4 overlapping wave 1, wave 3 the shortest of 1/3/5. Everything else
+(fib retracements, the wave-3 extension, alternation between 2 and 4) is
+evidence, shown as ticks and crosses beside the primary count so the panel says
+WHY it prefers a reading rather than only that it does.
+
+Each surviving count carries an INVALIDATION price. That is what makes it a
+claim: a count with no level that would refute it is a description of the past,
+and `tests/test_elliott.py` fails the build if one appears without it.
+
+**`share` is not a probability and the panel says so.** It is one scoring
+function's weight, normalised across the surviving counts, with nothing behind it
+yet. Printing `62%` from a softmax and calling it a probability is exactly the
+failure this codebase exists to avoid. Turning it into one means measuring how
+often a count with share s was the one that survived -- which is what the log is
+for.
+
+#### Calibration and repainting
+
+Accuracy answers "how often is the top pick right", and a model can score well on
+it while its numbers mean nothing -- always saying 99% and being right 60% of the
+time is 60% accurate and badly wrong about itself. `Score whole series` therefore
+also reports the two questions that decide whether the shares may EVER be printed
+as probabilities.
+
+CALIBRATION buckets each forecast by the confidence it claimed for the class it
+named, against how often that class then happened. On XAUUSD 1H, 556 forecasts,
+24-bar horizon:
+
+    claimed      n    said   happened    gap
+    0-35%        4     35%        0%    -35pp
+    35-45%      89     40%       24%    -17pp
+    45-55%      84     49%       21%    -28pp
+    55-65%      12     63%       50%    -13pp
+    65-75%     249     70%       34%    -37pp
+    75-100%    118     90%       25%    -65pp
+
+    Brier 1.0548 vs climatology 0.6353 · skill -66.0%
+
+Every bucket is overconfident and the overconfidence GROWS with the claim: the
+75-100% bucket says 90% and delivers 25%. The Brier score is quoted against
+climatology -- the same score for a forecast that ignores the chart and always
+predicts this sample's base rates -- and loses to it by 66%. A model that cannot
+beat counting outcomes has told you nothing you did not already know. This is
+the measurement that keeps the word "probability" off the panel.
+
+REPAINTING is the other thing a replay can see and a finished chart cannot. A
+finished chart always looks right, because the count was fitted to it; what
+matters is whether the count you were shown at the time kept being replaced.
+
+    primary reading changed on 37% of steps (sampled every 5 bars)
+    changed DIRECTION on 13%
+    median run 10 bars · longest 80 bars
+
+The direction flips are the ones that matter: relabelling wave 3 as wave 5 is
+bookkeeping, but reversing the direction is the change that would have reversed a
+trade. Thirteen percent of five-bar steps is a reading that turns over roughly
+every 38 bars.
+
+Both metrics are tested against forecasts that are true by construction --
+`tests/test_elliott.py` builds a set where the claimed probability IS the outcome
+frequency and demands a zero gap, and an overconfident set that must report as
+overconfident. A calibration metric that is wrong in the flattering direction
+would otherwise be indistinguishable from a model that works.
+
+#### Fitting the weights, and why that settles it
+
+The flat guideline weights were the obvious suspect: the scorer counts satisfied
+guidelines and weights them equally because there was no evidence for any other
+weighting. So `tools/elliott_fit.mjs` learns them instead -- XAUUSD only, per
+timeframe, walk-forward, on the app's own `countFrom` rather than a
+reimplementation.
+
+Three things had to be right for the answer to mean anything. Weights that
+predict bar i are fitted only on samples whose outcome was already KNOWN at i,
+which is `i - horizon`, not i. Each timeframe is fitted alone -- pooling was the
+confound that produced a +0.784 correlation out of nothing earlier in this
+project. And the temperature is fitted on a held-out slice the weights never saw,
+so the model is not calibrating itself against its own training error.
+
+XAUUSD 1H, 2015-2026, 12,146 settled forecasts, 24-bar horizon:
+
+    scorer                              acc    baseline   Brier   climatology   skill
+    flat guideline weights             0.309     0.404   1.0178      0.6373    -59.7%
+    fitted, per-count head             0.373     0.404   1.0068      0.6373    -58.0%
+    fitted, softmax over classes       0.372     0.404   0.8883      0.6373    -39.4%
+    fitted softmax + temperature       0.382     0.404   0.6604      0.6373     -3.6%
+
+Each row fixes a real defect in the row above. The per-count head learns which
+guidelines matter and lifts accuracy from 0.309 to 0.373. The softmax removes the
+inflation caused by normalising three independent probabilities into a
+distribution. Temperature scaling -- T came out at **5.75**, so the raw model was
+nearly six times overconfident -- removes the exaggeration.
+
+AND THE CALIBRATION BECOMES HONEST AND EMPTY. After scaling, 9,613 of the 12,146
+forecasts fall in one narrow band that says 38.7% and delivers 39.3%. That is a
++0.6pp gap, which is excellent calibration, and it is calibration onto the BASE
+RATE. The model has learnt what fraction of bars continue and stopped there.
+Brier skill is -3.6%: still, marginally, worse than a forecast that ignores the
+chart entirely.
+
+All three timeframes land in the same place, which is what makes it a finding
+rather than an artefact of one cell:
+
+    cell           n        flat skill    fitted+temperature    acc / baseline      T
+    XAUUSD 15m   31,087       -56.8%              -2.6%        0.372 / 0.396      5.65
+    XAUUSD 1H    12,146       -59.7%              -3.6%        0.382 / 0.404      5.75
+    XAUUSD 4H     2,993       -57.7%              -5.2%        0.379 / 0.414     11.15
+
+Every cell: the flat scorer is catastrophically miscalibrated, fitting and
+scaling repairs the calibration almost exactly onto the base rate, and the
+repaired model is still a shade WORSE than ignoring the chart. Accuracy sits
+2-4pp under the majority-class baseline in all three. The temperatures say the
+raw model was six to eleven times overconfident depending on the timeframe.
+
+**So the counter cannot be fixed by fitting its weights.** That is a stronger
+statement than the first measurement was: the guidelines have now been given
+learned weights, walk-forward, a proper multiclass head and a fitted temperature,
+and the best any of it manages is to reproduce the base rate. Two readings
+follow, and only the first is supported here -- these features, at this horizon,
+on this instrument, carry no information about the next 24 bars. Whether a
+different feature set, a different horizon, or a human reading the same chart
+would do better is not something this measures.
+
+#### The first measurement, and it is negative
+
+The replay log makes the counter falsifiable, so the first thing to do with it
+was falsify it. `Score whole series` walks every 5th bar rather than only the
+bars you stepped through -- clicking `Next bar` two hundred times is a fine way
+to watch a count evolve and a poor way to measure it, because the sample ends up
+wherever you happened to stop. Primary count only, 24-bar horizon, outcome
+bucketed at ±0.75 ATR:
+
+    symbol      tf     n     accuracy   baseline   edge     invalidated
+    XAUUSD      15m    556   32.0%      44.4%      -12.4pp  47%
+    XAUUSD      1h     556   26.3%      44.1%      -17.8pp  57%
+    XAUUSD      4h     556   35.4%      41.9%       -6.5pp  53%
+    EURUSD      1h     556   30.2%      44.4%      -14.2pp  55%
+    USDJPY      1h     556   25.7%      39.6%      -13.9pp  58%
+
+The baseline is naming the most common outcome every time. The primary count is
+BELOW it in all five cells, and roughly half its counts are invalidated by their
+own stated level within 24 bars. Consistent sign across two instruments and three
+timeframes, which is what makes it worth reporting rather than noise.
+
+What that measures is THIS counter -- a rule-checked enumeration over confirmed
+pivots with flat guideline weights. It is not a verdict on Elliott, and a human
+analyst reading the same chart is doing something this does not model. It does
+say that the count on the screen should not be traded as it stands, and that the
+honest next step is calibration against the log rather than more label styling.
 
 #### Zoom preserves the right edge
 
@@ -1097,47 +1797,22 @@ Round-tripped end to end -- live `BULL 58, invalidation 4625.26`; 700 bars back
 `WATCH ↑ 35, 4382.97`; 1400 back `NEUTRAL 13, 4053.93`; and back to the edge,
 `BULL, 4625.26` again.
 
-#### Channel history: the corridor that already ended
+#### Channel history: removed
 
 `liveChannels` detects at ONE bar, the last, so it answers "what corridors are
-visible now". A channel that formed and died 400 bars ago is not returned at
-all -- which is why the older half of a chart is bare while the right edge
-carries bands. Seeing a finished ascending channel beside the descending one now
-forming was only possible by accident, when both happened to still be alive.
+visible now"; a channel that formed and died 400 bars ago is not returned at
+all. A `Channel history` toggle used to repeat detection back across the visible
+window on the as-of grid and merge the duplicates structurally -- same direction
+plus same `tEnd`, or spans overlapping >= 60%, which took 33 raw detections down
+to 9 on 15m gold.
 
-`Channel history` in the `⌁ Auto TL` menu repeats detection back across the
-visible window on the same 25-bar grid the as-of cut uses, and keeps every
-corridor that was live at any of those bars.
-
-THE MERGE IS STRUCTURAL, which matters because the last attempt to merge
-corridors was reverted for guessing at a price threshold. A corridor re-detected
-as it ages reappears with the SAME end bar and an ever-later start, so the raw
-sweep holds the same band three or four times. Two rules, neither of which needs
-a price:
-
-    same direction + same tEnd     ->  keep the longest span
-    spans overlapping >= 60%       ->  keep the longer
-
-Measured on 15m gold over 600 bars, 33 raw detections collapse to 9. **The
-overlap fraction is not delicate**: 0.5 and 0.7 return the identical nine bands,
-so there is no edge for the number to balance on -- the same property that made
-the 0.35 ATR line dedupe trustworthy.
-
-On a 420-bar window it takes 3 corridors to 7, laid out in sequence rather than
-stacked:
-
-    down        1436-1622
-    up          1590-1622
-    down        1669-1739
-    up          1714-1871      a finished ascending channel
-    horizontal  1815-1985
-    up          1876-1919
-    down        1925-1985      the one forming now
-
-Off by default, and it costs ~15ms per detection with the sweep capped at 30 of
-them. The clipping already in `_channels` does the rest: each band is drawn over
-its own span and stops 25% past its own end, so a corridor from 300 bars ago
-cannot pretend to reach current price.
+It is gone, along with its flag, its menu entry and the sweep. The merge was
+sound and the cost was bearable (~15ms per detection, capped at 30), but a
+corridor that ended 400 bars ago is a fact about the past that the chart was
+being asked to carry forward, and none of the channel work replicated as a
+signal in the first place -- direction carries no information about what price
+does next over 29,208 samples. Drawing more of something that measures at zero
+is not a feature. Live corridors only now.
 
 #### A channel that stops having data should stop being drawn
 
@@ -3164,6 +3839,17 @@ for day, ticks in load_ticks('XAUUSD.a', '2026-08-01', '2026-08-31'):
   half of it. The raw server time is stored, the offset measured at download is
   in the manifest, and loaders return a `server_time` index so nothing quietly
   pretends otherwise.
+* **The Islamic admin fee is modelled as ZERO, by decision.** Pepperstone
+  charges $100 per lot on positions held past 5 days on this swap-free account,
+  and 25-27% of XAUUSD 4h Donchian trades cross that grace period. Measured, it
+  costs 0.011-0.023 R per trade read as a one-off and 0.059-0.088 R read as
+  per-night -- so the per-night reading takes gold 4h from +0.219 to +0.132 R,
+  about a third of the edge. It is deliberately NOT in the cost model: the
+  decision was to focus on whether a strategy exists at all rather than on
+  brokerage arithmetic. Every expectancy in runs/ is therefore optimistic by
+  that amount, and capping the hold to dodge the fee was measured to cost MORE
+  than the fee (the two eras disagree on the sign, and drawdown worsens). If a
+  result is ever taken to a funding decision, this is the first line to revisit.
 * **A bar file covering a year does not mean that year has bars at that
   timeframe.** MetaTrader answers a 4h request for a period it has no 4h history
   for by returning what it does have, so `XAUUSD.a/4h/2010.csv.gz` exists and

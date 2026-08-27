@@ -4,11 +4,17 @@
  * nothing else. If a number is not in that file it does not appear here, which
  * is what stops the page and the engine ever disagreeing.
  *
- * Three panels, deliberately not four:
+ * Panels:
  *   Runs        every run on disk, sortable, click to inspect
  *   Simple      one run: equity curve, headline metrics, cost split
- *   Components  is the machine trustworthy right now — data coverage, Stage 1
- *               gates, code hash, and the bulk download with progress
+ *   Download market data
+ *               is the machine trustworthy right now — data coverage, Stage 1
+ *               gates, code hash, and the bulk download with progress. Named
+ *               for what it is used for; the view key is still `components`
+ *   Elliott     a replay SANDBOX: its own chart, its own bars, stepped one bar
+ *               at a time with the future removed. It is here rather than on
+ *               the live chart on purpose — a strategy under test must not be
+ *               able to disturb the chart you trade from. See js/ui/replay.js.
  *
  * There is no Robustness panel: Stage 1 is a command-line verdict on eight
  * cells, and a UI for eight rows of CSV would be decoration. It belongs here
@@ -17,9 +23,22 @@
 
 import { api, base } from '../api.js';
 import { $, compact, el, num, signed, stamp } from '../util.js';
-import { toast } from './menu.js';
+import { openMenu, toast } from './menu.js';
+import { ElliottReplay } from './replay.js';
+import { StrategyReplay } from './strategyreplay.js';
 
 const INDEX = 'runs/index.json';
+
+/* The panels, in menu order. `components` keeps its key -- it is what the view
+   state and every internal reference already use -- while the LABEL says what
+   the panel is actually for, which is getting bar data onto disk. */
+const VIEWS = [
+  { key: 'run', label: 'Run a test' },
+  { key: 'runs', label: 'Runs' },
+  { key: 'components', label: 'Download market data' },
+  { key: 'elliott', label: 'Elliott Replay' },
+  { key: 'strategy', label: 'Strategy Replay' },
+];
 
 export class Backtest {
   constructor() {
@@ -48,6 +67,15 @@ export class Backtest {
     this.dl = { symbols: new Set(['XAUUSD.a', 'USDJPY.a']),
                 tfs: new Set(['15m', '1h', '4h', '1d']) };
     this.brokerSymbols = null;
+    /* The Elliott replay sandbox. Built lazily and kept across view switches so
+       stepping through 300 bars is not thrown away by a click on Runs. It owns
+       its own Chart and its own bars; see js/ui/replay.js for why it is here
+       rather than on the live chart. */
+    this.elliott = null;
+    /* The strategy replay sandbox, kept for the same reason: stepping
+       through 300 bars should survive a click on Runs. Same contract as
+       the Elliott one -- its own Chart, its own bars, a no-op onChange. */
+    this.strategy = null;
   }
 
   /* Watch the job runner for as long as the tab is open, not just while the Run
@@ -76,6 +104,40 @@ export class Backtest {
     }, 1500);
   }
 
+  /**
+   * Re-read runs/index.json on its own.
+   *
+   * There was a ⟳ button for this, which is a manual step for something the
+   * page can see for itself: the file changes when a run finishes or when
+   * `tools/reindex_runs.py` is run beside the app, and neither is a moment the
+   * reader is thinking about refreshing.
+   *
+   * It re-renders only when the file has ACTUALLY changed -- compared on the
+   * index's own `generated_utc` and run count rather than on a timer -- because
+   * a periodic re-render would reset scroll position and drop a half-typed
+   * symbol every thirty seconds.
+   */
+  startIndexWatch() {
+    clearInterval(this.indexTimer);
+    this.indexTimer = setInterval(async () => {
+      if (!this.host || document.hidden) return;
+      try {
+        const res = await fetch(INDEX + '?t=' + Date.now(), { cache: 'no-store' });
+        if (!res.ok) return;
+        const doc = await res.json();
+        const same = this.doc
+          && doc.generated_utc === this.doc.generated_utc
+          && (doc.runs || []).length === (this.doc.runs || []).length;
+        if (same) return;
+        this.doc = doc;
+        /* The replay sandbox owns a chart and a cursor; a re-render remounts it
+           and would throw the reader's position away for a file they are not
+           looking at. */
+        if (this.view !== 'elliott') this.render();
+      } catch { /* the next tick tries again */ }
+    }, 15000);
+  }
+
   /** Called when the tab becomes visible. */
   async show(host) {
     this.host = host;
@@ -96,6 +158,7 @@ export class Backtest {
       if (!this.doc.runs.some((r) => r.run_id === id)) this.deleting.delete(id);
     }
     this.startWatch();
+    this.startIndexWatch();
     if (this.brokerSymbols === null) {
       // best effort: without the bridge we fall back to what is on disk
       this.brokerSymbols = [];
@@ -110,7 +173,42 @@ export class Backtest {
     this.render();
   }
 
+  /**
+   * The Elliott replay sandbox.
+   *
+   * Mounted into a host this panel owns, so it is torn down with the tab and
+   * cannot outlive it. Nothing about it reaches the live charts: it fetches its
+   * own bars and its Chart has a no-op `onChange`, which is what keeps a Chart
+   * from writing workspace keys.
+   */
+  elliottPanel() {
+    const host = el('div', { class: 'bt-panel bt-elliott' });
+    if (!this.elliott) this.elliott = new ElliottReplay();
+    /* Mount after the node is in the document: Chart measures its host on
+       construction, and a detached div measures zero. */
+    queueMicrotask(() => { if (host.isConnected) this.elliott.mount(host); });
+    return host;
+  }
+
+  /**
+   * The strategy replay sandbox: the one validated rule, stepped bar by bar.
+   *
+   * Same isolation contract as the Elliott panel -- see js/ui/replay.js for
+   * why a validation tool must not be able to disturb the live chart.
+   */
+  strategyPanel() {
+    const host = el('div', { class: 'bt-panel bt-strategy' });
+    if (!this.strategy) this.strategy = new StrategyReplay();
+    /* Mount after the node is in the document: Chart measures its host on
+       construction, and a detached div measures zero. */
+    queueMicrotask(() => { if (host.isConnected) this.strategy.mount(host); });
+    return host;
+  }
+
   hide() {
+    if (this.elliott) this.elliott.unmount();
+    if (this.strategy) this.strategy.unmount();
+    clearInterval(this.indexTimer);
     clearInterval(this.pollTimer);
     clearInterval(this.jobTimer);
     clearInterval(this.watchTimer);
@@ -121,28 +219,34 @@ export class Backtest {
   render() {
     const host = this.host;
     host.innerHTML = '';
-    host.append(this.toolbar());
     const body = el('div', { class: 'bt-body' });
     if (this.view === 'runs') body.append(this.runsPanel(), this.simplePanel());
     else if (this.view === 'run') body.append(this.runPanel());
+    else if (this.view === 'elliott') body.append(this.elliottPanel());
+    else if (this.view === 'strategy') body.append(this.strategyPanel());
     else body.append(this.componentsPanel());
     host.append(body);
   }
 
-  toolbar() {
-    const tab = (key, label) => el('button', {
-      class: 'bt-seg' + (this.view === key ? ' active' : ''),
-      onclick: () => { this.view = key; this.render(); },
-    }, label);
-    return el('div', { class: 'bt-bar' },
-      tab('run', 'Run a Test'), tab('runs', 'Runs'), tab('components', 'Components'),
-      el('span', { class: 'spacer' }),
-      el('span', { class: 'bt-meta', text: this.doc
-        ? `${this.doc.runs.length} runs · code ${this.doc.code_hash} · indexed ${
-            (this.doc.generated_utc || '').replace('T', ' ').replace('+00:00', 'Z')}`
-        : '' }),
-      el('button', { class: 'bt-btn', title: 'Re-read runs/index.json',
-        onclick: () => this.show(this.host) }, '⟳'));
+  /**
+   * The view picker, opened from the toolbar button or from the BACKTEST tab.
+   *
+   * One method so the two entry points cannot drift: the tab strip's menu is
+   * the toolbar's menu, and adding a fifth view adds it to both.
+   */
+  /** The label of the panel currently showing, for the tab that opens it. */
+  viewLabel() {
+    return (VIEWS.find((v) => v.key === this.view) || {}).label || 'Backtest';
+  }
+
+  openViewMenu(anchor, onPick) {
+    openMenu(anchor,
+      VIEWS.map((v) => ({ label: v.label, value: v.key, checked: this.view === v.key })),
+      (key) => {
+        this.view = key;
+        if (onPick) onPick(key);
+        if (this.host) this.render();
+      });
   }
 
   /**

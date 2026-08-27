@@ -37,6 +37,30 @@ from .indicators import atr as atr_fn
 
 MIN_TRADES = 200
 
+#: The smallest expectancy worth calling an edge, in R per trade.
+#:
+#: WHY A FOURTH GATE EXISTS. A 165-cell sweep produced 21 "passes", and nine of
+#: them had an expectancy under 0.05 R. XAUUSD 15m ema_cross cleared every gate
+#: at +0.011 R over 2,690 trades. `avg_R > 0` is satisfied by +0.001, so the
+#: gates rejected noise dressed as signal but not signal too small to matter.
+#:
+#: WHY 0.05 AND NOT SOMETHING SMALLER. The number is anchored to the error in
+#: the COST MODEL, not to a preference. The per-bar spread column is zero for
+#: every FX bar after 2020, so the simulator substitutes the broker's CURRENT
+#: quoted spread -- an estimate standing in for a decade of unknown spreads,
+#: which were certainly wider in the past. At gold 4h the spread costs 0.0140 R;
+#: if the true historical average were merely twice today's quote, the floor
+#: moves by another 0.014 R. An edge below ~0.03 R could therefore be entirely
+#: an artefact of the substitution. 0.05 R is about twice that uncertainty.
+#:
+#: This is an ECONOMIC test, not a statistical one. With 2,690 trades an
+#: expectancy of +0.011 R may well be statistically distinguishable from zero;
+#: `gate_beats_control` is what answers whether it is distinguishable from
+#: CHANCE. This gate answers a different question: whether it is large enough to
+#: be worth carrying the risk, and large enough to survive the cost model being
+#: somewhat wrong.
+MIN_EFFECT_R = 0.05
+
 
 # --------------------------------------------------------------------------- #
 # recording what a strategy asked for, in units that travel                   #
@@ -209,7 +233,8 @@ def bootstrap(trades: pd.DataFrame, n=2000, seed=5):
     }
 
 
-def gates(real_trades, control: pd.DataFrame, min_trades=MIN_TRADES):
+def gates(real_trades, control: pd.DataFrame, min_trades=MIN_TRADES,
+          min_effect=MIN_EFFECT_R):
     """
     Binary gates with the numbers behind them. Never collapsed to a score.
 
@@ -222,6 +247,12 @@ def gates(real_trades, control: pd.DataFrame, min_trades=MIN_TRADES):
     gate_beats_control answers "is the timing better than chance". It does not
     answer "does this make money", and on a costly timeframe those come apart.
     gate_profitable asks the second question directly.
+
+    gate_effect is the fourth, and it exists because the first three still let
+    through an edge too small to be worth anything: nine of twenty-one passes in
+    a 165-cell sweep had an expectancy under 0.05 R, one of them +0.011 R. See
+    MIN_EFFECT_R for why the threshold is anchored to the cost model's own
+    uncertainty rather than chosen for roundness.
     """
     n = len(real_trades)
     out = {'trades': n, 'gate_sample': n >= min_trades}
@@ -230,7 +261,13 @@ def gates(real_trades, control: pd.DataFrame, min_trades=MIN_TRADES):
     real_r = float(real_trades['r_multiple'].mean())
     out['avg_R'] = round(real_r, 4)
     out['pf'] = round(_pf(real_trades), 3)
-    out['gate_profitable'] = bool(real_r > 0 and out['pf'] > 1.0)
+    # Judge the REPORTED number, not the raw one. avg_R is rounded to 4dp for
+    # the report; comparing the unrounded value meant a cell printed as
+    # "avg_R 0.0500" could fail a ">= 0.05" gate, which reads as a bug and makes
+    # the result unreproducible from the report. What is shown is what is gated.
+    out['gate_profitable'] = bool(out['avg_R'] > 0 and out['pf'] > 1.0)
+    out['gate_effect'] = bool(out['avg_R'] >= min_effect)
+    out['min_effect_R'] = min_effect
     if len(control):
         pct = percentile_of(real_r, control['avg_R'])
         out.update({

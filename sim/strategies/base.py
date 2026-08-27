@@ -70,6 +70,20 @@ class MTFStrategy(Strategy):
     #: d1_) are left alone -- those name real, specific frames.
     EXEC_PLACEHOLDER = '15m'
 
+    def ex(self, name):
+        """
+        An execution-frame column name.
+
+        `BASE_COLUMNS` declares columns with the '15m_' placeholder and
+        `columns()` rewrites them to the real execution frame -- so a hardcoded
+        '15m_atr' in a `series()` call DECLARES correctly and READS wrongly. That
+        mismatch is silent until the strategy runs somewhere other than 15m, and
+        it kept tl_bounce and rsi_divergence pinned to 15m long enough that they
+        had never been compared with Donchian on the timeframe where the only
+        surviving result lives.
+        """
+        return '%s_%s' % (self.exec_tf, name)
+
     def columns(self):
         pre = self.EXEC_PLACEHOLDER + '_'
         out = []
@@ -154,16 +168,16 @@ class MTFStrategy(Strategy):
     def ema_ok(self, view, side):
         if not self.ema_filter:
             return True
-        f, s = view.series(f'{self.exec_tf}_ema_fast'), view.series(f'{self.exec_tf}_ema_slow')
+        f, s = view.series(self.ex('ema_fast')), view.series(self.ex('ema_slow'))
         if np.isnan(f) or np.isnan(s):
             return False
         return f >= s if side == LONG else f <= s
 
     def regime_code(self, view, tf=None):
-        return view.series(f'{tf or self.exec_tf}_regime')
+        return view.series('%s_regime' % (tf or self.exec_tf))
 
     def atr(self, view):
-        return view.series(f'{self.exec_tf}_atr')
+        return view.series(self.ex('atr'))
 
     def manage(self, view, position):
         """Shared exit: time stop. Price stops/targets are the simulator's job."""

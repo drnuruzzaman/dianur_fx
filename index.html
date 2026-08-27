@@ -35,8 +35,8 @@
     <button class="tb" id="indBtn" title="Indicators (f)">ƒ Indicators</button>
     <button class="tb" id="drawBtn" title="Drawing tools">✎ Draw</button>
     <button class="tb" id="autoBtn" title="Algorithmic trendlines (l)">⌑ Auto TL</button>
-    <button class="tb" id="snapBtn" title="Save chart as PNG (s)">⤓ Snapshot</button>
     <button class="tb" id="layoutBtn" title="Chart layout">▦ Layout</button>
+    <button class="tb" id="snapBtn" title="Save chart as PNG (s)">⤓ Snapshot</button>
   </div>
 
   <div class="spacer"></div>
@@ -72,6 +72,11 @@
   <div class="rail-stub rail-stub-r" id="rightbarStub" role="button" tabindex="0"
        title="Hover to peek, click to pin open (])"><span>Trend read · Signal engine</span></div>
   <aside class="rightbar" id="rightbar">
+    <div class="side-head">
+      <span>Donchian rule</span>
+      <button class="rail-tf" id="rpSym" title="Rule timeframe &mdash; changes the chart too">&mdash;</button>
+    </div>
+    <div class="rulepanel" id="rulepanel"></div>
     <div class="side-head">
       <span>Trend read</span>
       <button class="rail-tf" id="trSym" title="Read timeframe — changes the chart too">—</button>
@@ -116,6 +121,14 @@
     <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
     <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
     <div class="acct-cell"><span>Margin level</span><b id="acLevel">—</b></div>
+    <!-- Hiding is OPT-IN and the values show by default. The earlier `$` toggle
+         defaulted to hidden, which made how much room the account has left the
+         one number you had to go looking for. This keeps it in front of you
+         and gives you one press to cover it when the screen is shared. -->
+    <button class="status-btn acct-eye" id="acctEye" aria-pressed="false"
+            title="Hide account figures (shared screen)">
+      <span aria-hidden="true" id="acctEyeIcon">&#128065;</span>
+    </button>
   </div>
   <!-- Grouped so it can travel into the tab row with the account cells when the
        panel collapses; on its own it went with the hidden status bar and left

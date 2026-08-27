@@ -169,9 +169,13 @@ export class Chart {
     this.positions = [];
     this.autoLines = [];
     this.channels = [];
+    this.trail = null;
+    this.ruleZone = null;
     this.zones = [];
     this.segments = [];
     this.sdZones = [];
+    this.targets = [];
+    this.marks = [];
     this.msEvents = [];
     this.swings = [];
     this.message = 'loading…';
@@ -259,6 +263,9 @@ export class Chart {
     this.message = bars.length ? null : 'no history for this symbol / timeframe';
     if (first || this.view.right === 0) this.resetView();
     else this.view.right = Math.min(this.view.right, bars.length - 1 + this.rightPad());
+    /* Older bars arrived (or the series changed): the pending request is
+       answered, and the edge is re-clamped against the new extent. */
+    this.wantsHistory = false;
     this._recalc();
     this.draw();
   }
@@ -293,9 +300,35 @@ export class Chart {
 
   setZones(zs) { this.zones = zs || []; }
 
+  /* The Elliott belief for the bar at the right edge; see js/ui/replay.js. */
+  setElliott(b) { this.elliott = b || null; }
+
+  /* Where the replay cursor stands, for the lane that shows the future. Without
+     it the two lanes are the same picture and the eye has to count columns to
+     find the boundary between what was known and what followed. */
+  setAsOfMark(i) { this.asOfMark = Number.isFinite(i) ? i : null; }
+
   setSegments(sg) { this.segments = sg || []; }
 
   setSdZones(zs) { this.sdZones = zs || []; }
+  /* TP bands, from js/chart/targets.js. Reference levels measured in R off
+     the live stop -- NOT exits. See that file for why 1.5R is the floor. */
+  setTargets(t) { this.targets = t || []; }
+  /* Trade events at the bar they happened on. See _marks for why a signal and
+     a fill are drawn differently. */
+  setMarks(m) { this.marks = m || []; }
+
+  /* A per-bar level traced across a range of bars: the EXIT level of an
+     open trade, which for a Donchian is a rolling extreme and therefore
+     ratchets rather than slopes. Drawn as a STEP line for that reason -- a
+     straight interpolation between bar values would imply the level moved
+     continuously, when in fact it holds flat and then jumps to a new
+     extreme, and WHEN it jumps is the interesting part. Callers draw(). */
+  setTrail(t) { this.trail = t || null; }
+
+  /* The RULE's own risk picture, which is not a position and must never
+     look like one. See _ruleZone. */
+  setRuleZone(z) { this.ruleZone = z || null; }
 
   setMsEvents(ev) { this.msEvents = ev || []; }
   setSwings(sw) { this.swings = sw || []; }
@@ -379,6 +412,35 @@ export class Chart {
     this.view.span = clamp(this.view.span || 160, MIN_SPAN, MAX_SPAN);
     this.view.right = Math.max(this.view.span - 1, this.bars.length - 1 + this.rightPad());
     this.view.priceLock = null;
+  }
+
+  /**
+   * Clamp the right edge so the LEFT edge cannot leave the data.
+   *
+   * The old bound was `span * 0.4`, which says "you may always scroll 60% of a
+   * SCREEN past the oldest bar". At the default 350-bar span that is 210 empty
+   * columns with real candles still beside them, so it read as headroom. After
+   * `fitAll` a screen IS the whole dataset, and the same rule bought 60% of the
+   * entire history in blank space -- pan left after fitting and the chart
+   * emptied out. Measured on 15m gold: `i0` reached -360 with 2120 columns on
+   * screen, and on a wider fit it goes past -1200.
+   *
+   * The bound has to come from the DATA, not from the span. `leftMin` puts the
+   * oldest bar at the left edge and stops. When the span is wider than the
+   * history there is nothing to the left at all, so it stops immediately --
+   * which is correct, everything is already on screen.
+   *
+   * Pushing INTO that wall is how the reader asks for older bars, so the
+   * attempt is recorded rather than silently dropped; main.js turns it into a
+   * history fetch. Without that, clamping would have made `fitAll` a dead end:
+   * the old fetch trigger needed the right edge to move back, and at the wall
+   * it no longer can.
+   */
+  _clampRight(want) {
+    const rightMax = this.bars.length + this.view.span * 0.6;
+    const leftMin = Math.min(this.view.span - 1, rightMax);
+    if (want < leftMin - 0.5) this.wantsHistory = true;
+    return clamp(want, leftMin, rightMax);
   }
 
   fitAll() {
@@ -528,8 +590,13 @@ export class Chart {
        Safe against recursion: the consumer's response sets lines and calls
        draw(), and by then the right edge has not moved again. */
     const vr = Math.round(this.view.right);
-    if (vr !== this._lastViewRight) {
+    /* The wall is part of the signal. Pressing against it does not move the
+       right edge, so a movement-only test would never report the one gesture
+       that means "there is nothing here, fetch me more". */
+    const wall = !!this.wantsHistory;
+    if (vr !== this._lastViewRight || wall !== this._lastWall) {
       this._lastViewRight = vr;
+      this._lastWall = wall;
       this.onView(this);
     }
     const ctx = this.ctx;
@@ -565,14 +632,21 @@ export class Chart {
       for (const run of pane.runs) this._plots(pane, run);
       if (pane.isMain) {
         this._segments(pane); this._zones(pane); this._sdZones(pane);
+        this._targets(pane);
         this._price(pane); this._foreignPlots(pane);
         this._channels(pane); this._autoLines(pane);
         this._msEvents(pane);
         this._swings(pane);
+        this._elliott(pane);
+        this._trail(pane);
+        this._marks(pane);
+        this._asOfMark(pane);
+        this._ruleZone(pane);
         this._positions(pane); this._drawings(pane);
       }
       ctx.restore();
       this._axisY(pane);
+      this._valueTag(pane);
       if (pane.isMain) this._zoneAxisLabels(pane);
       if (!pane.isMain) this._paneTitle(pane);
     }
@@ -798,6 +872,23 @@ export class Chart {
         if (pl.dash) ctx.setLineDash(pl.dash);
         const y = Math.round(this.y(pane, pl.value)) + 0.5;
         ctx.beginPath(); ctx.moveTo(pane.x, y); ctx.lineTo(pane.x + pane.w, y); ctx.stroke();
+        /* An optional name, sitting ON the line at the LEFT edge. A horizontal
+           in a sub-pane is otherwise just a line: the reader has to count grid
+           steps to work out whether it is the 80 or the 50.
+
+           Left rather than right: the right edge is where the RSI trace ends
+           and where the axis sits, so a label there competes with the two
+           things you are actually reading. The left is empty history.
+
+           `labelColor` exists because the LINE wants to be faint and the TEXT
+           does not. Drawing 9px type in the same 40%-alpha colour as the rule
+           it names produced a label you had to lean in to read. */
+        if (pl.label) {
+          ctx.setLineDash([]);
+          ctx.font = '9px "Roboto Condensed", sans-serif';
+          ctx.fillStyle = pl.labelColor || pl.color;
+          ctx.fillText(pl.label, pane.x + 4, y - 3);
+        }
         ctx.restore();
         continue;
       }
@@ -848,8 +939,119 @@ export class Chart {
     }
   }
 
+  _trail(pane) {
+    const tr = this.trail;
+    if (!tr || !tr.points || tr.points.length < 2) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = tr.color || COL.sl;
+    ctx.lineWidth = tr.width || 1.4;
+    if (tr.dash) ctx.setLineDash(tr.dash);
+    ctx.beginPath();
+    let started = false;
+    let prevY = null;
+    for (const pt of tr.points) {
+      if (!Number.isFinite(pt.price)) continue;
+      const x0 = this.x(pt.i - 0.5);
+      const x1 = this.x(pt.i + 0.5);
+      const y = Math.round(this.y(pane, pt.price)) + 0.5;
+      if (!started) { ctx.moveTo(x0, y); started = true; }
+      else if (prevY !== null && y !== prevY) { ctx.lineTo(x0, y); }
+      ctx.lineTo(x1, y);
+      prevY = y;
+    }
+    if (started) ctx.stroke();
+    ctx.setLineDash([]);
+
+    /* Label at the RIGHT end, at the cursor: the level's CURRENT value is the
+       one being decided on, not the one the trade opened with. */
+    const last = [...tr.points].reverse().find((p) => Number.isFinite(p.price));
+    if (last && tr.label) {
+      const y = Math.round(this.y(pane, last.price)) + 0.5;
+      if (y >= pane.y && y <= pane.y + pane.h) {
+        ctx.font = '10px "Roboto Mono", monospace';
+        const text = `${tr.label} ${last.price.toFixed(this.digits)}`;
+        const w = ctx.measureText(text).width + 8;
+        const x = Math.min(this.x(last.i) + 6, pane.x + pane.w - w - 4);
+        ctx.fillStyle = 'rgba(2,16,31,.85)';
+        ctx.fillRect(x, y - 13, w, 12);
+        ctx.fillStyle = tr.color || COL.sl;
+        ctx.fillText(text, x + 4, y - 3.5);
+      }
+    }
+    ctx.restore();
+  }
+
+  /* WHAT THE RULE WOULD RISK, drawn as an area, and the ONLY shading on this
+   * chart. Broker positions get lines (see _positions); a block of colour here
+   * always means "the Donchian rule says", never "you are holding".
+   *
+   * THE RED BLOCK IS REAL. Entry to the 2-ATR stop is the rule's actual risk,
+   * fixed at entry, and it is the one level here you could place.
+   *
+   * THE GREEN BLOCK IS NOT A TARGET. Donchian has none: 138 of 207
+   * out-of-sample exits were the trailing channel and none were a target, and
+   * capping at 1R was measured to turn +43.7 net R into -2.1. It is drawn to a
+   * REFERENCE R multiple and HATCHED so the eye reads it as a measurement
+   * rather than a level. The real exit is the moving channel line drawn by
+   * _trail, which sits BELOW a long's entry early on and ratchets up -- a shape
+   * no static box can show.
+   *
+   * NO TEXT. The bands carried three prose labels and they crowded the price
+   * action they were drawn over. The meaning moved to the Donchian panel, which
+   * states the stop, the moving exit level and "no take-profit" in words. */
+  _ruleZone(pane) {
+    const z = this.ruleZone;
+    if (!z || !(z.entry > 0)) return;
+    const ctx = this.ctx;
+    const x0 = Math.max(this.plot.l, this.x(z.i0 ?? this.i0));
+    const x1 = this.plot.r;
+    if (x1 - x0 < 4) return;
+    const yE = this.y(pane, z.entry);
+
+    ctx.save();
+    if (z.stop > 0) {
+      const yS = this.y(pane, z.stop);
+      ctx.fillStyle = 'rgba(227,28,121,.11)';
+      ctx.fillRect(x0, Math.min(yE, yS), x1 - x0, Math.abs(yS - yE));
+      ctx.strokeStyle = 'rgba(227,28,121,.6)';
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x0 + 0.5, Math.min(yE, yS) + 0.5,
+                     x1 - x0 - 1, Math.abs(yS - yE) - 1);
+    }
+    if (z.ref > 0) {
+      const yR = this.y(pane, z.ref);
+      const top = Math.min(yE, yR);
+      const h = Math.abs(yR - yE);
+      ctx.fillStyle = 'rgba(147,201,15,.07)';
+      ctx.fillRect(x0, top, x1 - x0, h);
+      ctx.strokeStyle = 'rgba(147,201,15,.30)';
+      ctx.setLineDash([2, 5]);
+      ctx.beginPath();
+      for (let y = top; y < top + h; y += 7) {
+        ctx.moveTo(x0, y); ctx.lineTo(x1, y);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = COL.pos || '#e8eef6';
+    ctx.beginPath();
+    ctx.moveTo(x0, Math.round(yE) + 0.5);
+    ctx.lineTo(x1, Math.round(yE) + 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
   _positions(pane) {
-    /* Entry/SL/TP lines are live-account state. They are deliberately absent
+    /* LINES ONLY for broker positions. A risk/reward SHADING was added here and
+       removed again: shaded areas are now reserved for the Donchian rule's own
+       prediction (_ruleZone), so a block of colour on this chart always means
+       "the rule says", never "you are holding". With a dozen positions open the
+       shading was also drawing a dozen overlapping blocks over the price action.
+
+       Entry/SL/TP lines are live-account state. They are deliberately absent
        from an exported image -- a snapshot gets shared, and a share should not
        carry position size or where the stops sit. */
     if (this._exporting) return;
@@ -1003,6 +1205,253 @@ export class Chart {
    * is still readable from the dots alone, whereas overlapping text is not
    * readable at all.
    */
+  /**
+   * The wave count for the bar at the right edge.
+   *
+   * ONLY THE PRIMARY COUNT IS DRAWN. Three counts on one chart is three
+   * polylines through the same pivots, and the picture stops meaning anything
+   * -- the alternates live in the panel where they can be read as arguments
+   * rather than seen as geometry. The invalidation level is drawn WITH the
+   * count because it is the half that can be wrong: a wave label is a story, a
+   * price that refutes it is a claim.
+   */
+  _elliott(pane) {
+    const b = this.elliott;
+    if (!b || !b.counts || !b.counts.length) return;
+    const c = b.counts[0];
+    const ctx = this.ctx;
+    const names = c.kind === 'impulse' ? ['0', '1', '2', '3', '4', '5'] : ['0', 'A', 'B', 'C'];
+
+    ctx.save();
+
+    /* THE CONE FIRST, behind everything. It is the widest object on the chart
+       and the least certain, so it belongs at the bottom of the stack -- and it
+       is drawn before the count so the count reads as a line THROUGH a
+       distribution rather than as a line with decoration around it.
+
+       Two bands, 50% and 80%, because a single band invites reading its edge as
+       a limit. The median is drawn as a line: it is where price ended up half
+       the time from states like this one, which is a fact, not a target. */
+    if (b.cone && b.cone.bands && b.cone.bands.length) {
+      const band = (lo, hi, alpha) => {
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = COL.line;
+        ctx.beginPath();
+        ctx.moveTo(this.x(b.asOfI), this.y(pane, b.close));
+        for (const s of b.cone.bands) ctx.lineTo(this.x(b.asOfI + s.ahead), this.y(pane, s.q[hi]));
+        for (let k = b.cone.bands.length - 1; k >= 0; k--) {
+          const s = b.cone.bands[k];
+          ctx.lineTo(this.x(b.asOfI + s.ahead), this.y(pane, s.q[lo]));
+        }
+        ctx.closePath();
+        ctx.fill();
+      };
+      band(0.1, 0.9, 0.07);
+      band(0.25, 0.75, 0.09);
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = COL.line;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(this.x(b.asOfI), this.y(pane, b.close));
+      for (const s of b.cone.bands) ctx.lineTo(this.x(b.asOfI + s.ahead), this.y(pane, s.q[0.5]));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = COL.line;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    c.pivots.forEach((p, k) => {
+      const x = this.x(this.idxOfTime(p.t));
+      const y = this.y(pane, p.price);
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.font = '600 11px var(--sans, sans-serif)';
+    ctx.textAlign = 'center';
+    c.pivots.forEach((p, k) => {
+      const x = this.x(this.idxOfTime(p.t));
+      const y = this.y(pane, p.price);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const above = k > 0 && p.price > c.pivots[k - 1].price;
+      ctx.fillStyle = COL.line;
+      ctx.fillText(names[k] || String(k), x, above ? y - 8 : y + 16);
+    });
+
+    /* The wave in progress is drawn as an open leg to the current close, so the
+       label on screen is the one the panel is talking about. */
+    const last = c.pivots[c.pivots.length - 1];
+    if (last && Number.isFinite(b.close)) {
+      const x0 = this.x(this.idxOfTime(last.t));
+      const x1 = this.x(b.asOfI);
+      ctx.setLineDash([4, 4]);
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(x0, this.y(pane, last.price));
+      ctx.lineTo(x1, this.y(pane, b.close));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    if (Number.isFinite(c.invalidation)) {
+      const y = this.y(pane, c.invalidation);
+      if (y > pane.y && y < pane.y + pane.h) {
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = COL.down;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(pane.x, y); ctx.lineTo(pane.x + pane.w, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = COL.down;
+        ctx.textAlign = 'left';
+        ctx.fillText('invalidation', pane.x + 6, y - 4);
+      }
+    }
+
+    /* THE PROJECTED PATH, drawn into the empty space to the right of the last
+       bar -- the forecast, before the bars that settle it exist. Same colour
+       family as the measured count and dashed throughout, because a projected
+       leg is a different kind of object from a leg price has actually traded.
+       Each point is labelled with the wave it would complete. */
+    if (c.projection && c.projection.length && Number.isFinite(b.close)) {
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = COL.pos;
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(this.x(b.asOfI), this.y(pane, b.close));
+      for (const pt of c.projection) {
+        ctx.lineTo(this.x(b.asOfI + pt.ahead), this.y(pane, pt.price));
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = COL.pos;
+      ctx.textAlign = 'center';
+      for (const pt of c.projection) {
+        const px = this.x(b.asOfI + pt.ahead);
+        const py = this.y(pane, pt.price);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillText(pt.label, px, c.dir > 0 ? py - 8 : py + 16);
+      }
+    }
+
+    if (c.target && c.target.every(Number.isFinite)) {
+      const y0 = this.y(pane, c.target[0]);
+      const y1 = this.y(pane, c.target[1]);
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = COL.up;
+      const x = this.x(b.asOfI);
+      ctx.fillRect(x, Math.min(y0, y1), Math.max(20, pane.x + pane.w - x),
+        Math.abs(y1 - y0));
+    }
+    ctx.restore();
+  }
+
+  /* The as-of boundary: everything right of this line is what the other lane
+     was not allowed to see. */
+  _asOfMark(pane) {
+    if (!Number.isFinite(this.asOfMark)) return;
+    const x = this.x(this.asOfMark);
+    if (!Number.isFinite(x) || x < pane.x - 2 || x > pane.x + pane.w + 2) return;
+    const ctx = this.ctx;
+    ctx.save();
+    /* The future half is dimmed rather than the boundary merely drawn: a line
+       says where the cursor is, a wash says which half is the answer. */
+    ctx.fillStyle = 'rgba(255,158,27,.07)';
+    ctx.fillRect(x, pane.y, pane.x + pane.w - x, pane.h);
+    ctx.strokeStyle = COL.pos;
+    ctx.globalAlpha = 0.85;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, pane.y);
+    ctx.lineTo(x, pane.y + pane.h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (pane.isMain) {
+      ctx.font = '600 9.5px var(--sans, sans-serif)';
+      ctx.fillStyle = COL.pos;
+      ctx.textAlign = 'left';
+      ctx.fillText('as of', x + 4, pane.y + 11);
+    }
+    ctx.restore();
+  }
+
+  /* Trade events, at the bar each one happened on.
+   *
+   * THREE GLYPHS, because three different things happened and conflating them
+   * is how a chart starts lying about what was knowable:
+   *
+   *   signal  a hollow triangle on the bar whose CLOSE triggered the rule. This
+   *           is where the decision was made, and no price here was traded.
+   *   entry   a filled dot at the price actually filled, on the NEXT bar. It is
+   *           one bar to the right of its own signal, always, and seeing that
+   *           gap is the point -- a chart that marks only the fill implies the
+   *           rule could act on the bar it was reading.
+   *   exit    a cross, coloured by whether the trade made money.
+   *
+   * A faint line joins a signal to its fill so the pair reads as one event.
+   */
+  _marks(pane) {
+    if (!this.marks || !this.marks.length) return;
+    const ctx = this.ctx;
+    const i0 = Math.floor(this.i0) - 2, i1 = Math.ceil(this.i1) + 2;
+    ctx.save();
+    for (const m of this.marks) {
+      if (m.i < i0 || m.i > i1) continue;
+      const x = this.x(m.i);
+      const y = this.y(pane, m.price);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (y < pane.y - 8 || y > pane.y + pane.h + 8) continue;
+      const up = m.side > 0;
+      const col = m.kind === 'exit'
+        ? (m.win ? COL.up : COL.down)
+        : (up ? COL.up : COL.down);
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = col;
+      ctx.fillStyle = col;
+      ctx.lineWidth = 1.4;
+
+      if (m.kind === 'signal') {
+        // hollow triangle, pointing the way the trade will face
+        const r = 4.5;
+        const dir = up ? -1 : 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y + dir * r);
+        ctx.lineTo(x - r, y - dir * r * 0.8);
+        ctx.lineTo(x + r, y - dir * r * 0.8);
+        ctx.closePath();
+        ctx.stroke();
+        if (Number.isFinite(m.toX)) {
+          ctx.globalAlpha = 0.35;
+          ctx.setLineDash([2, 2]);
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(this.x(m.toI), this.y(pane, m.toPrice));
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      } else if (m.kind === 'entry') {
+        ctx.beginPath();
+        ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const r = 3.4;
+        ctx.beginPath();
+        ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r);
+        ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   _swings(pane) {
     if (!this.swings || !this.swings.length) return;
     const ctx = this.ctx;
@@ -1144,6 +1593,58 @@ export class Chart {
      +7.21 vs +6.53, +4.28 vs +3.39), so the distinction is real -- but the gap
      is about one percentage point, so it is a hint in the styling rather than a
      different colour. */
+  /* TP bands.
+   *
+   * Drawn from the LAST BAR rightward, not across the whole chart: a target is
+   * a claim about where price might go, and painting it back over history it
+   * never reached reads as though it had. Deliberately thin, unfilled and
+   * dashed -- the supply/demand renderer above fills its zones because a zone
+   * is a region price moved through, whereas these are lines price has not
+   * reached yet, and giving them the same visual weight as observed structure
+   * would overstate them.
+   */
+  _targets(pane) {
+    if (!this.targets || !this.targets.length) return;
+    const ctx = this.ctx;
+    /* Anchor at the AS-OF bar when there is one, not at the end of the array.
+       A replay hands the chart the whole series and marks how far knowledge
+       reaches, so `bars.length - 1` is 1,950 bars past the cursor and 12,418px
+       off the right edge -- the bands computed correctly and drew nothing at
+       all. "From where knowledge stops, rightward" is the right anchor in both
+       contexts: the live chart has no mark and falls back to its last bar. */
+    const anchor = Number.isFinite(this.asOfMark) ? this.asOfMark : this.bars.length - 1;
+    const x0 = Math.max(pane.x, this.x(anchor));
+    const x1 = pane.x + pane.w;
+    if (x1 <= x0) return;
+    ctx.save();
+    ctx.font = '9px "Roboto Mono", monospace';
+    for (const b of this.targets) {
+      const yHi = this.y(pane, b.high);
+      const yLo = this.y(pane, b.low);
+      if (!Number.isFinite(yHi) || !Number.isFinite(yLo)) continue;
+      if (yLo < pane.y - 40 || yHi > pane.y + pane.h + 40) continue;
+      ctx.globalAlpha = 0.07;
+      ctx.fillStyle = COL.up;
+      ctx.fillRect(x0, yHi, x1 - x0, Math.max(2, yLo - yHi));
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = COL.up;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      for (const y of [yHi, yLo]) {
+        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = COL.up;
+      /* The CENTRE is the level; the band is only there to be visible at a
+         glance. Labelling the range implied the whole span mattered. */
+      const label = `${b.key} ${b.r}R`;
+      ctx.fillText(label, x0 + 4,
+        clamp((yHi + yLo) / 2 + 3, pane.y + 9, pane.y + pane.h - 3));
+    }
+    ctx.restore();
+  }
+
   _sdZones(pane) {
     if (!this.sdZones || !this.sdZones.length) return;
     const ctx = this.ctx;
@@ -1585,6 +2086,44 @@ export class Chart {
     }
   }
 
+  /**
+   * The latest value of a tagged series, boxed on the axis.
+   *
+   * The price pane has had this since the beginning (see _lastPrice); a study
+   * pane had nothing, so "what is RSI right now" meant eyeballing the trace
+   * against a gridline. It reads the forming bar, so it moves on every tick
+   * rather than once a bar.
+   *
+   * Opt-in per plot via `tag: true`, not automatic: a pane with three series
+   * would stack three boxes in one axis column, and the latest value of a MACD
+   * histogram bar is not a number anyone reads.
+   */
+  _valueTag(pane) {
+    if (this._exporting) return;
+    const ctx = this.ctx;
+    for (const run of pane.runs) {
+      for (const pl of run.plots) {
+        if (!pl.tag || !Array.isArray(pl.data)) continue;
+        let v = null;
+        for (let i = Math.min(pl.data.length - 1, this.i1); i >= 0; i--) {
+          const x = pl.data[i];
+          if (x !== null && x !== undefined && !Number.isNaN(x)) { v = x; break; }
+        }
+        if (v === null) continue;
+        const y = this.y(pane, v);
+        if (y < pane.y || y > pane.y + pane.h) continue;
+        ctx.save();
+        ctx.fillStyle = pl.color;
+        ctx.fillRect(this.plot.r, y - 8, AXIS_W, 16);
+        ctx.fillStyle = '#02101f';
+        ctx.font = '600 9.5px "Roboto Mono", monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(v.toFixed(pl.tagDigits ?? 1), this.plot.r + 5, y + 3.5);
+        ctx.restore();
+      }
+    }
+  }
+
   _axisY(pane) {
     const ctx = this.ctx;
     ctx.fillStyle = this._exporting ? 'transparent' : COL.axisBg;
@@ -1600,8 +2139,33 @@ export class Chart {
     const compactAxis = pane.runs.some((r) => r.plots.some((p) => p.fmt === 'compact'));
     /* A zone tag is a specific, named level; a round-number tick is scenery.
        When they collide the tick yields -- drawn underneath, both end up
-       unreadable, which is worse than losing one gridline number. */
+       unreadable, which is worse than losing one gridline number.
+
+       A LABELLED LEVEL claims its slot the same way. The RSI pane names its own
+       bands (overbought 80 / 50 / oversold 20), and the axis was printing "50.0"
+       an inch from a line already labelled "50" -- the same number twice, in two
+       formats, in a pane 90px tall. The named one wins because it says what the
+       level IS and not merely where it sits. */
     const taken = pane.isMain ? this._zoneLabelSlots(pane) : [];
+    /* A labelled level and the live value tag both CLAIM an axis slot, for the
+       same reason a zone tag does: a round-number tick drawn underneath either
+       leaves both unreadable. */
+    for (const run of pane.runs) {
+      for (const pl of run.plots) {
+        if (pl.type === 'level' && pl.label) {
+          taken.push({ y: this.y(pane, pl.value) });
+        }
+        if (pl.tag && Array.isArray(pl.data)) {
+          for (let i = Math.min(pl.data.length - 1, this.i1); i >= 0; i--) {
+            const v = pl.data[i];
+            if (v !== null && v !== undefined && !Number.isNaN(v)) {
+              taken.push({ y: this.y(pane, v) });
+              break;
+            }
+          }
+        }
+      }
+    }
     for (let v = Math.ceil(pane.min / step) * step; v <= pane.max; v += step) {
       const y = this.y(pane, v);
       if (y < pane.y + 6 || y > pane.y + pane.h - 2) continue;
@@ -1870,13 +2434,15 @@ export class Chart {
     if (y < pane.y || y > pane.y + pane.h) return;
     const up = last.c >= last.o;
     ctx.save();
+    /* SOLID. Dashes are this chart's vocabulary for "not a price that traded"
+       -- projected trendlines, the rule's stop, position levels. The last price
+       is the most concrete line on the chart, so it should not be speaking that
+       language. */
     ctx.strokeStyle = up ? COL.up : COL.down;
-    ctx.setLineDash([3, 3]);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(this.plot.l, Math.round(y) + 0.5); ctx.lineTo(this.plot.r, Math.round(y) + 0.5);
     ctx.stroke();
-    ctx.setLineDash([]);
     ctx.fillStyle = up ? COL.up : COL.down;
     ctx.fillRect(this.plot.r, y - 8, AXIS_W, 16);
     ctx.fillStyle = '#02101f';
@@ -2013,8 +2579,7 @@ export class Chart {
       const p = local(e);
       if (drag && drag.mode === 'pan') {
         drag.moved = true;
-        this.view.right = drag.right - (p.x - drag.x) / this.barW;
-        this.view.right = clamp(this.view.right, this.view.span * 0.4, this.bars.length + this.view.span * 0.6);
+        this.view.right = this._clampRight(drag.right - (p.x - drag.x) / this.barW);
 
         /* VERTICAL PAN. The content follows the cursor: drag down and the bars
            move down, which means the visible price WINDOW moves up.
@@ -2087,8 +2652,8 @@ export class Chart {
       e.preventDefault();
       const p = local(e);
       if (e.shiftKey) {                                  // shift-wheel pans
-        this.view.right = clamp(this.view.right + Math.sign(e.deltaY) * Math.max(1, this.view.span * 0.06),
-                                this.view.span * 0.4, this.bars.length + this.view.span * 0.6);
+        this.view.right = this._clampRight(
+          this.view.right + Math.sign(e.deltaY) * Math.max(1, this.view.span * 0.06));
       } else {
         /* ZOOM PRESERVES THE RIGHT EDGE.
          *
@@ -2116,7 +2681,7 @@ export class Chart {
         // rightPad scales with span, so staying live means re-deriving it
         this.view.right = atLive
           ? this.bars.length - 1 + this.rightPad()
-          : clamp(this.view.right, span * 0.4, this.bars.length + span * 0.6);
+          : this._clampRight(this.view.right);
       }
       this.draw();
     }, { passive: false });

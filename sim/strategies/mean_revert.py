@@ -30,7 +30,6 @@ gold and on yen, matching the other baselines.
 """
 
 import numpy as np
-import pandas as pd
 
 from ..core import FLAT, LONG, SHORT, Intent, Strategy
 
@@ -41,12 +40,24 @@ FADE = 1
 FOLLOW = -1
 
 
-def atr(bars, length=14):
-    """Wilder ATR — causal: value at i uses only bars <= i."""
-    h, l, c = bars['high'], bars['low'], bars['close']
-    prev = c.shift(1)
-    tr = pd.concat([h - l, (h - prev).abs(), (l - prev).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+# ATR comes from sim/indicators, which is the ONE implementation in this
+# project and the one tests/test_parity.py holds to js/chart/tlengine.js at
+# 1e-9. These files each carried a private copy that seeded the Wilder
+# recursion differently: it converged, but differed by up to 0.86 price units
+# during warmup, so the strategies were sizing stops from an ATR the chart
+# could not reproduce and a JS signal service would have quoted levels the
+# backtest never traded. Unifying was verified free -- gold 4h donchian keeps
+# 207/231 trades, the same win rate, PF and drawdown, with avg_R moving 0.001.
+# The name is re-exported because tools/ imports `atr` from here.
+from ..indicators import atr  # noqa: F401
+
+
+def _shift1(a):
+    """Yesterday's value at today's index. The Series form was `.shift(1)`."""
+    out = np.empty_like(a)
+    out[0] = np.nan
+    out[1:] = a[:-1]
+    return out
 
 
 class MeanRevert(Strategy):
@@ -74,7 +85,7 @@ class MeanRevert(Strategy):
         # decided on -- the same discipline as the Donchian channels
         return {
             'ma': bars['close'].rolling(self.ma_len).mean().shift(1).to_numpy(float),
-            'atr': atr(bars, self.atr_len).shift(1).to_numpy(float),
+            'atr': _shift1(np.asarray(atr(bars, self.atr_len), dtype=float)),
         }
 
     def on_bar(self, view, position):

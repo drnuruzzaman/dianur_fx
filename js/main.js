@@ -23,11 +23,12 @@ import { swingPoints } from './chart/structure.js';
 import { build as buildSegments } from './chart/segments.js';
 import { $, $$, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed, hydrateWorkspace } from './util.js';
 import { closeMenu, openMenu, toast } from './ui/menu.js';
-import { SymbolSearch } from './ui/search.js';
+import { SymbolSearch, registerSymbolSearch } from './ui/search.js';
 import { Watchlist } from './ui/watchlist.js';
 import { Panels } from './ui/panels.js';
 import { TrendRead, readTfs } from './ui/trendread.js';
 import { SignalPanel } from './ui/signalpanel.js';
+import { RulePanel } from './ui/rulepanel.js';
 import { installTips } from './ui/tips.js';
 import { installChat } from './ui/chat.js';
 
@@ -89,7 +90,6 @@ const app = {
        two other sources. Off by default: they answer questions the reader has
        not asked yet. */
     channels: false,       // parallel corridors around a line
-    channelHistory: false, // ...and the ones that have already ended
     segments: false,       // regime episodes, drawn as sloped runs
   }),
 };
@@ -302,8 +302,9 @@ function buildGrid() {
            which stopped the fetch after fitAll -- correctly -- and then also
            stopped it when the reader panned left FROM that view, which was the
            whole point of having it. */
-        if (ch.view.right < ch.bars.length - 1
-          && ch.i0 < Math.max(50, ch.view.span * 0.25)) extendHistory(ch);
+        if (ch.wantsHistory
+          || (ch.view.right < ch.bars.length - 1
+            && ch.i0 < Math.max(50, ch.view.span * 0.25))) extendHistory(ch);
       },
     });
     chart.view.span = state.span || defaultSpan(state.tf || '15m');
@@ -482,6 +483,11 @@ async function loadBars(chart) {
       saveSymbolSettings(chart);            // put it back on disk
     }
     adoptResolved(chart);
+    /* The zone overlay quotes a money amount for the target and the stop, and
+       needs the contract's tick value to do it. Attached here rather than
+       fetched in the renderer: the chart is a drawing surface and should not
+       be making network calls mid-frame. Rows without it simply omit the
+       amount and still show the price and the percentage. */
     chart.setPositions(panels.data.positions);
     computeAuto(chart, 0);
     if (!payload.bars || !payload.bars.length) {
@@ -534,6 +540,9 @@ const trendRead = new TrendRead($('#trendread'), $('#trSym'));
 /* The signal engine reads the EXECUTION frame only — it is a statement
    about the next few bars of the chart you are on, not about context. */
 const signalPanel = new SignalPanel($('#signalpanel'), $('#sigSym'));
+const rulePanel = new RulePanel($('#rulepanel'), $('#rpSym'));
+/* A debug handle, the same convenience window.dnfx gives the live app. */
+window.dnfxRule = rulePanel;
 let panelTick = 0;
 let panelReadTimer = null;
 
@@ -606,6 +615,19 @@ async function loadTrendRead(chart) {
      engine on a series the user is not looking at. */
   signalPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf),
                      scrolled ? asOfT : null);
+  /* Same frame as the signal engine, for the same reason: the rule was
+     validated on 4h gold and running it on a series the user is not looking at
+     would show levels that belong to a different chart. */
+  rulePanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf), {
+    tf,                                  // the bridge's vocabulary, not the label
+    live: !scrolled,                     // so the forming bar is dropped
+    asOf: scrolled ? asOfT : null,
+    digits: (app.spec && app.spec.digits != null) ? app.spec.digits : 2,
+  });
+  /* AFTER the update, not before: rulePanel.sig is what update() recomputes, so
+     drawing first paints the previous bar's signal onto the current chart. */
+  paintRuleSignal(app.active, rulePanel.sig);
+  app.active.draw();
 }
 
 async function loadSpec(symbol) {
@@ -893,74 +915,19 @@ async function runAuto(chart) {
      appears to make. Detected from the engine's own population rather than the
      budgeted `keep`, because a rail dropped by the per-side line budget is
      still a real rail and its corridor should not vanish with it. */
-  /* CHANNEL HISTORY.
-   *
-   * `liveChannels` answers "what corridors are visible NOW" -- it detects at
-   * one bar, the last. A corridor that formed and died 400 bars ago is not
-   * returned at all, which is why the older half of a chart is bare while the
-   * right-hand edge has bands. Seeing a finished ascending channel next to the
-   * descending one now forming is only possible today by accident, when both
-   * happen to still be alive.
-   *
-   * So when the toggle is on, detection is repeated back across the visible
-   * window on the same 25-bar grid the as-of cut uses, and every corridor that
-   * was live at any of those bars is kept.
-   *
-   * THE MERGE IS STRUCTURAL, not a tuned distance. A corridor re-detected as it
-   * ages reappears with the same end bar and an ever-later start, so the raw
-   * sweep is full of the same band three or four times. Two rules, neither of
-   * which needs a price threshold:
-   *
-   *   same direction + same tEnd  -> keep the longest span
-   *   spans overlapping >= 60%    -> keep the longer
-   *
-   * Measured on 15m gold over 600 bars: 33 raw detections collapse to 9. The
-   * overlap fraction is not delicate -- 0.5 and 0.7 return the identical nine
-   * bands, so there is no edge for the number to balance on.
-   *
-   * Cost is ~15ms per detection, and the sweep is capped at 30 of them.
-   */
   try {
-    /* `live` marks the corridors the CURRENT detection returned, as opposed to
-       ones the history sweep dug up. It is what "still forming" means -- a
-       bar-count test on `tEnd` cannot say it, because `tEnd` is the last PIVOT
-       and pivots confirm several bars late: measured on 15m gold, live
-       corridors were ending 22 bars back and a two-bar tolerance called every
-       one of them finished. The renderer uses this to decide how far right a
-       corridor may be drawn. */
+    /* `live` marks the corridors the current detection returned. It is what
+       "still forming" means -- a bar-count test on `tEnd` cannot say it,
+       because `tEnd` is the last PIVOT and pivots confirm several bars late:
+       measured on 15m gold, live corridors were ending 22 bars back and a
+       two-bar tolerance called every one of them finished. The renderer uses
+       this to decide how far right a corridor may be drawn. */
     if (!auto.channels) {
       chart.setChannels([]);
-    } else if (!auto.channelHistory) {
+    } else {
       const now = liveChannels(ownBars, chart.tf, { params: opts });
       for (const ch of now) ch.live = true;
       chart.setChannels(now);
-    } else {
-      const visible = Math.max(120, Math.round(chart.view.span));
-      const steps = Math.min(30, Math.floor(visible / ASOF_STEP));
-      const seen = new Map();
-      for (let k = 0; k < steps; k++) {
-        const end = ownBars.length - 1 - k * ASOF_STEP;
-        if (end < 120) break;
-        for (const c of liveChannels(ownBars.slice(0, end + 1), chart.tf,
-          { params: opts })) {
-          c.live = (k === 0);        // k === 0 is the as-of bar: still forming
-          if (!seen.has(c.id) || c.live) seen.set(c.id, c);
-        }
-      }
-      const span = (c) => (c.tEnd - c.tStart);
-      // longest first, so a survivor is always the fullest version of itself
-      const byLen = [...seen.values()].sort((a, b) => span(b) - span(a));
-      const kept = [];
-      for (const c of byLen) {
-        const dup = kept.some((k) => {
-          if (k.direction !== c.direction) return false;
-          if (k.tEnd === c.tEnd) return true;
-          const ov = Math.min(c.tEnd, k.tEnd) - Math.max(c.tStart, k.tStart);
-          return ov > 0 && ov / Math.max(1, span(c)) >= 0.6;
-        });
-        if (!dup) kept.push(c);
-      }
-      chart.setChannels(kept);
     }
   } catch { chart.setChannels([]); }
 
@@ -1079,6 +1046,73 @@ async function runAuto(chart) {
     chart.setSegments(auto.segments ? buildSegments(ownBars) : []);
   } catch { chart.setSegments([]); }
 }
+
+/* THE RULE'S SIGNAL ON THE CHART, from js/chart/donchian.js -- and the ONLY
+   thing that shades this chart.
+
+   Everything order-derived has been taken off it: the risk/reward blocks drawn
+   from open positions, and the TP bands drawn from a position's stop. Both were
+   removed for the same reason -- a suggestion that looks like a filled order is
+   the worst confusion this app could offer. Broker positions now get dashed
+   lines and nothing else, so a block of colour always means "the rule says".
+
+   The zone appears whether or not anything is open at the broker, because it
+   describes what the RULE would risk, not what you hold.
+
+   The reference level is 2R and is NOT a target -- the rule has none. It is
+   drawn hatched so the eye reads it as a measurement rather than a level, and
+   carries no text: the Donchian panel states the stop, the moving exit level
+   and "no take-profit" in words. The REAL exit is the moving channel, drawn as
+   a step line by setTrail. */
+function paintRuleSignal(chart, sig) {
+  if (!sig || !sig.series) { chart.setRuleZone(null); chart.setTrail(null); return; }
+  const held = sig.position;
+  const pend = (!held && sig.pending && sig.pending.side !== 0) ? sig.pending : null;
+  if (!held && !pend) { chart.setRuleZone(null); chart.setTrail(null); return; }
+
+  const long = (held ? held.side : pend.side) > 0;
+  /* A pending signal has no fill yet: the rule decided on THIS close and the
+     order goes in at the next open, which does not exist. The signal close is
+     the only price known, and it is what the stop was measured from. */
+  const entry = held ? held.entryPrice : pend.signalPrice;
+  const stop = held ? held.stop : pend.stop;
+  const risk = Math.abs(entry - stop);
+  chart.setRuleZone({
+    entry,
+    stop,
+    ref: risk > 0 ? entry + (long ? 2 : -2) * risk : 0,
+    refR: 2,
+    atrMult: (sig.params && sig.params.atrMult) || 2,
+    i0: held ? held.entryI : pend.signalI,
+    label: held ? (long ? 'RULE holding LONG' : 'RULE holding SHORT')
+                : (long ? 'RULE would BUY' : 'RULE would SELL'),
+  });
+
+  /* the moving exit, traced from the entry bar -- the level that actually
+     closes two thirds of this rule's trades */
+  if (held) {
+    const lvl = long ? sig.series.exitLo : sig.series.exitHi;
+    const pts = [];
+    for (let k = held.entryI; k < sig.bars; k++) {
+      if (Number.isFinite(lvl[k])) pts.push({ i: k, price: lvl[k] });
+    }
+    /* No label on the live chart: the Donchian panel already names this level
+       and its value, and a tag floating over price is the thing that made the
+       zone labels worth removing. The strategy replay still passes one -- there
+       the line has no panel beside it to explain what it is. */
+    chart.setTrail(pts.length > 1
+      ? { points: pts, color: '#31c7d6', width: 1.4 } : null);
+  } else {
+    chart.setTrail(null);
+  }
+}
+
+/* TP BANDS ARE GONE FROM THE LIVE CHART. They were drawn off an open
+   position, which made them order-derived, and shading here is now reserved
+   for the Donchian rule alone. They remain in the STRATEGY REPLAY, where the
+   whole point is to inspect a rule against reference levels and where they are
+   labelled "(REFERENCE)" beside a warning that the rule has no take-profit.
+   js/chart/targets.js is unchanged and still used there. */
 
 function recomputeAll() { app.charts.forEach((c) => computeAuto(c, 0)); }
 
@@ -1221,7 +1255,7 @@ function openSymbol(sym) {
  * -- one the chart's, one the panel's -- is how a reader ends up trading a
  * signal computed on a series they were not looking at. */
 function wireRailTf() {
-  for (const id of ['#trSym', '#sigSym']) {
+  for (const id of ['#rpSym', '#trSym', '#sigSym']) {
     const btn = $(id);
     if (!btn) continue;
     btn.addEventListener('click', (e) => {
@@ -1252,7 +1286,7 @@ function wireToolbar() {
     const c = app.active;
     const items = [
       { kind: 'cap', label: 'Overlays' },
-      ...['ema', 'sma', 'bb', 'vwap'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
+      ...['ema', 'sma', 'bb', 'vwap', 'donchian'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
       { kind: 'cap', label: 'Panes' },
       ...['volume', 'rsidiv', 'macd', 'atr', 'stoch'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
     ];
@@ -1294,15 +1328,12 @@ function wireToolbar() {
       { label: 'Adaptive sensitivity', value: 'adaptive',
         checked: a.adaptive, keepOpen: true,
         hint: 'per-instrument' },
-      { label: 'Support / resistance zones', value: 'zones',
+      { label: 'Support / resistance', value: 'zones',
         checked: a.zones, keepOpen: true,
-        hint: 'levels price turned at repeatedly' },
+        hint: 'price turned repeatedly' },
       { label: 'Channels', value: 'channels',
         checked: a.channels, keepOpen: true,
-        hint: 'parallel corridor around a line' },
-      { label: 'Channel history', value: 'chanhist',
-        checked: a.channelHistory, keepOpen: true,
-        hint: 'keep corridors that have already ended' },
+        hint: 'parallel corridor' },
       { label: 'Regime segments', value: 'segments',
         checked: a.segments, keepOpen: true,
         hint: 'trending / ranging runs' },
@@ -1311,7 +1342,7 @@ function wireToolbar() {
         hint: 'impulse origin' },
       { label: 'Swing points (HH/HL/LH/LL)', value: 'swings',
         checked: a.swings, keepOpen: true,
-        hint: 'ringed = major (survives the Major-structure window)' },
+        hint: '' },
       { label: 'BOS / CHoCH', value: 'ms',
         checked: a.ms, keepOpen: true,
         hint: 'structure breaks' },
@@ -1350,7 +1381,6 @@ function wireToolbar() {
       else if (v === 'adaptive') set({ adaptive: !cur.adaptive });
       else if (v === 'zones') set({ zones: !cur.zones });
       else if (v === 'channels') set({ channels: !cur.channels });
-      else if (v === 'chanhist') set({ channelHistory: !cur.channelHistory });
       else if (v === 'segments') set({ segments: !cur.segments });
       else if (v === 'sdzones') set({ sdZones: !cur.sdZones });
       else if (v === 'swings') set({ swings: !cur.swings });
@@ -1430,11 +1460,32 @@ function wireToolbar() {
     apply(load(key, false) === true);
   }
 
-  /* Balances are hidden until the icon is pressed, and the choice sticks. A
-     balance is the one number on screen that is nobody else's business, and
-     this app is often on a shared or recorded screen. */
-  /* The account values live in the status bar now and are always shown, so
-     there is no toggle to wire and nothing to remember. */
+  /* THE EYE COVERS THE ACCOUNT FIGURES, and it now defaults to HIDDEN.
+     A balance is nobody else's business and this app is often on a shared or
+     recorded screen. An earlier version defaulted to hidden, was changed to
+     shown on the argument that how much room the account has left should not be
+     something you go looking for, and is now hidden again BY EXPLICIT REQUEST.
+     The argument was about which default serves you; the answer is yours.
+
+     The cells are masked rather than emptied (see .acct-hidden in app.css) so
+     the status bar keeps its width. A layout that jumps on press announces to
+     the room that something was just hidden, which defeats the point. */
+  {
+    const eye = $('#acctEye');
+    const icon = $('#acctEyeIcon');
+    const KEY = 'ui.acctHidden';
+    const apply = (hidden) => {
+      document.body.classList.toggle('acct-hidden', hidden);
+      eye.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+      icon.textContent = hidden ? '🔒' : '👁';
+      eye.title = hidden ? 'Show account figures'
+                         : 'Hide account figures (shared screen)';
+      save(KEY, hidden);
+    };
+    eye.addEventListener('click',
+      () => apply(!document.body.classList.contains('acct-hidden')));
+    apply(load(KEY, true) !== false);   // hidden unless you chose otherwise
+  }
 
   $('#layoutBtn').addEventListener('click', (e) => {
     openMenu(e.currentTarget, [
@@ -1478,6 +1529,19 @@ function setTool(t) {
  * drawings, panels — with none of the surrounding page. The filename carries
  * symbol, timeframe and a UTC stamp so a folder of these stays sortable and
  * self-describing.
+ */
+/**
+ * The chart, as a PNG. Canvas only.
+ *
+ * A side panel was composed beside this for one revision and taken out again:
+ * the live chart is a working surface, not a report, and an exported image of
+ * it should be the thing you were looking at. The replays compose a panel
+ * because half of what they show is HTML; here the picture is on the canvas.
+ *
+ * WHAT IT DOES NOT CARRY. `_positions` skips broker lines while `_exporting`
+ * is set -- "a share should not carry position size or where the stops sit" --
+ * so an exported image has no size, no stop and no balance on it, whatever was
+ * on screen when it was taken.
  */
 function snapshot() {
   const c = app.active;
@@ -1585,7 +1649,7 @@ const tick = {
       paintAccount(a);
       panels.set('positions', pos);
       panels.set('orders', ord);
-      app.charts.forEach((c) => c.setPositions(pos));
+      app.charts.forEach((c) => { c.setPositions(pos); });
     } catch (err) { /* health pill already tells the story */ }
   },
 
@@ -1611,6 +1675,8 @@ const tick = {
       trendRead.repaint(app.active.bars);
       panelTick = (panelTick + 1) % 4;
       if (panelTick === 0) signalPanel.repaint(app.active.bars);
+      rulePanel.repaint(app.active.bars);
+      paintRuleSignal(app.active, rulePanel.sig);
     }
   },
 
@@ -1669,6 +1735,9 @@ const wl = new Watchlist({
 const search = new SymbolSearch({
   onPick: (sym) => { wl.add(sym); openSymbol(sym); },
 });
+/* The replay sandboxes borrow this picker rather than building a second overlay;
+   see js/ui/search.js. Registering it is the only line that connects them. */
+registerSymbolSearch(search);
 
 async function boot(refresh = false) {
   /* Seed the display clock from the last known broker offset BEFORE anything

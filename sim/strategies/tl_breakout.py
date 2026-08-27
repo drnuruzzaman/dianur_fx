@@ -66,12 +66,13 @@ class TrendlineBreakout(MTFStrategy):
         # Column names follow the EXECUTION frame, which is not always 15m --
         # the only result in this project that survived a split-sample test is
         # on gold 4h, and hardcoding '15m_' here made that untestable.
-        x = self.exec_tf
         for side, broke_col, px_col, q_col, tag in (
-                (LONG, f'{x}_resistance_broken', f'{x}_broken_resistance_price',
-                 f'{x}_broken_resistance_quality', 'break_up'),
-                (SHORT, f'{x}_support_broken', f'{x}_broken_support_price',
-                 f'{x}_broken_support_quality', 'break_dn')):
+                (LONG, self.ex('resistance_broken'),
+                 self.ex('broken_resistance_price'),
+                 self.ex('broken_resistance_quality'), 'break_up'),
+                (SHORT, self.ex('support_broken'),
+                 self.ex('broken_support_price'),
+                 self.ex('broken_support_quality'), 'break_dn')):
             if side == SHORT and not self.allow_short_side:
                 continue
             if view.series(broke_col) != 1:

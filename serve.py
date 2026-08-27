@@ -18,6 +18,22 @@ project folder:
     GET  /workspace   ->  data/workspace.json, or {} when there is none
     PUT  /workspace   <-  {set: {...}, del: [...]}, merged into the file
 
+REPLAY RECORDINGS. A browser download would put the file wherever the browser
+puts downloads, which is not the project, and the point of a recorded replay is
+that it sits beside the runs it will be compared with:
+
+    POST /record?name=x.mp4   <-  raw bytes (video), written as-is
+    POST /record              <-  {name, payload}, written as JSON
+    GET  /records             ->  the list of recordings on disk
+
+Both land in data/replays/. The JSON body is the belief sidecar; anything with a
+non-JSON content type is written byte for byte, which is what the video needs --
+re-encoding a container the browser just produced would be work with no purpose.
+
+The name is sanitised to one path segment. It is a dev server on 127.0.0.1, but
+a write endpoint that accepts `../` is a write endpoint that can leave the
+folder it was pointed at, and there is no reason to allow it.
+
 The PUT MERGES. A client sends what it has and may explicitly delete, but
 cannot assert what it lacks -- otherwise a browser with cleared storage
 overwrites the durable copy with its own emptiness.
@@ -30,11 +46,26 @@ import io
 import json
 import os
 import sys
+import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-WORKSPACE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         'data', 'workspace.json')
+ROOT = os.path.dirname(os.path.abspath(__file__))
+WORKSPACE = os.path.join(ROOT, 'data', 'workspace.json')
+REPLAYS = os.path.join(ROOT, 'data', 'replays')
 MAX_BODY = 4 * 1024 * 1024        # settings are small; this is a sanity bound
+MAX_RECORD = 512 * 1024 * 1024    # a few minutes of screen video, not settings
+
+
+def safe_name(name):
+    """One path segment, no traversal, no surprises.
+
+    `os.path.basename` alone is not enough on Windows, where a backslash is
+    also a separator, and basename of a backslash-joined path returns the lot.
+    """
+    name = str(name or '').replace(chr(92), '/').split('/')[-1]
+    keep = [c for c in name if c.isalnum() or c in '._-']
+    out = ''.join(keep).strip('.') or 'replay'
+    return out[:120]
 
 
 class NoCacheHandler(SimpleHTTPRequestHandler):
@@ -47,6 +78,22 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.split('?')[0] == '/records':
+            try:
+                names = sorted(os.listdir(REPLAYS)) if os.path.isdir(REPLAYS) else []
+            except Exception as exc:
+                return self._json(500, {'error': str(exc)})
+            out = []
+            for n in names:
+                if not n.endswith('.json'):
+                    continue
+                try:
+                    st = os.stat(os.path.join(REPLAYS, n))
+                    out.append({'name': n, 'bytes': st.st_size,
+                                'mtime_ms': int(st.st_mtime * 1000)})
+                except OSError:
+                    pass
+            return self._json(200, {'records': out})
         if self.path.split('?')[0] == '/workspace':
             try:
                 with io.open(WORKSPACE, encoding='utf-8') as fh:
@@ -58,6 +105,60 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
                 # let the client keep whatever it already has
                 return self._json(500, {'error': str(exc)})
         return SimpleHTTPRequestHandler.do_GET(self)
+
+    def do_POST(self):
+        if self.path.split('?')[0] != '/record':
+            return self._json(404, {'error': 'not found'})
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+            if n <= 0 or n > MAX_RECORD:
+                return self._json(400, {'error': 'bad length'})
+
+            ctype = (self.headers.get('Content-Type') or '').split(';')[0].strip()
+            if ctype != 'application/json':
+                # RAW BYTES, written exactly as received. The browser has already
+                # produced a finished container; decoding and re-encoding it here
+                # would be work with no purpose and one more thing to get wrong.
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                name = safe_name((qs.get('name') or ['replay'])[0])
+                if '.' not in name:
+                    name += '.bin'
+                os.makedirs(REPLAYS, exist_ok=True)
+                path = os.path.join(REPLAYS, name)
+                tmp = path + '.tmp'
+                # streamed in chunks: a whole video in memory is a whole video in
+                # memory, and this runs beside the app on the same machine
+                left = n
+                with io.open(tmp, 'wb') as fh:
+                    while left > 0:
+                        chunk = self.rfile.read(min(1 << 20, left))
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        left -= len(chunk)
+                os.replace(tmp, path)
+                return self._json(200, {'saved': 'data/replays/' + name,
+                                        'bytes': os.path.getsize(path)})
+
+            body = json.loads(self.rfile.read(n).decode('utf-8'))
+            if not isinstance(body, dict) or 'payload' not in body:
+                return self._json(400, {'error': 'expected {name, payload}'})
+
+            name = safe_name(body.get('name'))
+            if not name.endswith('.json'):
+                name += '.json'
+            os.makedirs(REPLAYS, exist_ok=True)
+            path = os.path.join(REPLAYS, name)
+            # temp + replace, same as the workspace: a half-written recording is
+            # worse than no recording, because it looks like one
+            tmp = path + '.tmp'
+            with io.open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(body['payload'], fh, indent=1)
+            os.replace(tmp, path)
+            return self._json(200, {'saved': 'data/replays/' + name,
+                                    'bytes': os.path.getsize(path)})
+        except Exception as exc:
+            return self._json(500, {'error': str(exc)})
 
     def do_PUT(self):
         if self.path.split('?')[0] != '/workspace':

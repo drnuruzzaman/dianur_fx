@@ -648,12 +648,6 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
 
 /* ---------------- backtest tab ---------------- */
 body.bottom-expanded{--bottom-h:min(72vh,720px)}
-.bt-bar{display:flex; align-items:center; gap:6px; padding:5px 8px;
-  border-bottom:1px solid var(--line-soft); flex:none}
-.bt-seg{background:transparent; border:1px solid var(--line); color:var(--text-dim);
-  border-radius:3px; cursor:pointer; font-family:var(--sans); font-size:11.5px;
-  letter-spacing:1px; text-transform:uppercase; padding:3px 10px}
-.bt-seg.active{background:var(--accent-soft); color:#fff; border-color:var(--pink)}
 .bt-btn{background:var(--surface-2); border:1px solid var(--line); color:var(--text);
   border-radius:3px; cursor:pointer; font-family:var(--sans); font-size:11.5px; padding:3px 9px}
 .bt-btn:hover{border-color:var(--pink)}
@@ -901,6 +895,80 @@ table.grid tr.cal-now:hover td{background:var(--surface-2)}
 .sig-val{font-variant-numeric:tabular-nums; white-space:nowrap}
 .sig-verdict{margin-top:8px; font-size:11px; line-height:1.35}
 
+/* The Donchian rule panel. Same visual grammar as the signal engine above it,
+   deliberately: both are read at a glance, and a second set of conventions in
+   the same rail would slow both down. The SIMULATED tag is the one piece that
+   must NOT blend in -- it is the difference between "the rule is long" and
+   "you are long". */
+.rulepanel{padding:9px 10px 10px; border-bottom:1px solid var(--line); flex:none}
+.rp-empty{padding:6px 0; font-size:12px; color:var(--text-faint)}
+.rp-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.rp-badge{
+  font-size:12px; letter-spacing:.09em; padding:4px 10px; border-radius:3px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text-dim)}
+/* Colour = direction. Fill = urgency: filled means act, outlined means the
+   position is already on. */
+.rp-badge.rp-bull{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.rp-badge.rp-bear{color:#fff; background:var(--down); border-color:var(--down)}
+.rp-badge.rp-bull-held{color:var(--up); border-color:var(--up);
+  background:rgba(147,201,15,.12)}
+.rp-badge.rp-bear-held{color:var(--down); border-color:var(--down);
+  background:rgba(227,28,121,.14)}
+.rp-badge.rp-close{color:var(--orange); border-color:var(--orange);
+  background:rgba(255,158,27,.14)}
+.rp-badge.rp-quiet{color:var(--text-faint)}
+/* Masking, not removing: the cells keep their width so the status bar does not
+   reflow when you cover the numbers, and a jumping layout does not announce to
+   the room that something was just hidden. */
+.acct-eye{padding:2px 6px; font-size:12px; line-height:1; opacity:.75}
+.acct-eye:hover{opacity:1}
+/* HIDDEN MEANS GONE, not dotted out. Masking the digits still left BALANCE and
+   EQUITY legible with a row of bullets beside them, which tells anyone looking
+   exactly what was covered and that there was something worth covering.
+
+   `visibility` rather than `display`: the cells keep their box, so the status
+   bar does not reflow and the eye does not jump under the pointer. Nothing is
+   rendered -- labels, values and all. */
+/* The CELLS, not the container: the eye lives inside #acctCells so it travels
+   with them when the bottom panel collapses, and hiding the container would
+   hide the only control that can bring them back. */
+body.acct-hidden .acct-cell{visibility:hidden}
+body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
+.rp-verdict{
+  font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
+  cursor:help; white-space:nowrap; border:1px solid}
+.rp-verdict.rp-v-good{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.rp-verdict.rp-v-bad{color:#fff; background:var(--down); border-color:var(--down)}
+.rp-verdict.rp-v-partial{color:var(--orange); border-color:var(--orange);
+  background:transparent}
+.rp-verdict.rp-v-unknown{color:var(--text-faint); border-color:var(--line);
+  background:transparent}
+
+.rp-sim{
+  font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
+  border:1px dashed var(--orange); color:var(--orange); cursor:help;
+  white-space:nowrap}
+.rp-note{margin-top:6px; font-size:10.5px; line-height:1.35; color:var(--text-dim)}
+
+.rp-rows{margin-top:9px; display:flex; flex-direction:column; gap:4px}
+.rp-row{display:grid; grid-template-columns:60px auto 1fr; align-items:baseline;
+  gap:7px; font-size:11px}
+.rp-k{color:var(--text-dim); white-space:nowrap}
+.rp-v{font-variant-numeric:tabular-nums; white-space:nowrap}
+.rp-n{font-size:9.5px; color:var(--text-faint); line-height:1.3}
+
+.rp-untradeable{
+  margin-top:8px; padding:5px 7px; border-radius:3px; cursor:help;
+  font-size:10px; letter-spacing:.06em;
+  color:#fff; background:var(--down); border:1px solid var(--down)}
+.rp-notp{
+  margin-top:8px; font-size:10px; letter-spacing:.06em; cursor:help;
+  color:var(--orange); border-top:1px solid var(--line-soft); padding-top:7px}
+.rp-rec{
+  margin-top:7px; display:flex; gap:10px; justify-content:space-between;
+  font-size:10.5px; color:var(--text-dim); cursor:help;
+  font-variant-numeric:tabular-nums}
+
 /* The rail headings are timeframe pickers, so they have to read as pressable
    without becoming a second toolbar competing with the real one. */
 .rail-tf{
@@ -908,3 +976,154 @@ table.grid tr.cal-now:hover td{background:var(--surface-2)}
   color:var(--text-dim); font-family:var(--mono); font-size:10px;
   letter-spacing:.5px; padding:1px 6px; cursor:pointer}
 .rail-tf:hover{color:#fff; border-color:var(--line); background:var(--surface-2)}
+
+
+/* ---------------- Elliott replay (Backtest tab) ---------------- */
+/* Everything here is scoped inside the Backtest panel. The live chart has no
+   Elliott chrome at all -- that is the point of where this lives. */
+/* `.bt-body` is a two-column grid for the Runs view; the replay is ONE panel
+   and takes both columns, or the chart is squeezed into 300px beside nothing. */
+.bt-body:has(.bt-elliott),
+.bt-body:has(.bt-strategy){grid-template-columns:1fr}
+.bt-elliott,
+.bt-strategy{padding:0; height:100%; min-height:0; display:flex; overflow:hidden}
+.ell-wrap{display:flex; flex-direction:column; flex:1; min-width:0; min-height:0}
+.ell-bar{
+  display:flex; align-items:center; gap:4px; flex-wrap:wrap;
+  padding:6px 8px; border-bottom:1px solid var(--line-soft); flex:none;
+}
+/* The belief sits BESIDE the chart, and the chart takes what is left -- which
+   lands within a few pixels of the live chart's width, because the tab spans the
+   full window while the live chart gives up both rails. Same width matters: a
+   wave in 1231px of canvas and the same wave in 940px are different pictures,
+   and the point of the sandbox is to judge what the live chart would show.
+   Reading the count down a tall column also beats reading it across a short
+   band, which is what the stacked version made of it. */
+.ell-body{display:flex; flex:1; min-height:0}
+.ell-chart{flex:1; min-width:0; min-height:220px; position:relative}
+.ell-panel{
+  width:244px; flex:none; overflow:auto;
+  padding:6px 9px 12px; border-left:1px solid var(--line-soft);
+}
+.rp-btn{
+  height:22px; padding:0 8px; cursor:pointer;
+  background:var(--surface-2); color:var(--text-dim);
+  border:1px solid var(--line); border-radius:3px;
+  font-family:var(--sans); font-size:10.5px; letter-spacing:.4px; white-space:nowrap;
+}
+.rp-btn:hover{color:#fff; border-color:var(--accent)}
+/* The transport glyphs are square, and the one that is RUNNING is lit -- the
+   bar says what it is doing, not only what it can do. */
+.rp-btn.rp-tp{width:26px; padding:0; text-align:center; font-size:11px}
+.rp-btn.on{background:var(--accent-soft); color:#fff; border-color:transparent}
+.rp-btn:disabled{opacity:.4; cursor:default}
+.rp-btn:disabled:hover{color:var(--text-dim); border-color:var(--line)}
+/* Recording is a state you must not lose track of, so it is the one control
+   that changes colour rather than just lighting up. */
+.rp-btn.rec{background:var(--pink); border-color:var(--pink); color:#fff}
+.rp-sel,.rp-sym{
+  height:22px; background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px;
+  font-family:var(--mono); font-size:10.5px; padding:0 4px;
+}
+.rp-sym{width:96px}
+/* The symbol control is a button now; it keeps the field's footprint so the
+   bar does not reflow when a longer ticker is picked. */
+.rp-btn.rp-symbtn{min-width:96px; font-family:var(--mono); font-size:10.5px;
+  justify-content:flex-start; text-align:left; color:var(--text)}
+.rp-sep{width:1px; height:16px; background:var(--line); margin:0 4px}
+.rp-lbl{font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--text-faint)}
+.rp-status{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:6px}
+
+.ell-note{font-size:9.5px; color:var(--text-faint); line-height:1.45; margin:8px 0}
+.ell-empty{font-size:10.5px; color:var(--text-faint); padding:10px 0}
+.ell-count{border-top:1px solid var(--line-soft); padding:6px 0}
+.ell-count.primary .ell-label{color:var(--text)}
+.ell-head{display:flex; align-items:baseline; gap:6px; font-size:10.5px}
+.ell-head b{font-size:9.5px; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-faint)}
+.ell-label{color:var(--text-dim); flex:1}
+.ell-share{font-family:var(--mono); color:var(--text)}
+.ell-line{font-size:10px; color:var(--text-dim); margin-top:3px; line-height:1.45}
+.ell-ev{margin-top:4px; font-size:10px; line-height:1.5}
+.ell-ev .ok{color:var(--up)}
+.ell-ev .no{color:var(--text-faint)}
+.ell-scen{
+  display:flex; gap:8px; margin-top:8px; padding-top:6px;
+  border-top:1px solid var(--line-soft);
+  font-family:var(--mono); font-size:10px; color:var(--text-dim);
+}
+.ell-outcome{
+  margin:8px 0; padding:6px 8px; font-size:10.5px; line-height:1.5;
+  border-left:3px solid var(--line);
+}
+.ell-outcome.ok{border-left-color:var(--up); background:rgba(147,201,15,.08)}
+.ell-outcome.no{border-left-color:var(--down); background:rgba(227,28,121,.08)}
+.ell-sec{
+  margin:12px 0 2px; font-size:9.5px; letter-spacing:1.4px; text-transform:uppercase;
+  color:var(--text-faint); border-top:1px solid var(--line-soft); padding-top:8px;
+}
+.ell-tbl{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:9.5px; margin:4px 0}
+.ell-tbl th{text-align:right; font-weight:400; color:var(--text-faint); padding:1px 0}
+.ell-tbl th:first-child{text-align:left}
+.ell-tbl td{text-align:right; color:var(--text-dim); padding:1px 0}
+.ell-tbl td:first-child{text-align:left}
+.ell-tbl td.ok{color:var(--up)}
+.ell-tbl td.no{color:var(--down)}
+.ell-tbl td.thin{color:var(--text-faint)}
+.ell-mtf td.wide{text-align:left; color:var(--text-dim)}
+.ell-mtf td:first-child{color:var(--text); text-transform:uppercase; font-size:9px}
+.ell-score{display:flex; gap:10px; font-family:var(--mono); font-size:11px; margin:4px 0}
+.ell-score .ok{color:var(--up)}
+.ell-score .no{color:var(--down)}
+
+/* ---------------- strategy replay (js/ui/strategyreplay.js) ---------------- */
+.sr-wrap{display:flex; flex-direction:column; height:100%; width:100%;
+  min-height:0; min-width:0}
+.sr-bar{display:flex; align-items:center; gap:4px; flex-wrap:wrap; flex:none;
+  padding:6px 8px; border-bottom:1px solid var(--line-soft)}
+.sr-f{display:flex; align-items:center; gap:5px; font-size:9px; letter-spacing:1.6px;
+  text-transform:uppercase; color:var(--text-faint)}
+.sr-sym{width:104px}
+.sr-body{display:flex; flex:1 1 auto; min-height:0}
+.sr-chart{flex:1 1 auto; min-width:0; position:relative}
+.sr-chart canvas{display:block}
+.sr-panel{flex:0 0 264px; border-left:1px solid var(--line-soft); overflow:auto;
+  padding:8px 10px}
+.sr-act{font-family:var(--mono); font-size:11px; letter-spacing:1.4px;
+  padding:4px 8px; border-radius:3px; text-align:center; margin-bottom:5px}
+.sr-act-enter{background:var(--accent-soft); color:#fff; border:1px solid var(--pink)}
+.sr-act-exit{background:rgba(255,158,27,.16); color:var(--orange);
+  border:1px solid var(--orange)}
+.sr-act-hold{background:var(--surface-2); color:var(--text);
+  border:1px solid rgba(147,201,15,.5)}
+.sr-act-wait{background:var(--surface-2); color:var(--text-faint);
+  border:1px solid var(--line)}
+.sr-note{font-size:10.5px; color:var(--text-dim); line-height:1.45; margin:4px 0 7px}
+.sr-up{color:var(--up); font-weight:500}
+.sr-down{color:var(--down); font-weight:500}
+/* 'IN POSITION' is a STATE, not a direction: it was green for a short
+   as readily as for a long. The direction lives on the side row. */
+.sr-live{
+  margin-left:7px; font-family:var(--sans); font-size:9px; letter-spacing:.09em;
+  padding:1px 4px; border-radius:2px; vertical-align:1px}
+.sr-kv td .sr-live{color:var(--text-faint); border:1px solid var(--line)}
+.sr-kv td .sr-live-on{color:#0b1a05; background:var(--up);
+  border-color:var(--up); font-weight:500}
+.sr-warn{font-size:10px; color:var(--orange); line-height:1.45; margin:6px 0;
+  padding:5px 7px; background:rgba(255,158,27,.08);
+  border-left:2px solid var(--orange); border-radius:2px}
+.sr-h{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint); margin:11px 0 4px; padding-bottom:3px;
+  border-bottom:1px solid var(--line-soft)}
+.sr-kv{width:100%; border-collapse:collapse; font-size:11.5px}
+.sr-kv td{padding:2px 0; color:var(--text-dim)}
+.sr-kv td:last-child{text-align:right; color:var(--text); font-family:var(--mono)}
+
+.sr-badge{font-size:10px; line-height:1.4; padding:3px 7px; border-radius:3px;
+  margin:2px 0 6px; border:1px solid transparent}
+.sr-st-validated{background:rgba(147,201,15,.12); color:var(--green);
+  border-color:rgba(147,201,15,.45)}
+.sr-st-failed{background:rgba(227,28,121,.12); color:var(--pink);
+  border-color:rgba(227,28,121,.45)}
+.sr-st-untested{background:var(--surface-2); color:var(--text-faint);
+  border-color:var(--line)}

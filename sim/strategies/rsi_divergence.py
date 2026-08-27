@@ -55,8 +55,12 @@ class RsiDivergence(MTFStrategy):
                 'overbought': self.overbought, 'valid_bars': self.valid_bars,
                 'max_pivot_gap': self.max_pivot_gap}
 
-    def columns(self):
-        return tuple(self.BASE_COLUMNS)
+    # columns() is deliberately NOT overridden. It used to be, returning
+    # BASE_COLUMNS verbatim, which bypassed two things the base does: rewriting
+    # the '15m_' placeholder to the real execution frame, and dropping context
+    # frames at or below it. The first meant this strategy could only ever run
+    # at 15m -- it asked a 4h feature table for '15m_atr' and raised -- and it
+    # failed that way silently until a cross-timeframe comparison was tried.
 
     def prepare(self, bars):
         """
