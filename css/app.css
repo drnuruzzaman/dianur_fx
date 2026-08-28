@@ -932,7 +932,13 @@ table.grid tr.cal-now:hover td{background:var(--surface-2)}
 /* The CELLS, not the container: the eye lives inside #acctCells so it travels
    with them when the bottom panel collapses, and hiding the container would
    hide the only control that can bring them back. */
-body.acct-hidden .acct-cell{visibility:hidden}
+/* The eye now leaves TWO cells standing -- profit today and this month -- so
+   the strip still answers "how is it going" while the balance, equity and
+   margin are covered. Those two collapse with `display` rather than being
+   masked: masking would hold five empty boxes open and strand the pair in the
+   middle of a gap. The kept cells sit last in the row, against the eye, so
+   nothing that stays visible moves when the rest go. */
+body.acct-hidden .acct-cell:not(.acct-keep){display:none}
 body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
 .rp-verdict{
   font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
@@ -1127,3 +1133,79 @@ body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
   border-color:rgba(227,28,121,.45)}
 .sr-st-untested{background:var(--surface-2); color:var(--text-faint);
   border-color:var(--line)}
+
+/* ------------------------------------------------------------------ PIN
+   A screen-share cover for the account figures, not a security control --
+   see the note in main.js. Styled off .modal-box so it matches the search
+   dialog rather than inventing a second dialog language. */
+.pin-box{width:min(360px,92vw)}
+.pin-head{padding:12px 15px 0; font-weight:700; letter-spacing:.4px; font-size:14px}
+.pin-note{padding:6px 15px 0; font-size:11px; line-height:1.5; color:var(--text-faint)}
+#pinInput,#pinConfirm{
+  width:calc(100% - 30px); margin:10px 15px 0; padding:9px 11px;
+  border:1px solid var(--line); border-radius:4px; background:var(--bg);
+  color:var(--text); font-family:var(--mono); font-size:16px; letter-spacing:.32em;
+  outline:none;
+}
+#pinInput:focus,#pinConfirm:focus{border-color:var(--accent)}
+#pinConfirm{margin-top:7px; letter-spacing:.18em; font-size:13px}
+.pin-err{margin:8px 15px 0; font-size:11px; color:var(--down)}
+.pin-spacer{flex:1}
+.modal-foot #pinForget{font-size:10px; padding:2px 7px; opacity:.8}
+.modal-foot #pinForget:hover{opacity:1}
+
+/* Centred, not top-anchored. The search modal sits high because a long result
+   list grows downward from it; the PIN box is a fixed four lines, so the same
+   12vh offset just left it stranded above centre. */
+#pinModal{place-items:center; padding-top:0}
+
+/* It ARRIVES rather than appearing. A dialog that blinks into existence reads
+   as a page glitch; a short rise settles the eye on the input it is about to
+   type into. Runs on show because [hidden] is display:none, and leaving that
+   state restarts the animation -- no class juggling needed. */
+@keyframes pin-in{
+  from{opacity:0; transform:translateY(10px) scale(.975)}
+  to  {opacity:1; transform:none}
+}
+@keyframes pin-veil{from{opacity:0} to{opacity:1}}
+#pinModal:not([hidden]){animation:pin-veil .16s ease-out}
+#pinModal:not([hidden]) .pin-box{
+  animation:pin-in .2s cubic-bezier(.2,.8,.3,1);
+  transform-origin:center top;
+}
+/* A wrong PIN SHAKES. The message alone is easy to miss when your eyes are on
+   the keypad, and the movement says "try again" before you have read a word. */
+@keyframes pin-shake{
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(-6px)} 40%{transform:translateX(5px)}
+  60%{transform:translateX(-3px)} 80%{transform:translateX(2px)}
+}
+/* Specificity matters here: the entrance rule above is `#pinModal … .pin-box`
+   (id + class), so a bare `.pin-box.pin-bad` loses to it and the shake never
+   ran. Matched through the id so the later rule actually wins. */
+#pinModal .pin-box.pin-bad{animation:pin-shake .32s ease-in-out}
+
+/* Motion is decoration here; the dialog works identically without it. */
+@media (prefers-reduced-motion: reduce){
+  #pinModal:not([hidden]),
+  #pinModal:not([hidden]) .pin-box,
+  #pinModal .pin-box.pin-bad{animation:none}
+}
+
+/* The recovery password is prose, not digits: normal tracking and a smaller
+   face so a long phrase still fits the box. */
+#pinRecovery{
+  width:calc(100% - 30px); margin:7px 15px 0; padding:8px 11px;
+  border:1px solid var(--line); border-radius:4px; background:var(--bg);
+  color:var(--text); font-family:var(--mono); font-size:12.5px; letter-spacing:.04em;
+  outline:none;
+}
+#pinRecovery:focus{border-color:var(--accent)}
+.modal-foot #pinForgot{font-size:10px; padding:2px 7px; opacity:.8; margin-right:4px}
+.modal-foot #pinForgot:hover{opacity:1}
+
+/* Submenu: a second panel beside the first, not a nested list. The parent row
+   stays highlighted so it is obvious which item the panel belongs to. */
+.menu .arrow{margin-left:auto; padding-left:10px; opacity:.55}
+.menu button.open{background:var(--accent-soft)}
+.submenu{position:fixed}

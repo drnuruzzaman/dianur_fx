@@ -36,7 +36,7 @@
     <button class="tb" id="drawBtn" title="Drawing tools">✎ Draw</button>
     <button class="tb" id="autoBtn" title="Algorithmic trendlines (l)">⌑ Auto TL</button>
     <button class="tb" id="layoutBtn" title="Chart layout">▦ Layout</button>
-    <button class="tb" id="snapBtn" title="Save chart as PNG (s)">⤓ Snapshot</button>
+    <button class="tb" id="snapBtn" title="Snapshot, snapshot with panel info, or share">⤓ Snapshot ▾</button>
   </div>
 
   <div class="spacer"></div>
@@ -121,6 +121,12 @@
     <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
     <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
     <div class="acct-cell"><span>Margin level</span><b id="acLevel">—</b></div>
+    <!-- REALISED profit, closed trades only, and the two cells that survive the
+         eye. They sit LAST, hard against the eye button, on purpose: when the
+         others collapse these do not move a pixel, so pressing the eye reads as
+         "the rest went away" rather than as the whole strip rearranging. -->
+    <div class="acct-cell acct-keep"><span>Profit today</span><b id="acDay">—</b></div>
+    <div class="acct-cell acct-keep"><span>This month</span><b id="acMonth">—</b></div>
     <!-- Hiding is OPT-IN and the values show by default. The earlier `$` toggle
          defaulted to hidden, which made how much room the account has left the
          one number you had to go looking for. This keeps it in front of you
@@ -145,6 +151,35 @@
     <input id="searchInput" type="text" placeholder="Search symbol — EURUSD, XAUUSD, US30…" autocomplete="off" spellcheck="false">
     <div class="results" id="searchResults"></div>
     <div class="modal-foot"><kbd>↑</kbd><kbd>↓</kbd> move <kbd>↵</kbd> select <kbd>esc</kbd> close</div>
+  </div>
+</div>
+
+<!-- PIN gate for the account figures. Local only: the PIN never leaves this
+     machine and is never sent to the bridge or anywhere else. -->
+<div class="modal" id="pinModal" hidden>
+  <div class="modal-box pin-box">
+    <div class="pin-head" id="pinTitle">Enter PIN</div>
+    <div class="pin-note" id="pinNote"></div>
+    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off"
+           spellcheck="false" maxlength="12" placeholder="••••">
+    <input id="pinConfirm" type="password" inputmode="numeric" autocomplete="off"
+           spellcheck="false" maxlength="12" placeholder="repeat to confirm" hidden>
+    <!-- The way back from a forgotten PIN. Set alongside the PIN, entered in
+         its place when the PIN is gone. Longer on purpose: it is the fallback,
+         so it should not be four digits. -->
+    <input id="pinRecovery" type="password" autocomplete="off" spellcheck="false"
+           maxlength="64" placeholder="recovery password" hidden>
+    <div class="pin-err" id="pinErr" hidden></div>
+    <div class="modal-foot">
+      <span id="pinHint"><kbd>↵</kbd> confirm <kbd>esc</kbd> cancel</span>
+      <span class="pin-spacer"></span>
+      <button class="status-btn" id="pinForgot" hidden
+              title="Use your recovery password to set a new PIN">Forgot PIN?</button>
+      <!-- "Change", not "Reset": it verifies the current PIN before letting a
+           new one be set, so it is no longer a way around the gate. -->
+      <button class="status-btn" id="pinForget" hidden
+              title="Verify your current PIN, then choose a new one">Change PIN</button>
+    </div>
   </div>
 </div>
 

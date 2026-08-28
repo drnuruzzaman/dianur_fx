@@ -112,8 +112,16 @@ function liveState() {
     note: txt('.tr-note'), frames: rows, facts,
     signal: txt('.sig-badge'), sigScore: txt('.sig-score'), stats,
     verdictLine: txt('.sig-verdict'),
-    account: ['acBal', 'acEq', 'acPl', 'acFree', 'acLevel']
-      .map((id) => `${$('#' + id).previousElementSibling.textContent}: ${$('#' + id).textContent}`),
+    /* Read the cells that are THERE, rather than a hard-coded list of ids.
+       The list named five cells by id and dereferenced each one's label
+       without a null check, so removing a cell from the status bar took the
+       whole Ask panel down with a TypeError -- a chart-furniture edit breaking
+       an unrelated feature. Whatever the strip shows is what gets reported. */
+    account: [...document.querySelectorAll('.acct-cell')].map((cell) => {
+      const label = cell.querySelector('span');
+      const value = cell.querySelector('b');
+      return label && value ? `${label.textContent}: ${value.textContent}` : null;
+    }).filter(Boolean),
     positions: document.querySelectorAll('#panel tbody tr').length,
   };
 }

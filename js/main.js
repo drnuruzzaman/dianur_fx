@@ -1169,6 +1169,337 @@ function paintAccount(a) {
   panels.currency = c;
 }
 
+/* REALISED profit for the broker's current day and month.
+ *
+ * Realised, not floating: this counts CLOSED trades only. The open runner is
+ * already reported next door as "Floating", and adding the two together in one
+ * number would let an unclosed position flatter a day that has not paid out.
+ *
+ * Boundaries are the BROKER's midnight, not yours. A trading day is the
+ * server's day -- it is what rolls the swap and what the statement will agree
+ * with -- and on a +3h server the two disagree for three hours every night,
+ * which is exactly when a late New York session is still open.
+ *
+ * Balance operations are excluded. A deposit arrives as a deal carrying its
+ * full amount in `profit`, so counting every deal would report funding the
+ * account as a profitable day. Only `buy` and `sell` deals are trades; the
+ * bridge maps every other MT5 deal type to its raw number, so this filter
+ * drops balance, credit, charge and correction entries without needing to
+ * enumerate them.
+ */
+function realisedWindows() {
+  const off = panels.brokerOffsetMs || 0;
+  const b = new Date(Date.now() + off);
+  return {
+    day: Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate()) - off,
+    month: Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), 1) - off,
+  };
+}
+
+function paintRealised(deals) {
+  const w = realisedWindows();
+  let day = 0, month = 0, seen = false;
+  for (const d of deals || []) {
+    if (d.side !== 'buy' && d.side !== 'sell') continue;
+    /* same net as the History tab: gross, minus what the broker took */
+    const net = (d.profit || 0) + (d.commission || 0) + (d.swap || 0);
+    if (d.time_ms >= w.month) { month += net; seen = true; }
+    if (d.time_ms >= w.day) day += net;
+  }
+  const put = (sel, v) => {
+    const node = $(sel);
+    if (!node) return;
+    node.textContent = signed(v);
+    node.className = v > 0 ? 'up' : v < 0 ? 'down' : '';
+  };
+  /* a month with no closed trades is a real zero, not missing data */
+  put('#acDay', day);
+  put('#acMonth', seen || day !== 0 ? month : 0);
+}
+
+/* ------------------------------------------------------------------ PIN
+ *
+ * WHAT THIS IS AND IS NOT.
+ *
+ * It stops someone reading your balance over your shoulder or off a recording.
+ * It is NOT security. This is a local page: anyone sitting at this machine can
+ * open devtools and clear the class, and no browser-side check survives that.
+ * Treating it as protection against someone who HAS the machine would be a lie
+ * about what it does, so it is built and described as a screen-share cover.
+ *
+ * Given that, two things are still worth doing properly:
+ *   - the PIN is never stored. A salted SHA-256 goes to localStorage instead,
+ *     so a glance at storage does not hand over a number people reuse.
+ *   - it never leaves the machine. Nothing here touches the bridge or network.
+ */
+const PIN_KEY = 'ui.acctPin';
+/* Deliberately slow. A four-digit PIN is only ten thousand possibilities, so a
+   single SHA-256 -- which is what this used to be -- falls to a script in well
+   under a second. PBKDF2 at this count costs roughly a quarter-second per
+   guess, which is unnoticeable once when you type it and turns the full sweep
+   into hours. It does not make a short PIN strong; it makes it not free. */
+const PIN_ITER = 250000;
+
+const hex = (buf) => [...new Uint8Array(buf)]
+  .map((b) => b.toString(16).padStart(2, '0')).join('');
+
+/* Storing a PIN you only ever need to CHECK calls for a one-way hash, not
+   encryption: anything reversible needs a key, and a key kept beside the
+   ciphertext on the same machine protects nobody. The salt is per-PIN, so two
+   people choosing 1234 do not produce the same record. */
+async function pinHash(pin, salt, iter = PIN_ITER) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits'],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: enc.encode(salt), iterations: iter, hash: 'SHA-256' },
+    key, 256,
+  );
+  return hex(bits);
+}
+
+/* Records written before PBKDF2 landed are plain salted SHA-256. They still
+   verify, so an existing PIN keeps working, and are rewritten at the stronger
+   setting the moment one is entered correctly. */
+async function pinHashLegacy(pin, salt) {
+  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + '|' + pin)));
+}
+
+async function pinMatches(pin, rec) {
+  if (!rec) return false;
+  if (rec.iter) return await pinHash(pin, rec.salt, rec.iter) === rec.hash;
+  return await pinHashLegacy(pin, rec.salt) === rec.hash;
+}
+
+/* The PIN and its recovery password are stored the same way and kept in the
+   same record, so a change to one can never leave the other orphaned. Neither
+   is recoverable FROM the record: both are one-way derivations. */
+async function pinSave(pin, recovery) {
+  const prev = pinStored();
+  const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const rec = { salt, iter: PIN_ITER, hash: await pinHash(pin, salt) };
+  if (recovery) {
+    const rsalt = hex(crypto.getRandomValues(new Uint8Array(16)));
+    rec.rsalt = rsalt;
+    rec.rhash = await pinHash(recovery, rsalt);
+  } else if (prev && prev.rhash) {
+    /* changing the PIN alone must not silently discard the way back in */
+    rec.rsalt = prev.rsalt;
+    rec.rhash = prev.rhash;
+  }
+  save(PIN_KEY, rec);
+}
+
+async function recoveryMatches(word, rec) {
+  if (!rec || !rec.rhash) return false;
+  return await pinHash(word, rec.rsalt, rec.iter || PIN_ITER) === rec.rhash;
+}
+
+function pinStored() {
+  const v = load(PIN_KEY, null);
+  return v && v.salt && v.hash ? v : null;
+}
+
+/** Ask for a PIN. Resolves true when it is accepted, false when cancelled. */
+function askPin({ setting }) {
+  return new Promise((resolve) => {
+    const modal = $('#pinModal');
+    const input = $('#pinInput');
+    const confirm = $('#pinConfirm');
+    const recovery = $('#pinRecovery');
+    const err = $('#pinErr');
+    const forget = $('#pinForget');
+    const forgot = $('#pinForgot');
+
+    /* The dialog SWITCHES MODE in place rather than closing and reopening.
+       Resetting a forgotten PIN used to close the box, which read as the app
+       cancelling on you at the exact moment you were trying to fix something.
+       Now "Reset PIN" clears the stored hash and turns this same dialog into
+       the set-a-new-one form, so the job you started is the job you finish. */
+    let mode = setting;
+    /* Three states, not two: enter the PIN, set a PIN, or enter the recovery
+       password because the PIN is gone. Recovery reuses the main input rather
+       than adding a fourth field -- one box, three meanings, always labelled. */
+    let recovering = false;
+    /* Changing an EXISTING PIN reads differently from setting the first one:
+       there is something to lose, so the dialog says what cancelling does. */
+    let changing = false;
+    /* PROVING THE PIN IS THE POINT; changing it is a side errand.
+       Once the current PIN has been entered correctly the gate has done its
+       job, so backing out of the change must not send you round the loop to
+       type the same number again. Cancelling then closes as a SUCCESS: the
+       figures open, the PIN is untouched. */
+    let verified = false;
+    const render = (isSetting, isChange = false) => {
+      mode = isSetting;
+      changing = isChange;
+      $('#pinTitle').textContent = recovering ? 'Recovery password'
+        : !isSetting ? 'Enter PIN'
+          : isChange ? 'Choose a new PIN' : 'Set a PIN';
+      $('#pinNote').textContent = recovering
+        ? 'Enter your recovery password to set a new PIN. The figures stay '
+          + 'covered until the new PIN is saved.'
+        : !isSetting
+          ? 'Enter your PIN to show the account figures.'
+        : isChange
+          ? 'Your current PIN still works until a new one is saved — press '
+            + 'Escape to keep it and go straight to the figures.'
+          : 'Choose a PIN to cover the account figures, and a recovery password '
+            + 'in case you forget it. Both stay on this machine and are never '
+            + 'sent anywhere. This hides the numbers from the room, not from '
+            + 'anyone using this computer.';
+      confirm.hidden = !isSetting || recovering;
+      /* asked for once, when the PIN is first created -- and again while
+         setting a new one if there is still no way back on record */
+      const rec = pinStored();
+      recovery.hidden = recovering || !isSetting || !!(rec && rec.rhash);
+      forget.hidden = isSetting || recovering;
+      /* only offer "Forgot PIN?" when a recovery password actually exists */
+      forgot.hidden = isSetting || recovering || !(rec && rec.rhash);
+      err.hidden = true;
+      input.value = ''; confirm.value = ''; recovery.value = '';
+      input.type = recovering ? 'text' : 'password';
+      input.placeholder = recovering ? 'recovery password' : '••••';
+      input.maxLength = recovering ? 64 : 12;
+      setTimeout(() => input.focus(), 0);
+    };
+
+    render(setting);
+    modal.hidden = false;
+
+    const close = (result) => {
+      modal.hidden = true;
+      input.value = ''; confirm.value = ''; recovery.value = '';
+      document.removeEventListener('keydown', onKey, true);
+      modal.removeEventListener('mousedown', onBack);
+      forget.removeEventListener('click', onForget);
+      forgot.removeEventListener('click', onForgot);
+      resolve(result);
+    };
+    const fail = (msg) => {
+      err.textContent = msg;
+      err.hidden = false;
+      /* Retrigger the shake: an animation only restarts if the class actually
+         leaves and returns, and a second wrong PIN would otherwise sit still. */
+      const box = modal.querySelector('.pin-box');
+      box.classList.remove('pin-bad');
+      void box.offsetWidth;
+      box.classList.add('pin-bad');
+    };
+
+    const submit = async () => {
+      const pin = input.value.trim();
+
+      /* RECOVERY: prove the fallback, then set a new PIN. It never reveals the
+         figures by itself -- it buys you the set-a-PIN form and nothing more,
+         so a recovery password overheard once does not open the account
+         without a new PIN being chosen and confirmed. */
+      if (recovering) {
+        const rec = pinStored();
+        if (!pin) return fail('Enter your recovery password.');
+        if (!await recoveryMatches(pin, rec)) {
+          input.value = '';
+          return fail('That recovery password does not match.');
+        }
+        verified = true;
+        recovering = false;
+        return render(true, true);
+      }
+
+      if (mode) {
+        /* four digits is the shortest that is not immediately guessable by
+           someone watching you type it once */
+        if (pin.length < 4) return fail('Use at least 4 characters.');
+        if (pin !== confirm.value.trim()) return fail('The two entries do not match.');
+        const word = recovery.hidden ? '' : recovery.value.trim();
+        /* longer than the PIN on purpose: it is the fallback for the fallback,
+           and it is typed rarely enough that length costs nothing */
+        if (!recovery.hidden && word.length < 8) {
+          return fail('Recovery password: use at least 8 characters.');
+        }
+        if (!recovery.hidden && word === pin) {
+          return fail('The recovery password must differ from the PIN.');
+        }
+        await pinSave(pin, word || null);
+        return close(true);
+      }
+      const rec = pinStored();
+      if (!rec) return close(true);                 // nothing set: nothing to check
+      if (await pinMatches(pin, rec)) {
+        /* quietly upgrade a legacy record now that the PIN is known good */
+        if (!rec.iter) await pinSave(pin);
+        return close(true);
+      }
+      input.value = '';
+      fail('That PIN does not match.');
+    };
+
+    const onKey = (e) => {
+      if (modal.hidden) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
+      else if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        /* on the set form, Enter in the first box moves to the confirm box
+           rather than submitting a half-filled pair */
+        if (mode && !recovering && document.activeElement === input && !confirm.value) confirm.focus();
+        else if (mode && !recovering && !recovery.hidden
+                 && document.activeElement === confirm && !recovery.value) recovery.focus();
+        else submit();
+      }
+    };
+    /* Clicking the backdrop cancels; clicking INSIDE the box must not, or
+       selecting the text you just typed would close the dialog. */
+    const onBack = (e) => { if (e.target === modal) cancel(); };
+    /* Cancelling out of a change is a non-event, but a silent one looks like
+       the press did not register -- say plainly that nothing changed. */
+    const cancel = () => {
+      if (changing) toast('PIN unchanged.');
+      close(verified);
+    };
+    /* CHANGING THE PIN COSTS THE OLD ONE.
+       This started life as a one-press "Reset PIN" for a forgotten code, which
+       quietly made the whole gate pointless: anyone who picked up the machine
+       could press it, choose their own PIN and read the balance, without ever
+       knowing the original. The easiest bypass must not be a button sitting on
+       the lock screen.
+
+       So it verifies against the stored hash first, reusing the PIN already
+       typed in the box above -- the field is right there and asking for the
+       same number in a second place would be theatre. */
+    const onForget = async () => {
+      const rec = pinStored();
+      if (!rec) { render(true); return; }          // nothing set: nothing to prove
+      const pin = input.value.trim();
+      if (!pin) return fail('Type your current PIN first, then press Change PIN.');
+      if (!await pinMatches(pin, rec)) {
+        input.value = '';
+        return fail('That PIN does not match.');
+      }
+      /* THE OLD PIN IS NOT DELETED HERE.
+         It used to be, and that was destroy-before-replace: proving the current
+         PIN wiped it, so changing your mind and pressing Escape left you with
+         no PIN at all and the app asking you to set one. Cancelling must cost
+         nothing. The record is only overwritten when a NEW PIN is accepted,
+         which pinSave() does in one step. */
+      verified = true;
+      render(true, true);
+    };
+
+    const onForgot = () => {
+      const rec = pinStored();
+      if (!rec || !rec.rhash) return fail('No recovery password was set.');
+      recovering = true;
+      render(false);
+    };
+
+    document.addEventListener('keydown', onKey, true);
+    modal.addEventListener('mousedown', onBack);
+    forget.addEventListener('click', onForget);
+    forgot.addEventListener('click', onForgot);
+  });
+}
+
 /* -------------------------------------------------------------- toolbar */
 
 function buildTfGroup() {
@@ -1401,7 +1732,7 @@ function wireToolbar() {
     });
   });
 
-  $('#snapBtn')?.addEventListener('click', snapshot);
+  $('#snapBtn')?.addEventListener('click', (e) => openSnapMenu(e.currentTarget));
 
   /* Collapsible rails. The chart is the point of the page; on a laptop the two
      rails take 478px of it. Collapsing sets a grid variable rather than hiding
@@ -1480,11 +1811,24 @@ function wireToolbar() {
       icon.textContent = hidden ? '🔒' : '👁';
       eye.title = hidden ? 'Show account figures'
                          : 'Hide account figures (shared screen)';
-      save(KEY, hidden);
+      /* ONLY THE COVERED STATE IS REMEMBERED.
+         Persisting "revealed" defeated the entire gate: reveal once, and every
+         later load showed the balance with no PIN asked -- reloading the page
+         WAS the bypass, and a far easier one than the reset button. A reveal is
+         now good for this session only; the app always starts covered. */
+      save(KEY, true);
     };
-    eye.addEventListener('click',
-      () => apply(!document.body.classList.contains('acct-hidden')));
-    apply(load(KEY, true) !== false);   // hidden unless you chose otherwise
+    /* HIDING is free; REVEALING costs a PIN.
+       Deliberately asymmetric. Covering the screen is the safe direction and
+       must never be delayed by a dialog -- someone has just walked up behind
+       you. Uncovering is the one that needs the check. */
+    eye.addEventListener('click', async () => {
+      const hidden = document.body.classList.contains('acct-hidden');
+      if (!hidden) { apply(true); return; }
+      const ok = await askPin({ setting: !pinStored() });
+      if (ok) apply(false);
+    });
+    apply(true);                        // every load starts covered
   }
 
   $('#layoutBtn').addEventListener('click', (e) => {
@@ -1543,18 +1887,213 @@ function setTool(t) {
  * so an exported image has no size, no stop and no balance on it, whatever was
  * on screen when it was taken.
  */
+function snapName(c) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return `${c.symbol}_${TF_LABEL[c.tf] || c.tf}_${stamp}.png`;
+}
+
+function download(url, name) {
+  const a = el('a', { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+/* WHICH SIDE PANELS TRAVEL WITH THE IMAGE.
+   Multi-select and remembered, because whoever you send these to wants the
+   same context every time -- re-ticking three boxes per share would guarantee
+   they eventually go out inconsistent. */
+const SNAP_PANELS = [
+  { id: 'rulepanel', label: 'Donchian rule' },
+  { id: 'trendread', label: 'Trend read' },
+  { id: 'signalpanel', label: 'Signal engine' },
+];
+const SNAP_KEY = 'ui.snapPanels';
+const snapSel = () => new Set(load(SNAP_KEY, ['rulepanel', 'trendread', 'signalpanel']));
+
+/* The panels are HTML, the chart is a canvas, and the export has to be ONE
+   image. Rather than pull in a DOM-rasteriser, the text is read out of the
+   live panels and redrawn -- which also lets the caption use export ink on a
+   white card instead of the app's dark palette, and drops the controls (a
+   timeframe button means nothing in a PNG). */
+function panelLines(id) {
+  const host = $('#' + id);
+  if (!host) return [];
+  const out = [];
+  for (const node of host.querySelectorAll('*')) {
+    if (node.children.length) continue;                 // leaves only
+    if (node.closest('button')) continue;               // controls do not export
+    const t = (node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t) out.push(t);
+  }
+  /* the panels render label/value as adjacent leaves; pair them back up so the
+     caption reads as rows rather than a column of orphaned words */
+  const rows = [];
+  for (let i = 0; i < out.length; i += 2) {
+    rows.push(out[i + 1] ? `${out[i]}   ${out[i + 1]}` : out[i]);
+  }
+  return rows;
+}
+
+/**
+ * Chart image with the selected side panels drawn beside it.
+ * Returns a data URL, or null when the chart could not be captured.
+ */
+function snapshotWithInfo(c, chosen) {
+  const url = c.snapshot({ scale: 2, ink: 'light' });
+  if (!url) return Promise.resolve(null);
+  const wanted = SNAP_PANELS.filter((p) => chosen.has(p.id));
+  if (!wanted.length) return Promise.resolve(url);
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const PAD = 28, COLW = 460, TITLE = 30, LINE = 26;
+      const blocks = wanted.map((p) => ({ label: p.label, lines: panelLines(p.id) }));
+      const needed = blocks.reduce((a, b) => a + TITLE + b.lines.length * LINE + PAD, PAD);
+      const w = img.width + COLW;
+      const h = Math.max(img.height, needed);
+
+      const cv = el('canvas');
+      cv.width = w; cv.height = h;
+      const x = cv.getContext('2d');
+      x.fillStyle = '#FFFFFF';
+      x.fillRect(0, 0, w, h);
+      x.drawImage(img, 0, 0);
+
+      let y = PAD;
+      const left = img.width + PAD;
+      for (const b of blocks) {
+        x.fillStyle = '#0b1a2b';
+        x.font = '600 19px "Roboto Mono", ui-monospace, monospace';
+        x.fillText(b.label, left, y + 14);
+        x.strokeStyle = '#c9d6e4';
+        x.beginPath();
+        x.moveTo(left, y + 24.5); x.lineTo(w - PAD, y + 24.5);
+        x.stroke();
+        y += TITLE;
+        x.font = '15px "Roboto Mono", ui-monospace, monospace';
+        for (const line of b.lines) {
+          x.fillStyle = '#33475b';
+          /* clip rather than wrap: a caption column that reflows turns a
+             two-line panel into a page and pushes the chart out of shape */
+          let t = line;
+          while (t.length && x.measureText(t).width > COLW - PAD * 2) t = t.slice(0, -1);
+          x.fillText(t === line ? t : t.slice(0, -1) + '…', left, y + 14);
+          y += LINE;
+        }
+        y += PAD;
+      }
+      resolve(cv.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
 function snapshot() {
   const c = app.active;
   if (!c) return;
   const url = c.snapshot({ scale: 2, ink: 'light' });
   if (!url) { toast('Could not capture the chart'); return; }
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const name = `${c.symbol}_${TF_LABEL[c.tf] || c.tf}_${stamp}.png`;
-  const a = el('a', { href: url, download: name });
-  document.body.append(a);
-  a.click();
-  a.remove();
+  const name = snapName(c);
+  download(url, name);
   toast(`Saved ${name}`);
+}
+
+async function snapshotInfo() {
+  const c = app.active;
+  if (!c) return;
+  const chosen = snapSel();
+  if (!chosen.size) { toast('Tick at least one panel to include'); return; }
+  const url = await snapshotWithInfo(c, chosen);
+  if (!url) { toast('Could not capture the chart'); return; }
+  const name = snapName(c);
+  download(url, name);
+  toast(`Saved ${name}`);
+}
+
+/* SHARING AN IMAGE, honestly.
+ *
+ * WhatsApp and Telegram cannot be handed a picture through a link. Their
+ * wa.me / t.me URLs carry TEXT only -- there is no parameter for an
+ * attachment, and pretending otherwise would send a caption with no chart.
+ *
+ * So: use the Web Share API when the browser has it, which hands the actual
+ * PNG to whichever app the user picks and is the only path that really shares
+ * the image. Where it is missing, save the file and open the chat with the
+ * caption ready, and SAY that the image has to be attached -- a silent
+ * half-share is worse than a clear instruction.
+ */
+async function shareSnapshot(target) {
+  const c = app.active;
+  if (!c) return;
+  const chosen = snapSel();
+  const url = chosen.size
+    ? await snapshotWithInfo(c, chosen)
+    : c.snapshot({ scale: 2, ink: 'light' });
+  if (!url) { toast('Could not capture the chart'); return; }
+
+  const name = snapName(c);
+  const caption = `${c.symbol} ${TF_LABEL[c.tf] || c.tf} — DiaNurFx`;
+
+  const blob = await (await fetch(url)).blob();
+  const file = new File([blob], name, { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], text: caption });
+      return;                                   // the OS sheet did the rest
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;  // user closed the sheet
+      /* anything else falls through to the link route below */
+    }
+  }
+
+  download(url, name);
+  const link = target === 'telegram'
+    ? `https://t.me/share/url?url=${encodeURIComponent(caption)}`
+    : `https://wa.me/?text=${encodeURIComponent(caption)}`;
+  window.open(link, '_blank', 'noopener');
+  toast(`Saved ${name} — attach it in ${target === 'telegram' ? 'Telegram' : 'WhatsApp'}`);
+}
+
+function openSnapMenu(anchor) {
+  const panelItems = () => {
+    const sel = snapSel();
+    return [
+      { kind: 'cap', label: 'Include from the side panel' },
+      ...SNAP_PANELS.map((p) => ({
+        label: p.label, value: 'toggle:' + p.id,
+        checked: sel.has(p.id), keepOpen: true,
+      })),
+      { kind: 'sep' },
+      { label: 'Save image', value: 'info' },
+    ];
+  };
+
+  openMenu(anchor, [
+    { label: 'Snapshot', value: 'plain', hint: 's' },
+    { label: 'Snapshot with info', sub: panelItems },
+    { kind: 'sep' },
+    {
+      label: 'Share',
+      sub: [
+        { label: 'WhatsApp', value: 'share:whatsapp' },
+        { label: 'Telegram', value: 'share:telegram' },
+      ],
+    },
+  ], (v) => {
+    if (v === 'plain') { snapshot(); return; }
+    if (v === 'info') { snapshotInfo(); return; }
+    if (v && v.startsWith('toggle:')) {
+      const id = v.slice(7);
+      const sel = snapSel();
+      if (sel.has(id)) sel.delete(id); else sel.add(id);
+      save(SNAP_KEY, [...sel]);
+      return;
+    }
+    if (v && v.startsWith('share:')) shareSnapshot(v.slice(6));
+  });
 }
 
 function wireKeys() {
@@ -1696,7 +2235,18 @@ const tick = {
 
   async deals() {
     if (app.downloading) return;
-    try { panels.set('deals', await api.deals(7)); } catch { /* skip */ }
+    try {
+      /* One request serves both. The month figure needs history back to the
+         first of the month, the History tab shows a rolling week -- so fetch
+         the wider window and give the panel the same 7 days it always had,
+         rather than polling the bridge twice every 30 seconds. */
+      const span = Math.ceil((Date.now() - realisedWindows().month) / 86400000) + 1;
+      const days = Math.max(7, Math.min(365, span));
+      const deals = await api.deals(days);
+      paintRealised(deals);
+      const cut = Date.now() - 7 * 86400000;
+      panels.set('deals', days > 7 ? deals.filter((d) => d.time_ms >= cut) : deals);
+    } catch { /* skip */ }
   },
 
   async calendar() {

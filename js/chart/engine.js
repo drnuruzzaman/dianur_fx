@@ -654,6 +654,7 @@ export class Chart {
     this._axisX();
     this._lastPrice();
     this._crosshair();
+    this._watermark();
     this._legend();
   }
 
@@ -2406,6 +2407,52 @@ export class Chart {
         }
       }
     }
+  }
+
+  /* "Trade like a Pro", set into the bottom-right corner of the chart.
+   *
+   * Anchored to the PLOT, not to a pane: it sits just inside the price axis and
+   * just above the time axis, so it keeps the same corner whether the chart is
+   * showing three study panes or none. Drawn last, after every pane and the
+   * crosshair, so nothing paints over it.
+   *
+   * Tinted by the CURRENT move -- green while the bar is up on the one before
+   * it, pink while it is down -- which makes it a direction read from the
+   * corner of the eye as well as a mark. It follows the crosshair when one is
+   * up, for the same reason the legend does: hovering a bar should describe
+   * THAT bar, not silently keep showing the last one.
+   *
+   * It IS included in exports -- that was the point of asking for it. The
+   * capture stamp claims the bottom-right corner of a snapshot, so on export
+   * this lifts a line clear of it rather than the two painting over each other:
+   * both are right-aligned at the same baseline and would otherwise collide
+   * exactly.
+   */
+  _watermark() {
+    const bars = this.plotBars;
+    if (!bars || bars.length < 2) return;
+    const i = clamp(this.cross ? this.cross.i : bars.length - 1, 0, bars.length - 1);
+    const b = bars[i];
+    if (!b) return;
+    const prev = bars[i - 1];
+    /* first bar has nothing before it: fall back to its own body */
+    const chg = prev ? b.c - prev.c : b.c - b.o;
+
+    const ctx = this.ctx;
+    ctx.save();
+    /* the export is rasterised at 2x and lands on white, so it carries a
+       slightly larger, more opaque mark than the on-screen one */
+    const exporting = !!this._exporting;
+    ctx.font = (exporting ? '600 15px' : '600 13px') + ' "Roboto Mono", monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'alphabetic';
+    ctx.globalAlpha = exporting ? 0.75 : 0.5;
+    ctx.fillStyle = chg >= 0 ? COL.up : COL.down;
+    /* _stampBrand puts the capture time on the bottom line at (r - 8, b - 10);
+       clear it by a full line so neither is read through the other */
+    const lift = exporting ? 20 : 0;
+    ctx.fillText('Trade like a Pro', this.plot.r - 10, this.plot.b - 10 - lift);
+    ctx.restore();
   }
 
   _axisX() {

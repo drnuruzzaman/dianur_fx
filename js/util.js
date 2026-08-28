@@ -183,11 +183,30 @@ let hydrated = false;
    so explicitly -- see the merge in serve.py. */
 const pendingDeletes = new Set();
 
+/* KEYS THAT MUST NEVER REACH THE WORKSPACE FILE.
+ *
+ * The file is the PROJECT's copy of your settings -- it exists so a new browser
+ * profile or another machine picks the workspace back up. That is exactly the
+ * wrong home for a device-local secret: syncing the PIN would carry the lock
+ * for this screen onto every other machine that opens the project, and park it
+ * in a JSON file on disk while it was at it.
+ *
+ * It stays in localStorage, which is scoped to this browser on this machine,
+ * and that is the correct scope for something whose whole job is covering THIS
+ * screen. Listed keys are stripped from every snapshot AND actively pruned from
+ * the file, so a copy written before this rule existed is cleaned up on the
+ * next flush rather than lingering.
+ */
+const LOCAL_ONLY = new Set(['ui.acctPin']);
+
 function snapshot() {
   const out = {};
   try {
     for (const k of Object.keys(localStorage)) {
-      if (k.startsWith(NS)) out[k.slice(NS.length)] = localStorage.getItem(k);
+      if (!k.startsWith(NS)) continue;
+      const key = k.slice(NS.length);
+      if (LOCAL_ONLY.has(key)) continue;
+      out[key] = localStorage.getItem(k);
     }
   } catch { /* private mode */ }
   return out;
@@ -198,7 +217,9 @@ function scheduleFlush() {
   clearTimeout(flushTimer);
   flushTimer = setTimeout(() => {
     const set = snapshot();
-    const del = [...pendingDeletes];
+    /* device-local keys are always in the delete list: that prunes any copy an
+       earlier version of this code already wrote to the file */
+    const del = [...new Set([...pendingDeletes, ...LOCAL_ONLY])];
     pendingDeletes.clear();
     if (!Object.keys(set).length && !del.length) return;
     try {
@@ -239,6 +260,7 @@ export async function hydrateWorkspace() {
     let n = 0;
     for (const [k, v] of Object.entries(data)) {
       if (typeof v !== 'string') continue;
+      if (LOCAL_ONLY.has(k)) continue;                       // never travels
       if (localStorage.getItem(NS + k) !== null) continue;   // browser wins
       localStorage.setItem(NS + k, v);
       n += 1;

@@ -208,14 +208,25 @@ export class Panels {
          the menu is positioned 4px below the anchor, so crossing that gap fires
          mouseleave before mouseenter. The same grace window the rail peek uses
          bridges it. */
+      /* SCOPED TO THIS TAB'S OWN MENU.
+         `#menu` is shared by every menu in the app, so binding a hover-out
+         auto-close to it closed ALL of them -- including the Snapshot menu,
+         whose submenu you reach by leaving `#menu`. Moving from "Snapshot with
+         info" to "Donchian rule" fired this mouseleave and took the whole menu
+         down 160ms later, which looked exactly like the submenu vanishing
+         under the pointer. Only close when the menu on screen is the one this
+         tab opened. */
       let shutMenu = null;
+      let owned = false;
       const holdMenu = () => { clearTimeout(shutMenu); shutMenu = null; };
       const releaseMenu = () => {
         holdMenu();
-        shutMenu = setTimeout(closeMenu, 160);
+        if (!owned) return;
+        shutMenu = setTimeout(() => { if (owned) closeMenu(); }, 160);
       };
       btTab.addEventListener('mouseenter', () => {
         holdMenu();
+        owned = true;                 // this tab is the one showing a menu now
         this.backtest.openViewMenu(btTab, () => {
           this.peekTab = null;
           this.tab = 'backtest';
@@ -231,6 +242,11 @@ export class Panels {
         menuRoot.addEventListener('mouseenter', holdMenu);
         menuRoot.addEventListener('mouseleave', releaseMenu);
       }
+      /* another feature opened the shared menu: this tab no longer owns it, so
+         its hover-out must not close what is now someone else's menu */
+      document.addEventListener('menu:opened', (e) => {
+        if (e.detail?.anchor !== btTab) { owned = false; holdMenu(); }
+      });
     }
     /* The panel keeps itself open while the pointer is in it. Closed it is
        `pointer-events:none`, so this can never open one. */

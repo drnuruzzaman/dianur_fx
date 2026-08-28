@@ -15,7 +15,7 @@ site data, switch browser, or open the app from a different host and every
 setting is gone. The workspace belongs to the PROJECT, so it lives in the
 project folder:
 
-    GET  /workspace   ->  data/workspace.json, or {} when there is none
+    GET  /workspace   ->  configs/workspace.json, or {} when there is none
     PUT  /workspace   <-  {set: {...}, del: [...]}, merged into the file
 
 REPLAY RECORDINGS. A browser download would put the file wherever the browser
@@ -50,7 +50,12 @@ import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-WORKSPACE = os.path.join(ROOT, 'data', 'workspace.json')
+# configs/, not data/: this is project configuration, and data/ is for things
+# the app GENERATES (replays, downloads). Secrets never reach it -- see
+# LOCAL_ONLY in util.js, which keeps the PIN and its recovery password in
+# browser storage only. That matters more here than it did under data/,
+# because configs/ is tracked by git and data/ is not.
+WORKSPACE = os.path.join(ROOT, 'configs', 'workspace.json')
 REPLAYS = os.path.join(ROOT, 'data', 'replays')
 MAX_BODY = 4 * 1024 * 1024        # settings are small; this is a sanity bound
 MAX_RECORD = 512 * 1024 * 1024    # a few minutes of screen video, not settings
