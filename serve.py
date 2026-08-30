@@ -57,6 +57,15 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # because configs/ is tracked by git and data/ is not.
 WORKSPACE = os.path.join(ROOT, 'configs', 'workspace.json')
 REPLAYS = os.path.join(ROOT, 'data', 'replays')
+# Soundtracks a replay recording can be muxed with. Files go in BY HAND -- there
+# is no upload endpoint and there is not going to be one. Whatever sits here
+# ends up inside a video that gets shared, so putting a track in this folder is
+# an assertion that you have the right to distribute it, and that assertion has
+# to be a deliberate act rather than a side effect of clicking something.
+# The replay soundtrack lives here and is served by the static handler like any
+# other file. There is no listing endpoint and no upload endpoint: the recorders
+# fetch one fixed name, and changing the music means replacing that file.
+AUDIO = os.path.join(ROOT, 'data', 'audio')
 MAX_BODY = 4 * 1024 * 1024        # settings are small; this is a sanity bound
 MAX_RECORD = 512 * 1024 * 1024    # a few minutes of screen video, not settings
 

@@ -33,9 +33,16 @@ from parity_helpers import NODE, compare, js_trades, load_cell, python_trades
 pytestmark = pytest.mark.skipif(NODE is None, reason='node not on PATH')
 
 #: strategy -> the cells its record covers, plus one it does not
+#: their stop is moved after entry (break-even, trailing), so its final value
+#: is a function of the fill price rather than of the signal
+MANAGED_STOP = {'turtle_ea'}
+
 CASES = [
     ('donchian', 'XAUUSD.a', '4h', '2018-01-01', '2022-01-01'),
     ('donchian', 'EURUSD.a', '1h', '2020-01-01', '2021-01-01'),
+    ('donchian_ema200', 'XAUUSD.a', '4h', '2018-01-01', '2022-01-01'),
+    ('turtle_ea', 'XAUUSD.a', '4h', '2018-01-01', '2022-01-01'),
+    ('turtle_ea', 'XAUUSD.a', '1h', '2020-01-01', '2021-01-01'),
     ('ema_cross', 'XAUUSD.a', '4h', '2018-01-01', '2022-01-01'),
     ('ema_cross', 'USDJPY.a', '1h', '2020-01-01', '2021-01-01'),
 ]
@@ -50,7 +57,11 @@ def test_js_matches_the_engine(strategy, symbol, tf, start, end, tmp_path):
     want = python_trades(bars, symbol, tf, strategy)
     got = js_trades(bars, strategy, tmp_path)
     assert want, 'the cell produced no Python trades to compare against'
-    compare(want, got, f'{strategy} {symbol} {tf}')
+    # Strategies that MOVE the stop after entry derive it from the fill, and
+    # the two sides fill differently on purpose -- see compare()'s docstring.
+    # Everything the rule decides is still compared.
+    compare(want, got, f'{strategy} {symbol} {tf}',
+            check_stop=strategy not in MANAGED_STOP)
 
 
 def test_the_registry_declares_a_status_for_every_strategy():

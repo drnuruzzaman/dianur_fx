@@ -189,7 +189,19 @@ export const VERDICT_TEXT = {
 };
 
 /** The cell's record, or an unmeasured stub. `tf` is the bridge's vocabulary. */
-export function measuredFor(symbol, tf) {
-  return MEASURED[`${symbol}|${tf}`]
+export function measuredFor(symbol, tf, strategy = 'donchian') {
+  /* THE RECORD BELONGS TO A RULE, not to a cell. Every key here was exported
+     with `--strategy donchian`, meaning the flat 20/10 -- so a caller running
+     the horizon-matched channel (317 bars on 15m, 950 on 5m) must NOT be
+     handed these numbers. It is a different strategy that happens to share a
+     file, and "no_edge, 4233 trades" said beside a channel those trades were
+     never taken on is a fabricated verdict.
+
+     `unmeasured` is the correct answer there, and it is deliberately not a
+     failure: nothing has been claimed about that rule on that cell in either
+     direction. The explicit `symbol|tf|strategy` lookup comes first so the
+     exporter can start publishing those records without touching this. */
+  return MEASURED[`${symbol}|${tf}|${strategy}`]
+    || (strategy === 'donchian' ? MEASURED[`${symbol}|${tf}`] : null)
     || { verdict: 'unmeasured', is: null, oos: null };
 }

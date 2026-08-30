@@ -1027,11 +1027,20 @@ body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
 /* Recording is a state you must not lose track of, so it is the one control
    that changes colour rather than just lighting up. */
 .rp-btn.rec{background:var(--pink); border-color:var(--pink); color:#fff}
-.rp-sel,.rp-sym{
+.rp-sel,.rp-sym,.rp-date{
   height:22px; background:var(--surface-2); color:var(--text);
   border:1px solid var(--line); border-radius:3px;
   font-family:var(--mono); font-size:10.5px; padding:0 4px;
 }
+/* The replay date picker. `color-scheme` is the load-bearing line: without it
+   the browser paints its native calendar button and popup for a LIGHT page, so
+   a black-on-black icon sits invisible on the dark bar and the popup opens
+   white. It is one declaration and it themes the whole native widget. */
+.rp-date{color-scheme:dark; width:118px}
+.rp-date::-webkit-calendar-picker-indicator{
+  filter:invert(1); opacity:.55; cursor:pointer;
+}
+.rp-date:hover::-webkit-calendar-picker-indicator{opacity:.9}
 .rp-sym{width:96px}
 /* The symbol control is a button now; it keeps the field's footprint so the
    bar does not reflow when a longer ticker is picked. */

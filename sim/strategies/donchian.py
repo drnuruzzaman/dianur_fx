@@ -63,13 +63,14 @@ class Donchian(Strategy):
 
     def prepare(self, bars):
         # shift(1) so a channel never contains the bar being decided on
-        return {
+        out = {
             'hi': bars['high'].rolling(self.entry).max().shift(1).to_numpy(float),
             'lo': bars['low'].rolling(self.entry).min().shift(1).to_numpy(float),
             'exit_hi': bars['high'].rolling(self.exit).max().shift(1).to_numpy(float),
             'exit_lo': bars['low'].rolling(self.exit).min().shift(1).to_numpy(float),
             'atr': np.asarray(atr(bars, self.atr_len), dtype=float),
         }
+        return out
 
     def on_bar(self, view, position):
         c = view.close()

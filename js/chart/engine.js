@@ -173,6 +173,11 @@ export class Chart {
     this.ruleZone = null;
     this.zones = [];
     this.segments = [];
+    this.asOfMark = null;
+    /* The whole series is drawn by default: a live chart has no future to
+       hide, and only the replays ever turn this on. */
+    this.futureHidden = false;
+    this.futurePeek = 0;
     this.sdZones = [];
     this.targets = [];
     this.marks = [];
@@ -307,6 +312,45 @@ export class Chart {
      it the two lanes are the same picture and the eye has to count columns to
      find the boundary between what was known and what followed. */
   setAsOfMark(i) { this.asOfMark = Number.isFinite(i) ? i : null; }
+
+  /**
+   * Draw nothing past the as-of mark, so the future ARRIVES as the cursor
+   * steps instead of being there from the start.
+   *
+   * This is one flag rather than a slice of the bar array on purpose. Slicing
+   * would make `setData` fire on every step -- which resets the view -- and it
+   * would renumber every index the overlays are keyed on. Clamping `i1`
+   * instead leaves the x-scale fixed, so a step forward reveals the next
+   * candle in the space already reserved for it and nothing moves sideways.
+   *
+   * IT HAS TO CLAMP THE PRICE RANGE TOO, and that is the part that is easy to
+   * miss. If the range is still computed over the whole window, an unseen rally
+   * three hundred bars ahead sets the top of the axis and the candles at the
+   * cursor sit squashed in the bottom third -- the shape of the answer, in
+   * advance, without a single future bar being drawn. Same for the legend and
+   * the last-price tag, which both read the FINAL bar by default: the OHLC
+   * readout would quietly be the one from the end of the series.
+   */
+  setFutureHidden(on) { this.futureHidden = !!on; }
+
+  /**
+   * Let `n` bars past the cursor through while the rest stay hidden.
+   *
+   * SEPARATE FROM MOVING THE CURSOR, and that separation is the whole feature.
+   * Stepping re-runs everything: the count recomputes, the rule re-walks, the
+   * panel changes. Peeking moves nothing -- the belief stays frozen at the bar
+   * it was made on and the bars that judge it arrive one at a time underneath
+   * it. It is the only way to watch a forecast meet the bars that test it without the
+   * forecast being replaced while you watch.
+   */
+  setFuturePeek(n) { this.futurePeek = Math.max(0, Math.round(n) || 0); }
+
+  /** Last bar index that may be drawn or measured. */
+  get lastI() {
+    const end = this.plotBars.length - 1;
+    return (this.futureHidden && Number.isFinite(this.asOfMark))
+      ? Math.max(0, Math.min(this.asOfMark + (this.futurePeek || 0), end)) : end;
+  }
 
   setSegments(sg) { this.segments = sg || []; }
 
@@ -491,7 +535,9 @@ export class Chart {
     this.plot = { l: plotL, r: plotR, t: top, b: bottom, w: plotR - plotL, h: bottom - top };
     this.barW = this.plot.w / this.view.span;
     this.i0 = Math.floor(this.view.right - this.view.span + 1);
-    this.i1 = Math.ceil(this.view.right);
+    /* ONE CLAMP, and every loop that reads i1 inherits it: the candles, the
+       studies, and the price range each stop at the cursor. */
+    this.i1 = Math.min(Math.ceil(this.view.right), this.lastI);
     // price range per pane
     for (const p of this.panes) {
       if (p.isMain) {
@@ -1364,9 +1410,16 @@ export class Chart {
     const ctx = this.ctx;
     ctx.save();
     /* The future half is dimmed rather than the boundary merely drawn: a line
-       says where the cursor is, a wash says which half is the answer. */
-    ctx.fillStyle = 'rgba(255,158,27,.07)';
-    ctx.fillRect(x, pane.y, pane.x + pane.w - x, pane.h);
+       says where the cursor is, a wash says which half is the answer.
+
+       Not when the future is HIDDEN -- there is nothing there to dim, and a
+       wash over blank canvas reads as a rendering fault rather than as a
+       boundary. The dashed line and the label still mark where the cursor
+       stands, which is the half that still means something. */
+    if (!this.futureHidden) {
+      ctx.fillStyle = 'rgba(255,158,27,.07)';
+      ctx.fillRect(x, pane.y, pane.x + pane.w - x, pane.h);
+    }
     ctx.strokeStyle = COL.pos;
     ctx.globalAlpha = 0.85;
     ctx.setLineDash([3, 3]);
@@ -2431,7 +2484,7 @@ export class Chart {
   _watermark() {
     const bars = this.plotBars;
     if (!bars || bars.length < 2) return;
-    const i = clamp(this.cross ? this.cross.i : bars.length - 1, 0, bars.length - 1);
+    const i = clamp(this.cross ? this.cross.i : this.lastI, 0, this.lastI);
     const b = bars[i];
     if (!b) return;
     const prev = bars[i - 1];
@@ -2441,17 +2494,37 @@ export class Chart {
     const ctx = this.ctx;
     ctx.save();
     /* the export is rasterised at 2x and lands on white, so it carries a
-       slightly larger, more opaque mark than the on-screen one */
+       slightly larger mark than the on-screen one */
     const exporting = !!this._exporting;
     ctx.font = (exporting ? '600 15px' : '600 13px') + ' "Roboto Mono", monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'alphabetic';
-    ctx.globalAlpha = exporting ? 0.75 : 0.5;
-    ctx.fillStyle = chg >= 0 ? COL.up : COL.down;
+    /* NEAR FULL STRENGTH on screen. It was 0.5, which on the dark ground put
+       it close enough to the grid to be missed -- and a direction read that
+       has to be looked for is not a direction read. The glow underneath is
+       what lets the alpha go up without the mark competing with the candles:
+       it separates the text from whatever it happens to sit over, so the
+       brightness buys legibility rather than noise.
+
+       The corner it sits in is empty by construction -- the plot's own
+       right-hand gutter, below the last price tag -- so there is nothing here
+       for a bright mark to obscure. */
+    const colour = chg >= 0 ? COL.up : COL.down;
+    ctx.globalAlpha = exporting ? 0.85 : 0.92;
+    ctx.shadowColor = colour;
+    ctx.shadowBlur = exporting ? 6 : 10;
+    ctx.fillStyle = colour;
     /* _stampBrand puts the capture time on the bottom line at (r - 8, b - 10);
        clear it by a full line so neither is read through the other */
     const lift = exporting ? 20 : 0;
-    ctx.fillText('Trade like a Pro', this.plot.r - 10, this.plot.b - 10 - lift);
+    const x = this.plot.r - 10, y = this.plot.b - 10 - lift;
+    /* Painted twice: the first pass lays the glow down, the second puts solid
+       ink on top of it. One pass with a shadow gives a soft, slightly hazy
+       letterform -- the halo bleeds through the glyph's own edges -- and the
+       point of raising the alpha was to make it read crisply. */
+    ctx.fillText('Trade like a Pro', x, y);
+    ctx.shadowBlur = 0;
+    ctx.fillText('Trade like a Pro', x, y);
     ctx.restore();
   }
 
@@ -2475,7 +2548,7 @@ export class Chart {
   _lastPrice() {
     const ctx = this.ctx;
     const pane = this.main;
-    const last = this.plotBars[this.plotBars.length - 1];
+    const last = this.plotBars[this.lastI];
     if (!last) return;
     const y = this.y(pane, last.c);
     if (y < pane.y || y > pane.y + pane.h) return;
@@ -2551,7 +2624,7 @@ export class Chart {
   }
 
   _legend() {
-    const i = clamp(this.cross ? this.cross.i : this.plotBars.length - 1, 0, this.plotBars.length - 1);
+    const i = clamp(this.cross ? this.cross.i : this.lastI, 0, this.lastI);
     const b = this.plotBars[i];
     if (!b) { this.legend.innerHTML = ''; return; }
     const prev = this.plotBars[i - 1];
@@ -2573,7 +2646,7 @@ export class Chart {
     // Candle time: the bar under the crosshair, or the forming bar when idle.
     // The forming bar also reports how long it has left, so "what am I looking
     // at and when does it settle" is answerable without hovering the axis.
-    const isLast = i === this.plotBars.length - 1;
+    const isLast = i === this.lastI;
     const left = isLast ? timeLeft(b.t, this.tf) : null;
     const clock = `<div class="clock"><span>${stamp(b.t)}</span>` +
       (left ? `<span class="cd">closes in ${left}</span>`

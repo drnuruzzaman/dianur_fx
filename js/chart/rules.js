@@ -66,7 +66,26 @@ export function emaSeries(values, n) {
  * which one is loaded.
  */
 export function runRule(bars, rule, opts = {}) {
-  const p = { ...rule.defaults, ...opts };
+  /* THREE LAYERS, and the order is the whole point.
+   *
+   * defaults  what the rule is when nobody says otherwise.
+   * paramsFor the rule's own answer for a NAMED timeframe -- donchian's
+   *           horizon map, which turns "N=20" into the 3.3-day channel that
+   *           was actually validated on that timeframe. A rule without one
+   *           simply keeps its defaults, so the walker never learns any
+   *           strategy's names.
+   * opts      what the caller explicitly asked for, last, so a sweep or a
+   *           fixture passing entry/exit is never quietly overridden.
+   *
+   * This existed as a gap once and was invisible: the replay called runRule
+   * with rule.defaults while the panel used the map, so on 15m the replay
+   * stepped a five-hour channel measured at -0.0756 R while the chart drew the
+   * 3.3-day one that passed every gate. Both looked correct; neither said
+   * which rule it was running. tests/test_horizon_parity.py drives all three
+   * surfaces through this function for that reason.
+   */
+  const tfParams = (opts.tf && rule.paramsFor) ? rule.paramsFor(opts.tf) : null;
+  const p = { ...rule.defaults, ...(tfParams || {}), ...opts };
   const end = p.upto === null || p.upto === undefined ? bars.length - 1 : p.upto;
   const n = end + 1;
   const view = bars.slice(0, n);

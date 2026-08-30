@@ -2,7 +2,7 @@
  *
  * A VIEWER over js/chart/donchian.js. It computes nothing itself: the channel
  * levels, the position and the exit level all come from `signalsAsOf`, which is
- * the same function tests/test_donchian_parity.py holds against
+ * the same function tests/test_strategy_parity.py holds against
  * sim/strategies/donchian.py signal for signal. A panel that recomputed the
  * channel with its own rolling max would be a third implementation of a
  * quantity this project has already had diverge once.
@@ -29,7 +29,8 @@
 import { api } from '../api.js';
 import { el, px } from '../util.js';
 import { tip } from './tips.js';
-import { DEFAULTS, LONG, instruction, signalsAsOf } from '../chart/donchian.js';
+import { LONG, donchianRule, instruction, signalsAsOf, strategyForTf }
+  from '../chart/donchian.js';
 import { VERDICT_TEXT, measuredFor } from '../chart/measured.js';
 import { asOfBanner, shortSymbol } from './trendread.js';
 
@@ -138,9 +139,17 @@ function measuredSentence(cell) {
   return '\n\nTHE NUMBERS. ' + bits.join(' ');
 }
 
-/* Enough bars for the 20-bar channel, the 14-bar ATR and a couple of trades to
-   exist. Below this the panel says so instead of drawing a confident nothing. */
-const MIN_BARS = 60;
+/* Enough bars for the channel, the 14-bar ATR and a couple of trades to exist.
+   Below this the panel says so instead of drawing a confident nothing.
+
+   IT DEPENDS ON THE TIMEFRAME, because the channel does. A 3.3-day channel is
+   20 bars on 4h and 950 on 5m, and a flat floor of 60 would let 5m through
+   with an all-NaN channel -- which does not look broken, it looks FLAT. The
+   panel would quietly report "no signal" forever on the timeframe where the
+   rule is least intuitive. */
+function minBars(tf) {
+  return donchianRule.warmup(donchianRule.paramsFor(tf)) + 40;
+}
 
 export class RulePanel {
   constructor(root, headRoot) {
@@ -160,18 +169,25 @@ export class RulePanel {
     this.live = opts.live !== false;
     if (opts.digits != null) this.digits = opts.digits;
     this.bars = this._closed(bars || []);
-    this.sig = (this.bars.length >= MIN_BARS)
-      ? signalsAsOf(this.bars, DEFAULTS) : null;
+    /* NAME THE TIMEFRAME, do not spread DEFAULTS.
+       An explicit `entry`/`exit` beats the horizon map by design -- that is
+       what lets a sweep pin its own parameters -- so passing DEFAULTS here
+       forced the flat 20/10 onto every timeframe and made the map dead code.
+       On 15m that is a five-hour channel measured at -0.0756 R rather than the
+       3.3-day one that passed its gates. The tf is all this panel knows and
+       all it should say. */
+    this.sig = (this.bars.length >= minBars(this.rawTf))
+      ? signalsAsOf(this.bars, { tf: this.rawTf }) : null;
     this.render();
     if (this.live) this._maybeFetch();
   }
 
   /** Recompute from bars already in hand. Cheap: one pass, no walk-forward. */
   repaint(bars) {
-    if (!this.symbol || !bars || bars.length < MIN_BARS) return;
+    if (!this.symbol || !bars || bars.length < minBars(this.rawTf)) return;
     this.live = true;
     this.bars = this._closed(bars);
-    this.sig = signalsAsOf(this.bars, DEFAULTS);
+    this.sig = signalsAsOf(this.bars, { tf: this.rawTf });
     this.render();
     this._maybeFetch();
   }
@@ -244,7 +260,7 @@ export class RulePanel {
     }
     if (!this.sig) {
       r.appendChild(el('div', { class: 'rp-empty' },
-        this.symbol ? `needs ${MIN_BARS}+ bars` : '—'));
+        this.symbol ? `needs ${minBars(this.rawTf)}+ bars` : '—'));
       return;
     }
     if (this.asOf) r.appendChild(asOfBanner(this.asOf));
@@ -262,7 +278,10 @@ export class RulePanel {
         : ins.action === 'exit' ? 'CLOSE'
           : ins.action === 'hold' ? ins.side : 'NO SIGNAL');
     head.appendChild(badge);
-    const cell = measuredFor(this.symbol, this.rawTf || this.tf);
+    /* the record for the rule ACTUALLY RUNNING here, which on a
+       horizon-matched timeframe is not the one runs/ measured. */
+    const rawTf = this.rawTf || this.tf;
+    const cell = measuredFor(this.symbol, rawTf, strategyForTf(rawTf));
     const [why, whyBody] = VERDICT_WHY[cell.verdict] || VERDICT_WHY.unmeasured;
     head.appendChild(tip(
       el('span', { class: `rp-verdict ${VERDICT_CLS[cell.verdict]}` },

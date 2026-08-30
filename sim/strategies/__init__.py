@@ -4,6 +4,8 @@ are the candidates measured against them.
 """
 
 from .donchian import Donchian
+from .emafilter import DonchianEmaFilter
+from .turtle_ea import TurtleEA
 from .ema_cross import EmaCross
 from .mean_revert import FADE, FOLLOW, MeanRevert
 from .mtf import DonchianMTF, EmaCrossMTF
@@ -15,6 +17,8 @@ from .exits import DonchianExitEma, DonchianExitFixedR, DonchianExitTrail
 from .rsi_ema_cross import RsiEmaCross
 from .retest import DonchianRetest
 from .trendlong import DonchianTrendLong
+from .horizon import (BARS_PER_DAY, HORIZON_DAYS, HORIZON_TFS, n_for,
+                      params_for_tf, strategy_for_tf)
 
 # baselines need only bars; the rest need a feature table (see base.MTFStrategy)
 def _donchian_high(**kw):
@@ -50,7 +54,27 @@ def _donchian_n(n):
 
 _N_VARIANTS = {'donchian_n%d' % n: _donchian_n(n) for n in DONCHIAN_N}
 
+#: The horizon-matched lengths, which are a DIFFERENT question from DONCHIAN_N
+#: and must not be folded into it. DONCHIAN_N is a sweep -- an order-of-
+#: magnitude probe around the validated 20 -- and every tool that iterates it
+#: is asking "which N is best?". These are answers, one per timeframe, derived
+#: from horizon.py's finding that the edge is a DURATION: 3.3 days of bars,
+#: whatever number that turns out to be. Merging them would silently add four
+#: arms to every sweep and make the winner unattributable.
+#:
+#: They are registered because a name that `strategy_for_tf` can return but
+#: `REGISTRY` cannot construct is a rule the panel can quote and no one can
+#: measure -- which is exactly the split tests/test_horizon_parity.py exists to
+#: prevent.
+_HORIZON_VARIANTS = {
+    strategy_for_tf(tf): _donchian_n(n_for(tf))
+    for tf in HORIZON_TFS
+    if strategy_for_tf(tf) not in _N_VARIANTS and strategy_for_tf(tf) != 'donchian'
+}
+
 BASELINES = {'donchian': Donchian, 'donchian_high': _donchian_high,
+             'donchian_ema200': DonchianEmaFilter,
+             'turtle_ea': TurtleEA,
              'donchian_trendlong': DonchianTrendLong,
              'donchian_retest': DonchianRetest,
              'rsi_ema_cross': RsiEmaCross,
@@ -65,6 +89,7 @@ FEATURE_STRATEGIES = {
     'rsi_divergence': RsiDivergence,
 }
 BASELINES.update(_N_VARIANTS)
+BASELINES.update(_HORIZON_VARIANTS)
 
 REGISTRY = {**BASELINES, **FEATURE_STRATEGIES}
 

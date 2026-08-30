@@ -58,10 +58,13 @@ def test_event_runner_keyword_matches_fact_event_api():
 
 def test_mixed_naive_and_aware_bar_index_is_normalized_in_event_builder():
     from sim.tl.events import _utc_index
-    mixed = pd.DatetimeIndex([
+    # object dtype on purpose: pandas will not BUILD a mixed DatetimeIndex, so
+    # asking for one tested nothing but the fixture. This is the shape a mixed
+    # index actually arrives in.
+    mixed = pd.Index([
         pd.Timestamp("2026-01-01 00:00:00"),
         pd.Timestamp("2026-01-01 01:00:00", tz="UTC"),
-    ])
+    ], dtype=object)
     normalized = _utc_index(mixed)
     assert str(normalized.tz) == "UTC"
     assert list(normalized) == [

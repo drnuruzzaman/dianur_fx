@@ -30,9 +30,10 @@
 
 import { api } from '../api.js';
 import { Chart } from '../chart/engine.js';
-import { el, px } from '../util.js';
+import { TF_MS, el, hhmm, px, seekBar, ymd, ymdToMs } from '../util.js';
 import { toast } from './menu.js';
 import { tip } from './tips.js';
+import { openAudio, pickMime } from './recaudio.js';
 import { openSymbolSearch } from './search.js';
 import { FLAT, LONG, instruction, runRule, tally } from '../chart/rules.js';
 import { STATUS_TEXT, STRATEGIES, byKey, coversCell } from '../chart/strategies.js';
@@ -56,6 +57,28 @@ const TRAIL_COL = '#31c7d6';
 const WIN_KIND = 'trending_up';
 const LOSS_KIND = 'trending_down';
 
+/* Video rate and bitrate, the same numbers js/ui/replay.js records at. A
+   screencast of a chart that only changes when the cursor steps is mostly
+   duplicate frames, so 15fps costs nothing and 2.5 Mbps is generous for flat
+   colour and thin lines. Matching the Elliott replay matters more than tuning
+   either: two recorders in one project that produce different-looking files
+   is a difference a viewer has to explain to themselves. */
+/* The most bars a date jump is allowed to ask MetaTrader for. `months` mode
+   returns a date RANGE, so the count is bars-per-day times days and it grows
+   without limit on the fast timeframes -- two years of 1m is three quarters of
+   a million bars. The cap is what turns "that date is far back" into a
+   sentence instead of a dead tab. */
+const MAX_FETCH_BARS = 30000;
+
+const FPS = 15;
+const BITRATE = 2.5e6;
+
+/** Elapsed recording time as m:ss -- what the file's length will be. */
+function recClock(startedMs) {
+  const secs = Math.max(0, Math.round((Date.now() - startedMs) / 1000));
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+}
+
 export class StrategyReplay {
   constructor() {
     this.symbol = 'XAUUSD.a';
@@ -70,8 +93,36 @@ export class StrategyReplay {
     this.loading = false;
     this.error = null;
     this.timer = null;
+    this.dir = 1;                 // which way `play` is running
     this.speed = 400;
     this.digits = 2;
+    /* THE FUTURE ARRIVES AS YOU STEP. The chart still holds the whole series
+       -- slicing it would reset the view on every step -- but nothing past the
+       cursor is drawn, measured or scaled, so a bar appears when the cursor
+       reaches it. Walking a rule forward with the answer already on screen is
+       not walking it forward: you read the outcome off the shape of the chart
+       and then watch the rule catch up. `Reveal` turns it off when the
+       question is what happened next rather than what it felt like. */
+    this.futureHidden = true;
+    /* Bars let through past the cursor without moving it. Zero while stepping;
+       `Next bar` bumps it. The rule stays frozen on the bar it decided on, so
+       what arrives is the market answering THIS decision rather than a new
+       decision arriving with it. */
+    this.peek = 0;
+    /* A RECORDING, in the shape js/ui/replay.js established: a video of the
+       composite frame plus a JSON sidecar of what the rule claimed at every
+       cursor position, both written to data/replays/ through the dev server.
+
+       IT MEANS SOMETHING DIFFERENT HERE, and the sidecar says so rather than
+       leaving a reader to assume. An Elliott count REPAINTS -- the same bar can
+       be wave 3 today and wave 1 tomorrow -- so the order of visits is the
+       measurement, and a frame log is the only way to catch it. A rule is a
+       pure function of bars[0..i]: step to bar 1804 by any route and it claims
+       exactly the same thing. So the frames here are not evidence about the
+       rule, they are a record of the SESSION -- what was watched, in what
+       order, with which parameters. The deliverable is the trade ledger and
+       the equity path written beside them. */
+    this.rec = null;
   }
 
   /* ---------------------------------------------------------------- mount */
@@ -109,7 +160,9 @@ export class StrategyReplay {
       if (!this.host || e.target?.matches?.('input,select,textarea')) return;
       if (e.key === '.') { e.preventDefault(); this.stop(); this.step(1); }
       if (e.key === ',') { e.preventDefault(); this.stop(); this.step(-1); }
-      if (e.key === ' ') { e.preventDefault(); this.timer ? this.stop() : this.play(); }
+      if (e.key === ' ') { e.preventDefault(); if (this.timer) this.stop(); else this.play(1); }
+      /* `n` for the next bar: one letter from what it does, and beside `.` */
+      if (e.key === 'n') { e.preventDefault(); this.peekAhead(1); }
     };
     document.addEventListener('keydown', this._keys);
   }
@@ -122,6 +175,12 @@ export class StrategyReplay {
 
   unmount() {
     this._teardown();
+    /* STOP THE RECORDER, do not just drop it. `mount`/`unmount` also fire on a
+       plain re-render, so `_teardown` deliberately leaves `rec` alone -- but a
+       real unmount takes the chart away, and a MediaRecorder left running
+       against a dead canvas produces a file of one frozen frame and never
+       tells you. Stopping writes what was actually captured. */
+    if (this.rec) this.stopRecording();
     this.host = null;
   }
 
@@ -133,12 +192,41 @@ export class StrategyReplay {
     const next = Math.min(last, Math.max(0, this.i + n));
     if (next === this.i) { this.stop(); return; }
     this.i = next;
+    this.peek = 0;                 // a new bar means a new decision to judge
     this._apply();
   }
 
-  play() {
+  /**
+   * Let ONE more bar past the cursor through, without moving the cursor.
+   *
+   * WHAT STEPPING CANNOT SHOW YOU. Step forward and the rule re-walks: the
+   * channel moves, the exit level moves, the scorecard updates. So by the time
+   * the next bar is on screen the thing it was going to judge has already
+   * changed. Holding the cursor still and letting the next bar arrive shows
+   * the stop and the moving exit exactly where they were WHEN THE DECISION WAS
+   * MADE, against the bar that resolved it -- which is the moment the whole
+   * panel exists to make legible.
+   */
+  peekAhead(n = 1) {
+    if (!this.full.length) return;
     this.stop();
-    this.timer = setInterval(() => this.step(1), this.speed);
+    this.peek = Math.max(0, Math.min(this.full.length - 1 - this.i, this.peek + n));
+    this._apply({ keepPeek: true });
+  }
+
+  /**
+   * Run the cursor on its own, forward or back.
+   *
+   * BACKWARD IS NOT AN UNDO. It re-walks the rule from the start of the series
+   * to the new cursor, exactly as forward does -- `runRule` is a pure function
+   * of the bars before the cursor, so stepping back to bar 900 shows what was
+   * knowable at bar 900 and not a rewind of what you just watched. That is
+   * what makes it useful for going over the bar a trade opened on.
+   */
+  play(dir = 1) {
+    this.stop();
+    this.dir = dir >= 0 ? 1 : -1;
+    this.timer = setInterval(() => this.step(this.dir), this.speed);
     this._paintBar();
   }
 
@@ -148,15 +236,87 @@ export class StrategyReplay {
     this._paintBar();
   }
 
+
+  /**
+   * Put the cursor on a date, fetching older history when the date is not in
+   * the window that is loaded.
+   *
+   * WHY IT CAN NEED A FETCH AT ALL. The replay loads a fixed count of recent
+   * bars, so "3000 bars" is nine months on 4h and ten days on 5m -- the reach
+   * of the picker is not a property of the picker, it is a property of the
+   * timeframe. Refusing dates outside the window would make the control lie
+   * about what the data can do; silently clamping to the oldest loaded bar
+   * would be worse, because you would think you were standing somewhere you
+   * are not. So it goes and gets them, and says so while it does.
+   *
+   * AND WHY THERE IS A CEILING. `months` mode asks MetaTrader for a date
+   * RANGE, and a range is bars-per-day times days: two years of 1m is about
+   * three quarters of a million bars, which is not a slow request, it is a
+   * request that ends the tab. The estimate is made before asking and a date
+   * beyond reach is refused with the reason rather than attempted.
+   */
+  async gotoDate(text) {
+    const ms = ymdToMs(text);
+    if (!Number.isFinite(ms)) { this._paintBar(); return; }
+    this.stop();
+
+    if (this.full.length && ms < this.full[0].t) {
+      const need = (Date.now() - ms) / (TF_MS[this.tf] || 60e3) + this.floorBars() + 200;
+      if (need > MAX_FETCH_BARS) {
+        this.error = null;
+        this.status.textContent =
+          `${text} is ${Math.round(need / 1000)}k bars back on ${this.tf} —`
+          + ` past the ${Math.round(MAX_FETCH_BARS / 1000)}k cap. Use a higher timeframe.`;
+        return;
+      }
+      const months = Math.ceil((Date.now() - ms) / (30.44 * 864e5)) + 1;
+      await this.load({ months, seekTo: ms });
+      return;
+    }
+    this._seekTo(ms);
+  }
+
+  /** Bars the rule needs before it can say anything on this timeframe. */
+  floorBars() {
+    const rule = byKey(this.strategyKey);
+    return rule.warmup(this._params(rule)) + 40;
+  }
+
+  /** Move the cursor to the first bar at or after `ms`, honouring the warmup. */
+  _seekTo(ms) {
+    if (!this.full.length) return;
+    const want = seekBar(this.full, ms);
+    const floor = Math.min(this.floorBars(), this.full.length - 1);
+    this.i = Math.max(floor, Math.min(this.full.length - 1, want));
+    this.peek = 0;
+    this._apply();
+    if (want < floor) {
+      /* Said rather than silently corrected: a rule with no channel yet is not
+         the rule, and a cursor that quietly sat somewhere other than the date
+         you picked is the kind of thing you find out about much later. */
+      this.status.textContent =
+        `${ymd(this.full[this.i].t)} — the first bar with a full `
+        + `${this.floorBars()}-bar warmup on ${this.tf}.`;
+    }
+  }
+
   /* --------------------------------------------------------------- data */
 
-  async load() {
+  /**
+   * @param {object}  opts
+   * @param {number}  opts.months  fetch a date RANGE this many months back
+   *                               instead of the recent 3000 bars
+   * @param {number}  opts.seekTo  epoch ms to put the cursor on once loaded
+   */
+  async load({ months = 0, seekTo = null } = {}) {
     this.stop();
     this.loading = true;
     this.error = null;
+    this.months = months;
     this._paintBar();
     try {
-      const payload = await api.bars(this.symbol, this.tf, 3000);
+      const payload = await api.bars(this.symbol, this.tf, months ? 60000 : 3000,
+                                     months);
       this.full = payload.bars || [];
       this.digits = payload.digits ?? 2;
       /* The spread floor and the point size come from the CONTRACT, so the
@@ -168,9 +328,19 @@ export class StrategyReplay {
       /* Start far enough in that the rule has warmed up and there is history
          to have lived through, but with most of the series still ahead. */
       const rule = byKey(this.strategyKey);
-      const warm = rule.warmup(rule.defaults) + 40;
+      /* warmup off the params this timeframe will ACTUALLY run, not the flat
+         defaults -- a 3.3-day channel on 5m is 950 bars, and starting the
+         replay 40 bars in would step a rule that has no channel yet. */
+      const warm = rule.warmup(this._params(rule)) + 40;
       this.i = Math.min(this.full.length - 1,
                         Math.max(warm, Math.floor(this.full.length * 0.35)));
+      /* A range fetch happens BECAUSE a date was asked for, so honour it here
+         rather than leaving the cursor at the default 35% of a window whose
+         size just changed. */
+      if (seekTo != null && this.full.length) {
+        this.i = Math.max(Math.min(warm, this.full.length - 1),
+                          Math.min(this.full.length - 1, seekBar(this.full, seekTo)));
+      }
     } catch (err) {
       this.full = [];
       this.error = String(err.message || err);
@@ -180,11 +350,18 @@ export class StrategyReplay {
     this._paintBar();
   }
 
+  /** The params this rule resolves to on the current timeframe. */
+  _params(rule) {
+    return rule.paramsFor ? { ...rule.defaults, ...rule.paramsFor(this.tf) }
+                          : rule.defaults;
+  }
+
   /* -------------------------------------------------------------- render */
 
-  _apply() {
+  _apply({ keepPeek = false } = {}) {
     if (!this.chart) return;
     if (!this.full.length) { this.chart.setData({ bars: [] }); return; }
+    if (!keepPeek) this.peek = 0;
 
     /* THE CHART HOLDS THE WHOLE SERIES; the SIGNAL is computed from the slice.
        One line apart so the separation cannot drift. */
@@ -193,8 +370,13 @@ export class StrategyReplay {
     this.chart.tf = this.tf;
     this.chart.setData({ bars: this.full, symbol: this.symbol, digits: this.digits });
     this.chart.setAsOfMark(this.i);
+    this.chart.setFutureHidden(this.futureHidden);
+    this.chart.setFuturePeek(this.peek);
     const rule = byKey(this.strategyKey);
-    const sig = runRule(slice, rule, { upto: slice.length - 1 });
+    /* the tf goes in so the replay steps the SAME rule the live panel draws
+       and the same one Python measured. Without it this walked rule.defaults
+       -- a flat 20/10 on every timeframe. */
+    const sig = runRule(slice, rule, { upto: slice.length - 1, tf: this.tf });
     this.sig = sig;
 
     /* Closed trades as ribbons, coloured by outcome and labelled with the R
@@ -301,9 +483,25 @@ export class StrategyReplay {
        the vertical range, and walking the cursor back then takes the bars
        straight out of it and draws nothing. */
     const pad = this.chart.rightPad();
-    this.chart.view.right = Math.min(this.full.length - 1 + pad, this.i + Math.max(pad, 24));
+    /* WHILE STEPPING, park the cursor a couple of dozen bars from the right
+       edge: the space is reserved so a step forward drops the next candle into
+       it rather than scrolling the whole chart sideways.
+
+       ON REVEAL, widen it. A window that only reaches 24 bars past the cursor
+       has almost nothing to reveal -- the button would flip a flag and change
+       the picture by one screen-inch, which reads as broken rather than as
+       "there is little to see". Half a span forward puts the cursor in the
+       middle, so what the rule was standing on and what followed it are in the
+       same frame. */
+    const ahead = this.futureHidden
+      ? Math.max(pad, 24, this.peek + 4)
+      : Math.max(pad, Math.round(this.chart.view.span * 0.5));
+    this.chart.view.right = Math.min(this.full.length - 1 + pad, this.i + ahead);
     this.chart.view.priceLock = null;
     this.chart.draw();
+    /* BEFORE _paintBar, which reads the frame count off `rec` -- otherwise the
+       button lags a step behind what has actually been captured. */
+    this._frame();
     this._paintBar();
     this._paintPanel();
   }
@@ -340,7 +538,48 @@ export class StrategyReplay {
         if (!ok) this.status.textContent = 'symbol picker unavailable';
       }, 'rp-symbtn');
 
-    this.playBtn = btn('▶', 'Play forward  (space)', () => (this.timer ? this.stop() : this.play()), 'rp-tp');
+    /* TWO PLAY BUTTONS, one per direction, each of which is also its own stop.
+       A single toggle could not say WHICH way it was running, and a separate
+       stop button is a third thing to aim at for something the running button
+       can do itself. Clicking the other direction turns around rather than
+       stopping, which is the gesture you actually want when you have overshot
+       the bar a trade opened on. */
+    const runner = (dir) => () => {
+      if (this.timer && this.dir === dir) this.stop();
+      else this.play(dir);
+    };
+    this.playBtn = btn('▶', 'Play forward  (space) — press again to stop',
+                       runner(1), 'rp-tp');
+    this.backBtn = btn('◀', 'Play backward — press again to stop',
+                       runner(-1), 'rp-tp');
+    /* A DATE, not a bar number. "Start at bar 1050" is meaningless -- it moves
+       every time the window is refetched -- whereas a date is the thing you
+       actually remember about a move you want to look at again. It doubles as
+       a readout: `_paintBar` writes the cursor's own date into it on every
+       step, so the control always says where you are. */
+    this.dateInput = el('input', {
+      type: 'date', class: 'rp-date',
+      title: 'Jump the cursor to this date. Older than the loaded window and '
+        + 'the history is fetched first.',
+    });
+    this.dateInput.addEventListener('change', () => this.gotoDate(this.dateInput.value));
+    this.futBtn = btn('Reveal',
+      'Show the bars after the cursor. They are hidden by default so the '
+      + 'replay generates as it goes — seeing what happened next tells you '
+      + 'the answer before the rule does.',
+      () => {
+        this.futureHidden = !this.futureHidden;
+        this._apply();
+      });
+    this.peekBtn = btn('Next bar ›',
+      'Reveal ONE more bar after the cursor without moving it  (n). The rule '
+      + 'stays frozen on the bar it decided on, so the stop and the moving '
+      + 'exit stay where they were when the decision was made.',
+      () => this.peekAhead(1));
+    this.recBtn = btn('⏺ Rec',
+      'Record the walk — video of the chart and panel, plus a JSON ledger, '
+      + 'written to data/replays/. Press again to stop and save.',
+      () => this.toggleRecord());
     this.pngBtn = btn('⤓ PNG',
       'Save the chart AND this panel as one image',
       () => this.snapshot());
@@ -365,10 +604,22 @@ export class StrategyReplay {
          per-cell verdict badge already says the measurement. */
       sel(['1m', '5m', '15m', '1h', '4h', '1d'], this.tf,
           (v) => { this.tf = v; this.full = []; this.load(); }),
-      btn('◀', 'One bar back  (,)', () => { this.stop(); this.step(-1); }, 'rp-tp'),
+      /* Beside the timeframe, because the two answer one question together:
+         WHICH BARS am I looking at. The timeframe picks their size and the
+         date picks where they start, and a fetch is what both of them cause.
+         The transport that follows is a different kind of control -- it moves
+         within the window these two chose. */
+      this.dateInput,
+      /* Mirror-symmetric about the middle: step back, play back, play
+         forward, step forward, run to the end. The single-bar steps sit
+         OUTSIDE the play pair so the two transports never sit adjacent --
+         they are different gestures and a misclick between them costs you
+         the bar you were standing on. */
+      btn('◀◀', 'One bar back  (,)', () => { this.stop(); this.step(-1); }, 'rp-tp'),
+      this.backBtn,
       this.playBtn,
       btn('▶▶', 'One bar forward  (.)', () => { this.stop(); this.step(1); }, 'rp-tp'),
-      btn('⏭', 'Run to the end', () => { this.stop(); this.step(this.full.length); }, 'rp-tp'),
+      btn('▶▶|', 'Run to the end', () => { this.stop(); this.step(this.full.length); }, 'rp-tp'),
       sel(SPEEDS.map((x) => x.label), SPEEDS[0].label, (v) => {
         this.speed = (SPEEDS.find((x) => x.label === v) || SPEEDS[0]).ms;
         if (this.timer) this.play();
@@ -378,6 +629,9 @@ export class StrategyReplay {
          counter is a readout that grows and shrinks as the cursor moves; a
          button placed after it would shift sideways while you step, which is
          the one thing a button you aim at should not do. */
+      this.futBtn,
+      this.peekBtn,
+      this.recBtn,
       this.pngBtn,
       this.status);
     this._paintBar();
@@ -385,15 +639,62 @@ export class StrategyReplay {
 
   _paintBar() {
     if (!this.status) return;
+    /* The RUNNING button shows the stop glyph, so the transport says what it
+       is doing rather than only what it can do. */
     if (this.playBtn) {
-      this.playBtn.textContent = this.timer ? '■' : '▶';
-      this.playBtn.classList.toggle('on', !!this.timer);
+      const fwd = !!this.timer && this.dir > 0;
+      const back = !!this.timer && this.dir < 0;
+      this.playBtn.textContent = fwd ? '■' : '▶';
+      this.playBtn.classList.toggle('on', fwd);
+      this.backBtn.textContent = back ? '■' : '◀';
+      this.backBtn.classList.toggle('on', back);
     }
-    if (this.loading) { this.status.textContent = 'loading bars…'; return; }
+    if (this.futBtn) {
+      this.futBtn.textContent = this.futureHidden ? 'Reveal' : 'Hide future';
+      this.futBtn.classList.toggle('on', !this.futureHidden);
+    }
+    if (this.peekBtn) {
+      /* The count of what has been let through, on the button that let it
+         through. Peeking four bars ahead and forgetting is how you conclude a
+         rule was right about a move it never saw. */
+      this.peekBtn.textContent = this.peek ? `Next bar › +${this.peek}`
+                                           : 'Next bar ›';
+      this.peekBtn.classList.toggle('on', !!this.peek);
+      this.peekBtn.disabled = !this.futureHidden;
+    }
+    /* The frame count lives ON the Rec button. A recorder with no readout is
+       one you discover is still running when you find the file, and the count
+       is also the only confirmation that stepping is being captured at all. */
+    if (this.recBtn) {
+      this.recBtn.classList.toggle('rec', !!this.rec);
+      this.recBtn.textContent = this.rec
+        ? `⏺ ${recClock(this.rec.startedMs)}` : '⏺ Rec';
+      if (this.rec) {
+        this.recBtn.title = `Recording — ${this.rec.frames.length} bar`
+          + `${this.rec.frames.length === 1 ? '' : 's'} captured. Press to stop and save.`;
+      }
+    }
+    if (this.dateInput && this.full.length) {
+      const b = this.full[this.i];
+      if (b) this.dateInput.value = ymd(b.t);
+      this.dateInput.min = ymd(this.full[0].t);
+      this.dateInput.max = ymd(this.full[this.full.length - 1].t);
+    }
+    if (this.loading) {
+      this.status.textContent = this.months
+        ? `loading ${this.months} months of ${this.tf} bars…` : 'loading bars…';
+      return;
+    }
     if (this.error) { this.status.textContent = 'bridge: ' + this.error; return; }
     if (!this.full.length) { this.status.textContent = 'no bars'; return; }
     const b = this.full[this.i];
-    const when = b ? new Date(b.t).toISOString().replace('T', ' ').slice(0, 16) : '';
+    /* THE DISPLAY ZONE, like the axis, the legend and the date picker sitting
+       two controls to the left -- not UTC. The bar the axis calls 28 May opens
+       at 21:00Z on the 27th, so a UTC status line beside a broker-time picker
+       disagreed with it by three hours and a date, which reads as a bug in the
+       seek rather than as two clocks. Exports stay UTC on purpose: an image
+       outlives the session that made it. */
+    const when = b ? `${ymd(b.t)} ${hhmm(b.t)}` : '';
     this.status.textContent = `bar ${this.i + 1} of ${this.full.length} · ${when}`
       + ' · , and . step, space plays';
   }
@@ -445,12 +746,321 @@ export class StrategyReplay {
     img.src = url;
   }
 
-  /** The panel, laid out for a white page. Same content as the live one. */
-  _drawSnapPanel(ctx, x0, h, w, scale) {
+  /* ------------------------------------------------------------- record */
+
+  /**
+   * Record the whole walk: a video of chart AND panel, plus a JSON sidecar.
+   *
+   * WHY BOTH HALVES ARE IN THE FRAME. This panel exists because a summary --
+   * 207 trades, 36% win rate, PF 1.47 -- does not tell you what trading the
+   * rule feels like. A video of the candles alone reproduces exactly that
+   * failure: it shows price moving and not the nine-loss run, the four days in
+   * a position, or the exit level ratcheting up underneath. The composite is
+   * chart, panel and header in one frame, so what is being claimed is always
+   * beside what price did.
+   *
+   * MP4 IF THE BROWSER WILL, WEBM OTHERWISE. H.264 in MediaRecorder is recent
+   * and not universal; asking for a container the browser cannot make throws
+   * at start(), so the type is chosen with isTypeSupported and the extension
+   * follows what was actually negotiated. A file named .mp4 holding a WebM
+   * stream is worse than a .webm.
+   */
+  /* async because the soundtrack has to be opened before the codec can be
+     chosen. The click's user-gesture privilege carries across this await
+     because the await IS the playback call; callers ignore the promise. */
+  async toggleRecord() {
+    if (this.rec) return this.stopRecording();
+    if (!window.MediaRecorder || !this.chart?.canvas?.captureStream) {
+      toast('This browser cannot record canvas video');
+      return undefined;
+    }
+    /* THE SOUNDTRACK IS OPENED FIRST, because the codec depends on whether
+       there is one: a video-only mime with an audio track attached records the
+       picture and silently DROPS the sound, and the first you learn of it is
+       on playback. Opening it here also keeps it inside the click -- an
+       AudioContext built outside a user gesture starts suspended and would
+       render a track of pure silence. It is never routed to the speakers; see
+       js/ui/recaudio.js. Null when there is no soundtrack on disk, which means
+       a silent recording rather than no recording. */
+    const sound = await openAudio();
+    const mime = pickMime(!!sound);
+    if (!mime) {
+      sound?.stop();
+      toast('No recordable video format in this browser');
+      return undefined;
+    }
+
+    const scale = 1;                       // video, not print
+    const panelW = 300;
+    const headH = 34;
+    const dpr = window.devicePixelRatio || 1;
+    const src0 = this.chart.canvas;
+    const cv = document.createElement('canvas');
+    /* EVEN DIMENSIONS. H.264 chroma is subsampled 2x2, so an odd width or
+       height makes the encoder pad or refuse -- and it refuses by silently
+       failing to start, not by throwing. */
+    cv.width = (Math.round(src0.width / dpr) + panelW) & ~1;
+    cv.height = (Math.round(src0.height / dpr) + headH) & ~1;
+    const ctx = cv.getContext('2d');
+
+    const paint = () => {
+      if (!this.rec) return;
+      /* READ THE CANVAS EACH FRAME rather than closing over it. The Backtest
+         panel rebuilds its DOM on every render and mount() then constructs a
+         NEW Chart, so a captured reference goes stale and the video freezes on
+         the last frame before the remount -- while still recording, which is
+         the worst of both. */
+      const src = this.chart?.canvas;
+      ctx.fillStyle = '#02101f';
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      this._drawHeader(ctx, cv.width, headH);
+      if (src) ctx.drawImage(src, 0, headH, cv.width - panelW, cv.height - headH);
+      ctx.save();
+      ctx.translate(0, headH);
+      this._drawSnapPanel(ctx, cv.width - panelW, cv.height - headH, panelW,
+                          scale, true);
+      ctx.restore();
+      this.rec.raf = requestAnimationFrame(paint);
+    };
+
+    const stream = cv.captureStream(FPS);
+    if (sound) stream.addTrack(sound.track);
+    const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: BITRATE });
+    const chunks = [];
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => this._writeVideo(new Blob(chunks, { type: mime }), mime);
+
+    this.rec = { started: new Date().toISOString(), startedMs: Date.now(),
+                 mr, cv, mime, sound, frames: [], raf: 0, tick: 0,
+                 fromI: this.i, strategyKey: this.strategyKey,
+                 symbol: this.symbol, tf: this.tf,
+                 audio: sound ? sound.name : null };
+    /* The clock has to drive itself. _paintBar only runs when the cursor
+       moves, and a recording left running while you read the panel would show
+       0:00 for as long as you sat there. */
+    this.rec.tick = setInterval(() => this._paintBar(), 1000);
+    this._frame();                       // the sidecar starts on this bar
+    paint();
+    mr.start(1000);                      // a chunk a second, so a crash loses one
+    this._paintBar();
+    toast(`Recording ${mime.split(';')[0]} \u2014 press Rec again to stop and save`);
+    return undefined;
+  }
+
+  stopRecording() {
+    const rec = this.rec;
+    if (!rec) return;
+    cancelAnimationFrame(rec.raf);
+    clearInterval(rec.tick);
+    /* The music stops with the picture. It is a separate object from the
+       recorder and nothing else would ever end it -- a paused-and-forgotten
+       <audio> keeps playing until it is collected, so the room would carry on
+       hearing a recording that finished. */
+    rec.sound?.stop();
+    try { rec.mr.stop(); } catch { /* already stopped */ }
+    /* rec is kept until onstop fires: the last chunks arrive after this
+       returns, and clearing it here would drop the tail. */
+    this._paintBar();
+  }
+
+  async _writeVideo(blob, mime) {
+    const rec = this.rec;
+    this.rec = null;
+    this._paintBar();
+    const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+    const stamp = (rec?.started || new Date().toISOString())
+      .replace(/[:.]/g, '-').slice(0, 19);
+    const base = `strategy_${rec?.strategyKey || this.strategyKey}`
+      + `_${rec?.symbol || this.symbol}_${rec?.tf || this.tf}_${stamp}`;
+    try {
+      const res = await fetch(`/record?name=${encodeURIComponent(`${base}.${ext}`)}`, {
+        method: 'POST', headers: { 'Content-Type': mime }, body: blob,
+      });
+      const out = await res.json();
+      if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+      toast(`Saved ${out.saved} (${(out.bytes / 1048576).toFixed(1)} MB)`, 5000);
+      /* The sidecar goes with it under the same basename. It is a few tens of
+         KB against a video's several MB, and it is the half that can be
+         QUERIED -- a video cannot tell you what R the fourth trade returned. */
+      if (rec) await this._writeSidecar(rec, base);
+    } catch (err) {
+      toast(`Could not save the video: ${err.message}`, 6000);
+    }
+  }
+
+  /**
+   * One frame per cursor position: what the rule claimed standing on that bar.
+   *
+   * EVERY NUMBER IS AS OF THE CURSOR, never the run's final statistics shown
+   * early -- sig.trades holds only what had closed by then, which is the whole
+   * reason this panel is worth stepping. Writing the final tally into every
+   * frame would turn a record of what you knew into a record of what you found
+   * out later.
+   */
+  _frame() {
+    if (!this.rec || !this.sig) return;
+    const sig = this.sig;
+    const b = this.full[this.i];
+    if (!b) return;
+    const ins = instruction(sig);
+    const pos = sig.position;
+    const t = tally(sig.trades);
+    this.rec.frames.push({
+      i: this.i,
+      t: b.t,
+      close: b.c,
+      action: ins.action,
+      side: ins.side || null,
+      stop: ins.stop != null ? ins.stop : (pos ? pos.stop : null),
+      exitLevel: Number.isFinite(sig.exitLevel) ? sig.exitLevel : null,
+      position: pos ? {
+        side: pos.side,
+        entryI: pos.entryI,
+        entryPrice: pos.entryPrice,
+        stop: pos.stop,
+        risk: pos.risk,
+        barsHeld: this.i - pos.entryI,
+        openR: (b.c - pos.entryPrice) * pos.side / pos.risk,
+      } : null,
+      /* the scorecard AS OF THIS BAR, which is what the panel was showing */
+      closed: t.n ? { n: t.n, winPct: t.winPct, avgR: t.avgR, netR: t.netR,
+                      pf: Number.isFinite(t.pf) ? t.pf : null,
+                      maxDDr: t.maxDDr, worstStreak: t.worstStreak } : null,
+    });
+  }
+
+  /**
+   * Write the sidecar to data/replays/ through the dev server.
+   *
+   * A browser download lands wherever the browser puts downloads, which is not
+   * the project -- and the point of a recorded replay is that it sits beside
+   * the runs it will be compared with.
+   *
+   * WHAT MAKES IT SELF-CONTAINED. The resolved parameters go in, not just the
+   * strategy's name. donchian on 15m is a 317-bar channel and on 4h a 20-bar
+   * one -- the same key, two different rules -- so a file saying only
+   * "donchian" cannot be read back six months later. The cell's status and the
+   * GROSS caveat travel with it for the same reason a snapshot carries them:
+   * an artefact outlives its context and gets shared without it.
+   */
+  async _writeSidecar(rec, base) {
+    const rule = byKey(rec.strategyKey) || byKey(this.strategyKey);
+    const sig = this.sig;
+    const t = sig ? tally(sig.trades) : { n: 0 };
+    const covered = coversCell(rule, rec.symbol, rec.tf);
+    const payload = {
+      kind: 'strategy_replay',
+      symbol: rec.symbol,
+      tf: rec.tf,
+      strategy: { key: rule.key, label: rule.label, summary: rule.summary,
+                  status: rule.status, cells: rule.cells || [],
+                  coversThisCell: covered },
+      /* the rule AS RUN, which on a horizon-matched timeframe is not its
+         defaults -- see js/chart/donchian.js */
+      params: this._params(rule),
+      started: rec.started,
+      saved: new Date().toISOString(),
+      audio: rec.audio || null,
+      cursor: { from: rec.fromI, to: this.i, bars: this.full.length },
+      firstBarT: this.full[0]?.t ?? null,
+      lastBarT: this.full[this.full.length - 1]?.t ?? null,
+      note: 'GROSS: no spread, slippage or swap is charged in this replay. On '
+        + 'XAUUSD 4h that reads about 19% above the backtest engine (+0.2147 '
+        + 'vs +0.1799 R per trade). A rule is a pure function of the bars '
+        + 'before the cursor, so `frames` records the session that was '
+        + 'watched, not evidence about the rule -- `trades` is the result.',
+      /* the ledger as of the cursor, which is the artefact worth keeping */
+      score: t.n ? { n: t.n, winPct: t.winPct, avgR: t.avgR, netR: t.netR,
+                     pf: Number.isFinite(t.pf) ? t.pf : null,
+                     maxDDr: t.maxDDr, worstStreak: t.worstStreak,
+                     byReason: t.byReason } : null,
+      trades: sig ? sig.trades.map((x) => ({
+        side: x.side, tag: x.tag, reason: x.reason,
+        signalI: x.signalI, signalPrice: x.signalPrice,
+        entryI: x.entryI, entryTime: x.entryTime, entryPrice: x.entryPrice,
+        stop: x.stop, risk: x.risk,
+        exitI: x.exitI, exitTime: x.exitTime, exitPrice: x.exitPrice,
+        r: x.r,
+      })) : [],
+      frames: rec.frames,
+    };
+    try {
+      const res = await fetch('/record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `${base}.json`, payload }),
+      });
+      const out = await res.json();
+      if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+    } catch { /* the video is the artefact; a missing sidecar is not a toast */ }
+  }
+
+  /**
+   * The band above the chart in a recording.
+   *
+   * It sits ABOVE the plot rather than over it because the top-left of the
+   * plot is where the chart draws its own legend, and a logo there covers the
+   * thing the video exists to show.
+   */
+  _drawHeader(ctx, w, h) {
+    ctx.save();
+    ctx.fillStyle = '#041E42';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(13,58,107,.9)';
+    ctx.fillRect(0, h - 1, w, 1);
+
+    const M = 20;                       // mark size
+    const x = 12, y = (h - M) / 2, u = M / 32;
+    const sq = (rx, ry, fill) => {
+      ctx.fillStyle = fill;
+      ctx.fillRect(x + rx * u, y + ry * u, 14 * u, 14 * u);
+    };
+    sq(0, 0, '#171C8F'); sq(18, 0, '#FF9E1B');
+    sq(0, 18, '#93C90F'); sq(18, 18, '#E31C79');
+    sq(9, 9, '#B1B3B3');
+
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 15px "Roboto Condensed", Arial, sans-serif';
+    const tx = x + M + 9, ty = h / 2;
+    ctx.fillStyle = '#D9D9D6';
+    ctx.fillText('DiaNur', tx, ty);
+    ctx.fillStyle = '#E31C79';
+    ctx.fillText('Fx', tx + ctx.measureText('DiaNur').width, ty);
+
+    /* The RULE is named here, not just the symbol. A viewer scrubbing the
+       video is watching entries appear and needs to know which rule produced
+       them -- and with three rules in the picker, a file that does not say is
+       a file that gets attributed to the wrong one. */
+    ctx.font = '11px "Roboto Mono", monospace';
+    ctx.fillStyle = '#8fa6c0';
+    const rule = byKey(this.strategyKey);
+    ctx.fillText(`${this.symbol}  ${this.tf}  \u00b7  ${rule.label}`, tx + 96, ty);
+
+    const b = this.full[this.i];
+    const right = `bar ${this.i + 1}/${this.full.length}`
+      + (b ? `  ${new Date(b.t).toISOString().slice(0, 16).replace('T', ' ')}Z` : '');
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#5d7794';
+    ctx.fillText(right, w - 12, ty);
+    ctx.restore();
+  }
+
+  /**
+   * The panel, redrawn on a canvas. Same content as the live one.
+   *
+   * TWO PALETTES, ONE LAYOUT, for the reason js/ui/replay.js gives: the PNG is
+   * composed for a white page and the video is a recording of the app, so it
+   * has to look like the app. Two layouts would make the panel in the video a
+   * different object from the panel on screen, and then a discrepancy between
+   * them is something a viewer has to reason about rather than read.
+   */
+  _drawSnapPanel(ctx, x0, h, w, scale, dark = false) {
     const sig = this.sig;
     const d = this.digits;
-    const C = { bg: '#F4F6F8', rule: '#D6DBE0', head: '#111', sub: '#666',
-                body: '#555', ok: '#2f7d18', no: '#b0402a', warn: '#b0402a' };
+    const C = dark
+      ? { bg: '#02101f', rule: '#0a2f57', head: '#d9d9d6', sub: '#5d7794',
+          body: '#8fa6c0', ok: '#93C90F', no: '#FF9E1B', warn: '#FF9E1B' }
+      : { bg: '#F4F6F8', rule: '#D6DBE0', head: '#111', sub: '#666',
+          body: '#555', ok: '#2f7d18', no: '#b0402a', warn: '#b0402a' };
     ctx.fillStyle = C.bg;
     ctx.fillRect(x0, 0, w, h);
     const pad = 14 * scale;
@@ -719,6 +1329,22 @@ export class StrategyReplay {
        slippage, no swap. On gold 4h 2018-2026 that reads +0.2147 R against the
        engine's +0.1799 -- about 19% high -- because the engine paid 430 of
        spread and 579 of slippage over the same window and this does not. */
+    /* THE WINDOW, SAID AS PLAINLY AS THE COSTS.
+       Cost drag is ~19%, and the scorecard routinely sits further from the
+       validated figures than that -- because it is also a DIFFERENT WINDOW.
+       The replay loads the last 3000 bars (about 1.4 years at 4h), while the
+       verdict badge above quotes eras of 5 and 6 years. Reading +0.46 R here
+       against a stated +0.19 and concluding the rule has improved is the
+       mistake this line exists to prevent: it is a short, recent, gross sample,
+       and the trade count says how short. */
+    const first = this.full[0], atCursor = this.full[this.i];
+    if (first && atCursor) {
+      const day = (b) => new Date(b.t).toISOString().slice(0, 10);
+      p.append(el('div', { class: 'sr-note' },
+        `window ${day(first)} → ${day(atCursor)} · ${t.n} closed trade`
+        + `${t.n === 1 ? '' : 's'} — a shorter, more recent sample than the `
+        + 'eras quoted above, so expect it to differ by more than the cost drag.'));
+    }
     p.append(tip(el('div', { class: 'sr-warn' },
       'These are GROSS. The replay charges no spread, slippage or swap — '
       + 'on gold 4h it reads about 19% higher than the backtest.'),

@@ -106,6 +106,47 @@ export const dmy = (ms) => {
 };
 export const stamp = (ms) => dmy(ms) + ' ' + hhmm(ms);
 
+/**
+ * The calendar date of `ms`, as an <input type="date"> wants it.
+ *
+ * IN THE DISPLAY ZONE, not in UTC, and that is the whole reason this is here
+ * rather than `new Date(ms).toISOString().slice(0, 10)`. The chart runs on
+ * broker server time by default: a bar the axis labels "28 May 00:00" is
+ * 2025-05-27T21:00Z. Formatting the picker in UTC would offer you the 27th for
+ * a bar the chart calls the 28th, and the disagreement would be silent and
+ * three hours wide.
+ */
+export const ymd = (ms) => {
+  const d = shifted(ms);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+};
+
+/** Inverse of `ymd`: midnight on that date, in the display zone. NaN if unparseable. */
+export function ymdToMs(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text || '').trim());
+  if (!m) return NaN;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3])
+    - tzOffsetMin(ZONE.mode, ZONE.brokerOffsetMs) * 60000;
+}
+
+/**
+ * Index of the first bar at or after `ms`; the last bar when every bar is
+ * earlier.
+ *
+ * AT OR AFTER, deliberately. Pick a Sunday on a 24/5 instrument and there is no
+ * bar on it -- landing on the next one that exists is the only answer that is
+ * not an error message, and it is what the picker means by "start here".
+ */
+export function seekBar(bars, ms) {
+  if (!bars || !bars.length) return -1;
+  let lo = 0, hi = bars.length - 1, best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].t >= ms) { best = mid; hi = mid - 1; } else { lo = mid + 1; }
+  }
+  return best < 0 ? bars.length - 1 : best;
+}
+
 /** Axis label appropriate to the timeframe. */
 export function axisTime(ms, tf) {
   const d = shifted(ms);

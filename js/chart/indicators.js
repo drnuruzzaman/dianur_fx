@@ -35,9 +35,14 @@ function emaAfterNulls(vals, len) {
   return out;
 }
 
+/* sma/ema/wilder are EXPORTED so strategies can reuse them rather than carry
+   their own copies. sim/indicators.py mirrors these three specifically -- the
+   mean-of-first-n seeding here is NOT what rules.js emaSeries does, and a
+   strategy that grabbed the wrong one would diverge from the engine in a way
+   no chart would ever look wrong. */
 const src = (bars, key) => bars.map((b) => (key === 'hl2' ? (b.h + b.l) / 2 : b[key ?? 'c']));
 
-function sma(vals, len) {
+export function sma(vals, len) {
   const out = new Array(vals.length).fill(null);
   let sum = 0;
   for (let i = 0; i < vals.length; i++) {
@@ -48,7 +53,7 @@ function sma(vals, len) {
   return out;
 }
 
-function ema(vals, len) {
+export function ema(vals, len) {
   const out = new Array(vals.length).fill(null);
   const k = 2 / (len + 1);
   let prev = null;
@@ -66,7 +71,7 @@ function ema(vals, len) {
 }
 
 /** Wilder smoothing — used by RSI and ATR so values match MetaTrader. */
-function wilder(vals, len) {
+export function wilder(vals, len) {
   const out = new Array(vals.length).fill(null);
   let prev = null;
   for (let i = 0; i < vals.length; i++) {

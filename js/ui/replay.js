@@ -33,9 +33,10 @@
  * was right, is what can settle whether Elliott carries information here.
  */
 
-import { el } from '../util.js';
+import { TF_MS as UTIL_TF_MS, el, hhmm, seekBar, ymd, ymdToMs } from '../util.js';
 import { openSymbolSearch } from './search.js';
 import { toast } from './menu.js';
+import { openAudio, pickMime } from './recaudio.js';
 import { api } from '../api.js';
 import { Chart } from '../chart/engine.js';
 import { calibration, countAsOf, scoreBelief, scoreProjection, stability }
@@ -67,8 +68,19 @@ const HORIZONS = [12, 24, 48, 96];
 /* Play rates. Slow enough at the top end to read the panel between bars, which
    is the whole reason for playing rather than jumping. */
 /* Set from the codec comparison in the README, not from habit. */
+/* See js/ui/strategyreplay.js: a date jump may need a RANGE fetch, and a range
+   on a fast timeframe is unbounded. */
+const MAX_FETCH_BARS = 30000;
+
 const FPS = 15;
 const BITRATE = 2.5e6;
+
+/** Elapsed recording time as m:ss -- what the file's length will be. */
+function recClock(startedMs) {
+  const secs = Math.max(0, Math.round((Date.now() - startedMs) / 1000));
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+}
+
 
 const SPEEDS = [
   { label: '0.5x', ms: 800 },
@@ -98,6 +110,11 @@ export class ElliottReplay {
        ORDER and the re-visits -- and the order is the interesting part when the
        question is whether a count repaints. */
     this.rec = null;
+    /* How many bars past the cursor are allowed through. Zero while stepping,
+       bumped by `Next bar`, and reset by anything that moves the cursor --
+       peeking is a question about THIS belief, so it cannot survive the belief
+       being replaced. */
+    this.peek = 0;
     /* One series per hierarchy row, fetched once and cut by TIME at the cursor.
        By time and not by index: 500 bars back on 15m is not 500 bars back on
        4h, and slicing both by the same count would show a 4h count built from
@@ -168,6 +185,9 @@ export class ElliottReplay {
       if (!this.host || e.target?.matches?.('input,select,textarea')) return;
       if (e.key === '.') { e.preventDefault(); this.stop(); this.step(1); }
       if (e.key === ',') { e.preventDefault(); this.stop(); this.step(-1); }
+      /* `n` for the next bar, next to `.` on the keyboard and one letter from
+         what it does. */
+      if (e.key === 'n') { e.preventDefault(); this.peekAhead(1); }
       if (e.key === ' ') { e.preventDefault(); this.timer ? this.stop() : this.play(1); }
     };
     document.addEventListener('keydown', this._keys);
@@ -244,13 +264,20 @@ export class ElliottReplay {
     return out;
   }
 
-  async load() {
+  /**
+   * @param {object}  opts
+   * @param {number}  opts.months  fetch a date RANGE this many months back
+   * @param {number}  opts.seekTo  epoch ms to put the cursor on once loaded
+   */
+  async load({ months = 0, seekTo = null } = {}) {
     this.stop();
     this.loading = true;
     this.error = null;
+    this.months = months;
     this._paintBar();
     try {
-      const payload = await api.bars(this.symbol, this.tf, 3000);
+      const payload = await api.bars(this.symbol, this.tf, months ? 60000 : 3000,
+                                     months);
       this.full = payload.bars || [];
       this.digits = payload.digits;
       this.beliefs = new Map();
@@ -258,6 +285,12 @@ export class ElliottReplay {
       /* Start 60% in: far enough back to have something to reveal, near enough
          that the counter has bars to work with. */
       this.i = Math.max(120, Math.floor(this.full.length * 0.6));
+      /* A range fetch happens BECAUSE a date was asked for, so honour it rather
+         than leaving the cursor at 60% of a window whose size just changed. */
+      if (seekTo != null && this.full.length) {
+        this.i = Math.max(Math.min(120, this.full.length - 1),
+                          Math.min(this.full.length - 1, seekBar(this.full, seekTo)));
+      }
       /* The per-bar state, computed ONCE for the series. It is the expensive
          half of the cone and it does not depend on the cursor, so recomputing it
          per step would make stepping cost what loading costs. */
@@ -272,12 +305,72 @@ export class ElliottReplay {
     this._paintBar();
   }
 
+
+  /**
+   * Put the cursor on a date, fetching older history when the date is not in
+   * the window that is loaded. See js/ui/strategyreplay.js for the reasoning;
+   * the only difference here is the floor, which is the 120 bars the counter
+   * needs before it will produce a count at all.
+   */
+  async gotoDate(text) {
+    const ms = ymdToMs(text);
+    if (!Number.isFinite(ms)) { this._paintBar(); return; }
+    this.stop();
+
+    if (this.full.length && ms < this.full[0].t) {
+      const need = (Date.now() - ms) / (UTIL_TF_MS[this.tf] || 60e3) + 320;
+      if (need > MAX_FETCH_BARS) {
+        this.status.textContent =
+          `${text} is ${Math.round(need / 1000)}k bars back on ${this.tf} —`
+          + ` past the ${Math.round(MAX_FETCH_BARS / 1000)}k cap. Use a higher timeframe.`;
+        return;
+      }
+      const months = Math.ceil((Date.now() - ms) / (30.44 * 864e5)) + 1;
+      await this.load({ months, seekTo: ms });
+      return;
+    }
+    this._seekTo(ms);
+  }
+
+  /** Move the cursor to the first bar at or after `ms`, honouring the warmup. */
+  _seekTo(ms) {
+    if (!this.full.length) return;
+    const want = seekBar(this.full, ms);
+    const floor = Math.min(120, this.full.length - 1);
+    this.i = Math.max(floor, Math.min(this.full.length - 1, want));
+    this.peek = 0;
+    this._apply();
+    if (want < floor) {
+      this.status.textContent =
+        `${ymd(this.full[this.i].t)} — the first bar the counter has 120 bars of history for.`;
+    }
+  }
+
   step(n) {
     if (!this.full.length) return;
     const want = Math.max(120, Math.min(this.full.length - 1, this.i + n));
     if (want === this.i) { this.stop(); return; }    // ran off an end
     this.i = want;
+    this.peek = 0;                 // a new bar means a new belief to judge
     this._apply();
+  }
+
+  /**
+   * Let ONE more bar past the cursor through, without moving the cursor.
+   *
+   * The count stays exactly as it is. That is the point and it is what
+   * stepping cannot do: stepping recomputes the belief, so by the time you see
+   * whether the last one was right it has already been replaced by a different
+   * one -- and an Elliott count REPAINTS, so the replacement is frequently a
+   * different story about the same bars. Holding the belief still and feeding
+   * it the future one bar at a time is the only way to watch a specific claim
+   * meet the specific bars that settle it.
+   */
+  peekAhead(n = 1) {
+    if (!this.full.length) return;
+    this.stop();
+    this.peek = Math.max(0, Math.min(this.full.length - 1 - this.i, this.peek + n));
+    this._apply({ keepPeek: true });
   }
 
   /** Run the cursor at `this.speed`, one bar per tick, until it is stopped. */
@@ -299,13 +392,33 @@ export class ElliottReplay {
      transport says what it is doing rather than only what it can do. */
   _paintTransport() {
     if (!this.playBtn) return;
-    this.playBtn.classList.toggle('on', !!this.timer && this.dir > 0);
-    this.backBtn.classList.toggle('on', !!this.timer && this.dir < 0);
-    this.stopBtn.disabled = !this.timer;
+    const fwd = !!this.timer && this.dir > 0;
+    const back = !!this.timer && this.dir < 0;
+    this.playBtn.textContent = fwd ? '■' : '▶';
+    this.playBtn.classList.toggle('on', fwd);
+    this.backBtn.textContent = back ? '■' : '◀';
+    this.backBtn.classList.toggle('on', back);
+    if (this.futBtn) {
+      this.futBtn.textContent = this.revealed ? 'Hide future' : 'Reveal';
+      this.futBtn.classList.toggle('on', !!this.revealed);
+    }
+    if (this.peekBtn) {
+      /* The count of what has been let through, on the button that let it
+         through. Peeking four bars ahead and forgetting is how you conclude a
+         count was right about a move it never saw. */
+      this.peekBtn.textContent = this.peek ? `Next bar › +${this.peek}`
+                                           : 'Next bar ›';
+      this.peekBtn.classList.toggle('on', !!this.peek);
+      this.peekBtn.disabled = !!this.revealed;
+    }
     if (this.recBtn) {
       this.recBtn.classList.toggle('rec', !!this.rec);
       this.recBtn.textContent = this.rec
-        ? `⏺ ${this.rec.frames.length}` : '⏺ Rec';
+        ? `⏺ ${recClock(this.rec.startedMs)}` : '⏺ Rec';
+      if (this.rec) {
+        this.recBtn.title = `Recording — ${this.rec.frames.length} belief`
+          + `${this.rec.frames.length === 1 ? '' : 's'} captured. Press to stop and save.`;
+      }
     }
   }
 
@@ -318,13 +431,29 @@ export class ElliottReplay {
    * edge just past the scoring horizon instead, so the belief and the bars that
    * settled it are in the same picture.
    */
-  /* The future is always on screen now, so Reveal is no longer about showing it
-     -- it widens the window to the full scoring horizon and prints the outcome
-     card, which is the part that was never on the chart. */
+  /* Reveal does two things, and both are the point: it UNHIDES the bars after
+     the cursor -- which are not drawn while you step, so the replay generates
+     as it goes -- and it widens the window to the full scoring horizon so the
+     belief and the bars that settle it are in one picture. Stepping again
+     re-hides them; `_apply` clears `revealed` on every move. */
   reveal() {
     if (!this.full.length) return;
     this.stop();
+    /* A TOGGLE, not a one-shot. Hiding again is the more common half of the
+       gesture: you reveal to check whether the count was right, and then you
+       want the chart back the way it was to carry on stepping. Without a way
+       back the only route was to step, which throws away the belief you were
+       just looking at. */
+    if (this.revealed) {
+      this.revealed = false;
+      this.peek = 0;
+      this._apply({ keepPeek: true });
+      this._paintBar();
+      this._paintTransport();
+      return;
+    }
     this.revealed = true;
+    this.chart.setFutureHidden(false);
     /* Far enough right to cover BOTH the scoring horizon and the projected path,
        so the forecast and the bars that settle it are in the same picture. */
     const c = this.belief && this.belief.counts[0];
@@ -336,6 +465,7 @@ export class ElliottReplay {
     this.chart.view.priceLock = null;
     this.chart.draw();
     this._paintBar();
+    this._paintTransport();
     this._paintOutcome();
   }
 
@@ -368,11 +498,16 @@ export class ElliottReplay {
     this.panel.prepend(card);
   }
 
-  _apply() {
+  _apply({ keepPeek = false } = {}) {
     if (!this.chart) return;
     if (!this.full.length) { this.chart.setData({ bars: [] }); return; }
     const slice = this.full.slice(0, this.i + 1);
-    this.revealed = false;
+    if (!keepPeek) this.peek = 0;
+    /* `revealed` is deliberately NOT cleared here any more. It used to be, so
+       every step re-hid the future -- which is right when Reveal is a one-shot
+       and wrong now that it is a mode you are in. A toggle that silently turns
+       itself off on the next click of another button is a toggle nobody can
+       trust the state of. */
     this.chart.symbol = this.symbol;
     this.chart.tf = this.tf;
     /* THE CHART HOLDS THE WHOLE SERIES; the BELIEF is computed from `slice`.
@@ -380,6 +515,12 @@ export class ElliottReplay {
        cannot drift: whatever the chart is showing, `countAsOf` is handed bars
        that stop at the cursor. */
     this.chart.setData({ bars: this.full, symbol: this.symbol, digits: this.digits });
+    /* Hidden until `Reveal` asks for it, and re-hidden by the line above that
+       clears `revealed` on every step. The count is computed from the bars
+       before the cursor either way -- what changes is whether you can read the
+       answer off the chart before the count commits to one. */
+    this.chart.setFutureHidden(!this.revealed);
+    this.chart.setFuturePeek(this.peek);
     this.chart.setAsOfMark(this.i);
     /* ROOM FOR THE FORECAST. The projected path is drawn past the last bar, so
        the view has to hold empty space for it -- parked at the last bar the
@@ -391,7 +532,8 @@ export class ElliottReplay {
       : 0;
     /* Room for the forecast AND for the bars that settle it, so the projection
        and the outcome are in the same picture without pressing Reveal. */
-    const after = Math.max(this.chart.rightPad(), reach + 4, Math.round(this.horizon * 1.2));
+    const after = Math.max(this.chart.rightPad(), reach + 4, this.peek + 4,
+                          Math.round(this.horizon * 1.2));
     this.chart.view.right = Math.min(this.full.length - 1 + this.chart.rightPad(),
       this.i + after);
     /* The price lock has to go on every step. A dragged price axis pins the
@@ -475,20 +617,30 @@ export class ElliottReplay {
    * extension follows what was actually negotiated rather than what was asked
    * for. A file named .mp4 holding a WebM stream is worse than a .webm.
    */
-  toggleRecord() {
+  /* async because the soundtrack has to be opened before the codec can be
+     chosen. The click's user-gesture privilege carries across this await
+     because the await IS the playback call; callers ignore the promise. */
+  async toggleRecord() {
     if (this.rec) return this.stopRecording();
     if (!window.MediaRecorder || !this.chart?.canvas?.captureStream) {
       toast('This browser cannot record canvas video');
       return undefined;
     }
-    const TYPES = [
-      'video/mp4;codecs=avc1.42E01E',
-      'video/mp4',
-      'video/webm;codecs=vp9',
-      'video/webm',
-    ];
-    const mime = TYPES.find((t) => MediaRecorder.isTypeSupported(t));
-    if (!mime) { toast('No recordable video format in this browser'); return undefined; }
+    /* THE SOUNDTRACK IS OPENED FIRST, because the codec depends on whether
+       there is one: a video-only mime with an audio track attached records the
+       picture and silently DROPS the sound, and the first you learn of it is
+       on playback. Opening it here also keeps it inside the click -- an
+       AudioContext built outside a user gesture starts suspended and would
+       render a track of pure silence. It is never routed to the speakers; see
+       js/ui/recaudio.js. Null when there is no soundtrack on disk, which means
+       a silent recording rather than no recording. */
+    const sound = await openAudio();
+    const mime = pickMime(!!sound);
+    if (!mime) {
+      sound?.stop();
+      toast('No recordable video format in this browser');
+      return undefined;
+    }
 
     const scale = 1;                       // video, not print
     const panelW = 300;
@@ -520,12 +672,19 @@ export class ElliottReplay {
        are duplicates of the one before. Rate and bitrate are set from the
        measurement in the README rather than from habit. */
     const stream = cv.captureStream(FPS);
+    if (sound) stream.addTrack(sound.track);
     const mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: BITRATE });
     const chunks = [];
     mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     mr.onstop = () => this._writeVideo(new Blob(chunks, { type: mime }), mime);
 
-    this.rec = { started: new Date().toISOString(), mr, cv, mime, frames: [], raf: 0 };
+    this.rec = { started: new Date().toISOString(), startedMs: Date.now(),
+                 mr, cv, mime, sound, frames: [], raf: 0, tick: 0,
+                 audio: sound ? sound.name : null };
+    /* The clock has to drive itself: _paintTransport only runs when the cursor
+       moves, and a recording left running while you read the panel would show
+       0:00 for as long as you sat there. */
+    this.rec.tick = setInterval(() => this._paintTransport(), 1000);
     this._frame();                       // the belief sidecar starts here too
     paint();
     mr.start(1000);                      // a chunk a second, so a crash loses one
@@ -538,6 +697,9 @@ export class ElliottReplay {
     const rec = this.rec;
     if (!rec) return;
     cancelAnimationFrame(rec.raf);
+    clearInterval(rec.tick);
+    /* The music stops with the picture; nothing else would ever end it. */
+    rec.sound?.stop();
     try { rec.mr.stop(); } catch { /* already stopped */ }
     /* `rec` is kept until onstop fires -- the last chunks arrive after this
        returns, and clearing it here would drop the tail of the recording. */
@@ -606,6 +768,7 @@ export class ElliottReplay {
     const payload = {
       symbol: this.symbol, tf: this.tf,
       started: rec.started, saved: new Date().toISOString(),
+      audio: rec.audio || null,
       bars: this.full.length,
       firstBarT: this.full[0]?.t, lastBarT: this.full[this.full.length - 1]?.t,
       horizon: this.horizon,
@@ -899,19 +1062,58 @@ export class ElliottReplay {
        watching it -- play runs the cursor forward on its own and you read the
        panel as it changes. Single stepping is still there on `,` and `.`, which
        is where it belongs: it is the fine adjustment, not the main gesture. */
-    this.playBtn = btn('▶', 'Play forward — one bar at a time  (space)', () => this.play(1));
-    this.backBtn = btn('◀', 'Play backward', () => this.play(-1));
-    this.stopBtn = btn('■', 'Stop  (space) — then , and . step one bar', () => this.stop());
-    for (const b of [this.backBtn, this.playBtn, this.stopBtn]) b.classList.add('rp-tp');
+    /* THE SAME TRANSPORT AS THE STRATEGY REPLAY, in the same order: step back,
+       play back, play forward, step forward, run to the end. Two panels that
+       do the same job with different controls is two things to learn for one
+       gesture, and the muscle memory does not transfer.
+
+       Each play button is also its own stop, which is why the separate ■ is
+       gone: it was a third thing to aim at for something the running button
+       can do itself. Clicking the opposite direction turns around rather than
+       stopping. */
+    const runner = (dir) => () => {
+      if (this.timer && this.dir === dir) this.stop();
+      else this.play(dir);
+    };
+    this.stepBackBtn = btn('◀◀', 'One bar back  (,)',
+                           () => { this.stop(); this.step(-1); });
+    this.backBtn = btn('◀', 'Play backward — press again to stop', runner(-1));
+    this.playBtn = btn('▶', 'Play forward  (space) — press again to stop', runner(1));
+    this.stepFwdBtn = btn('▶▶', 'One bar forward  (.)',
+                          () => { this.stop(); this.step(1); });
+    this.endBtn = btn('▶▶|', 'Run to the end',
+                      () => { this.stop(); this.step(this.full.length); });
+    for (const b of [this.stepBackBtn, this.backBtn, this.playBtn,
+                     this.stepFwdBtn, this.endBtn]) b.classList.add('rp-tp');
+    /* A DATE, not a bar number: a bar index moves every time the window is
+       refetched, and a date is what you remember about the move you want to
+       look at again. It doubles as a readout of where the cursor is. */
+    this.dateInput = el('input', {
+      type: 'date', class: 'rp-date',
+      title: 'Jump the cursor to this date. Older than the loaded window and '
+        + 'the history is fetched first.',
+    });
+    this.dateInput.addEventListener('change', () => this.gotoDate(this.dateInput.value));
+    this.futBtn = btn('Reveal',
+      'Show every bar after the cursor, and widen the window to the scoring '
+      + 'horizon. Press again to hide them and carry on stepping.',
+      () => this.reveal());
+    this.peekBtn = btn('Next bar ›',
+      'Reveal ONE more bar after the cursor without moving it  (n). The count '
+      + 'stays exactly as it is, so you watch this belief meet the bars that '
+      + 'settle it instead of it being replaced by a new one.',
+      () => this.peekAhead(1));
     this.bar.append(
       this.symInput,
       sel(TFS, this.tf, (v) => { this.tf = v; this.load(); }),
-      this.backBtn, this.playBtn, this.stopBtn,
+      this.dateInput,
+      this.stepBackBtn, this.backBtn, this.playBtn, this.stepFwdBtn, this.endBtn,
       sel(SPEEDS.map((x) => x.label), SPEEDS[1].label, (v) => {
         this.speed = (SPEEDS.find((x) => x.label === v) || SPEEDS[1]).ms;
         if (this.timer) this.play(this.dir);        // re-arm at the new rate
       }),
-      btn('Reveal', 'Show the bars that followed', () => this.reveal()),
+      this.futBtn,
+      this.peekBtn,
       (this.recBtn = btn('⏺ Rec', 'Record every step; press again to write it '
         + 'to data/replays/', () => this.toggleRecord())),
       btn('⤓ PNG', 'Save the chart AND this panel as one image',
@@ -929,13 +1131,28 @@ export class ElliottReplay {
 
   _paintBar() {
     if (!this.status) return;
-    if (this.loading) { this.status.textContent = 'loading…'; return; }
+    if (this.dateInput && this.full.length) {
+      const b = this.full[this.i];
+      if (b) this.dateInput.value = ymd(b.t);
+      this.dateInput.min = ymd(this.full[0].t);
+      this.dateInput.max = ymd(this.full[this.full.length - 1].t);
+    }
+    if (this.loading) {
+      this.status.textContent = this.months
+        ? `loading ${this.months} months of ${this.tf} bars…` : 'loading…';
+      return;
+    }
     if (!this.full.length) {
       this.status.textContent = this.error || 'no history';
       return;
     }
+    /* Display zone, matching the axis, the legend and the date picker. A UTC
+       status line beside a broker-time picker disagreed with it by three hours
+       and a date, which reads as a broken seek rather than as two clocks. The
+       video header and the snapshot panel stay UTC on purpose -- they outlive
+       the session that made them. */
     const t = this.belief && this.belief.asOfT
-      ? new Date(this.belief.asOfT).toISOString().slice(0, 16).replace('T', ' ') : '';
+      ? `${ymd(this.belief.asOfT)} ${hhmm(this.belief.asOfT)}` : '';
     this.status.textContent = `bar ${this.i + 1} / ${this.full.length}`
       + (t ? ` · ${t}` : '') + (this.revealed ? ' · future revealed' : '')
       + (this.rec ? ` · REC ${this.rec.frames.length}` : '');

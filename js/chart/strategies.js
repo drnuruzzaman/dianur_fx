@@ -22,6 +22,7 @@
 
 import { donchianRule } from './donchian.js';
 import { emaCrossRule } from './emacross.js';
+import { turtleEaRule } from './turtle_ea.js';
 
 export const STRATEGIES = [
   {
@@ -61,6 +62,33 @@ export const STRATEGIES = [
       + 'Kept in the registry because watching a rule look good on one era and '
       + 'break on the next is the lesson, and a dropdown of only winners '
       + 'teaches nothing.',
+  },
+  {
+    ...turtleEaRule,
+    /* UNTESTED, and that word is doing real work. It is a faithful build of a
+       published EA so it can be STEPPED THROUGH, not a rule this project has
+       gated: no time-shift controls, no parameter-neighbour sweep, no
+       walk-forward. The replay picker is the only place it appears -- the live
+       rule panel imports donchian.js directly and never reads this registry. */
+    status: 'untested',
+    /* The cells its RECORD covers, which is not the same as cells it passed on
+       -- `status` carries that, and it says untested. Both are measured here
+       (see `record`), so the replay can quote real numbers beside the bar you
+       are standing on instead of showing a strategy with nothing behind it. */
+    cells: ['XAUUSD.a 4h', 'XAUUSD.a 1h'],
+    record: {
+      'IS 2021-2026 XAUUSD 4h': { trades: 84, winPct: null, avgR: 0.1618, pf: null, ddPct: -3.8 },
+      'OOS 2016-2020 XAUUSD 4h': { trades: 69, winPct: null, avgR: 0.2170, pf: null, ddPct: null },
+      'IS 2021-2026 XAUUSD 1h': { trades: 280, winPct: null, avgR: 0.1066, pf: null, ddPct: -9.7 },
+      'OOS 2016-2020 XAUUSD 1h': { trades: 239, winPct: null, avgR: 0.0901, pf: null, ddPct: null },
+    },
+    notes: 'Reimplemented from github.com/ymodulus21/donchianturtle-ea to be '
+      + 'measured, not recommended. Its filter stack cuts gold 4h from 41 to 15 '
+      + 'trades a year and takes net R from +45.4 to +13.8 out of sample -- it '
+      + 'rescues the timeframes the plain rule loses on and spoils the one it '
+      + 'wins on. Sizing, the volatility scaler and the drawdown breaker are '
+      + 'NOT implemented: R is size-invariant, so they cannot move these '
+      + 'numbers.',
   },
 ];
 

@@ -34,11 +34,17 @@ class FactEvent:
 
 
 def _utc_index(index) -> pd.DatetimeIndex:
-    """Normalize any naive/aware DatetimeIndex to UTC-aware timestamps."""
-    idx = pd.DatetimeIndex(pd.to_datetime(index, errors="raise"))
-    if idx.tz is None:
-        return idx.tz_localize("UTC")
-    return idx.tz_convert("UTC")
+    """Normalize any naive/aware DatetimeIndex to UTC-aware timestamps.
+
+    `utc=True` does the whole job in one pass, and it is the only form that
+    survives a MIXED index -- some entries naive, some aware, which is what a
+    frame stitched from two sources looks like. Without it pandas refuses the
+    conversion outright ("Tz-aware datetime cannot be converted ... unless
+    utc=True"), so the previous localize-or-convert branch could only ever
+    handle an index that was already uniform. Naive is still read as UTC and
+    aware is still converted, exactly as before.
+    """
+    return pd.DatetimeIndex(pd.to_datetime(index, utc=True, errors="raise"))
 
 
 def _utc_string(ts) -> str:

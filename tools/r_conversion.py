@@ -40,6 +40,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -62,6 +63,94 @@ def expectancy(hold_rate, stop_atr, target_atr, dist_atr):
         return np.nan, np.nan
     rr = reward / risk
     return hold_rate * rr - (1 - hold_rate), rr
+
+
+#: How an outcome scores, in R. HOLD is the target; BREAK is the stop; CHOP is
+#: scored as a FULL LOSS, not as zero. That is deliberate and load-bearing: a
+#: trade that reached neither barrier inside the horizon has no exit rule here,
+#: and `expectancy` above already computes its hold rate over ALL events rather
+#: than over decided ones. Scoring chop nearer breakeven -- which a time-based
+#: exit would justify -- lifts every number in the grid, so the two functions
+#: must agree on the convention or the CSV contradicts itself.
+PAIR_KEY = ['approach_bar', 'line_id']
+
+
+def _r_per_event(outcome, rr):
+    return np.where(np.asarray(outcome) == 'hold', rr, -1.0)
+
+
+def paired_diff(line, placebo, rr):
+    """
+    (n_pairs, mean difference in R, t, p) for line MINUS placebo.
+
+    PAIRED, not two-sample, and the difference is not cosmetic. Both arms see
+    the same approaches at the same bars in the same market conditions, so the
+    variance that dominates a two-sample comparison -- how trendy the sample
+    happened to be -- cancels within each pair. Comparing the two means
+    independently throws that away and needs a far larger sample to see the
+    same effect.
+
+    Rows that do not pair on (approach_bar, line_id) are DROPPED rather than
+    filled. An unmatched row is an approach one arm had and the other did not,
+    and there is no difference to take.
+
+    `t` is NaN when the differences have no variance -- every pair identical.
+    That is not a significant result, it is the absence of a test to run, and
+    returning a huge t there would be the single easiest way to manufacture a
+    finding.
+    """
+    a = line[PAIR_KEY + ['outcome']].drop_duplicates(PAIR_KEY)
+    b = placebo[PAIR_KEY + ['outcome']].drop_duplicates(PAIR_KEY)
+    m = a.merge(b, on=PAIR_KEY, suffixes=('_line', '_plac'))
+    n = len(m)
+    if not n:
+        return 0, np.nan, np.nan, np.nan
+    d = _r_per_event(m.outcome_line, rr) - _r_per_event(m.outcome_plac, rr)
+    mean = float(d.mean())
+    if n < 2:
+        return n, mean, np.nan, np.nan
+    sd = float(d.std(ddof=1))
+    if not np.isfinite(sd) or sd == 0:
+        return n, mean, np.nan, np.nan
+    t = mean / (sd / np.sqrt(n))
+    p = 2 * stats.t.sf(abs(t), df=n - 1)
+    return n, mean, float(t), float(p)
+
+
+def benjamini_hochberg(pvalues, alpha=0.05):
+    """
+    Which of a family of tests survive a false-discovery-rate correction.
+
+    Sweeping 25 geometries and reporting the best one is how a grid search
+    manufactures significance: at alpha 0.05, better than one in the family is
+    expected to clear it on noise alone. BH controls the expected PROPORTION of
+    rejections that are false, which is the right question for a screen -- and
+    it is less brutal than Bonferroni, which would make a real effect
+    undetectable at this sample size.
+
+    IT STEPS UP. The largest k whose p-value clears k/m * alpha carries every
+    smaller p-value with it, even ones that failed their own threshold. That is
+    the procedure, not a bug: given that the k-th is a discovery, the ones
+    below it are too.
+
+    A NaN is a test that could not be RUN -- zero variance, no pairs -- not one
+    that failed. It leaves the family entirely, so m shrinks and the remaining
+    tests are corrected against the number actually performed. Counting it
+    would penalise the others for a test nobody did.
+    """
+    p = np.asarray(pvalues, dtype=float)
+    out = np.zeros(p.shape, dtype=bool)
+    real = np.flatnonzero(np.isfinite(p))
+    m = len(real)
+    if not m:
+        return out
+    order = real[np.argsort(p[real], kind='stable')]
+    thresholds = (np.arange(1, m + 1) / m) * alpha
+    passed = np.flatnonzero(p[order] <= thresholds)
+    if not len(passed):
+        return out
+    out[order[:passed[-1] + 1]] = True
+    return out
 
 
 def friction_r(sp, atr_price, stop_atr, dist_atr, slippage_atr=0.02):

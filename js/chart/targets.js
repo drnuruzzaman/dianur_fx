@@ -47,13 +47,33 @@ export const TP_CENTRES = [
 export const BAND_HALF_R = 0.25;
 
 /**
+ * How a level is named where NOTHING BESIDE IT SAYS WHAT IT IS -- the live
+ * chart's line, which has no panel to correct a wrong reading. Mirrors
+ * sim/targets.label, and tests/test_targets_parity.py fails when the two
+ * drift.
+ *
+ * Never 'TP'. The word is an instruction, and these are not instructions: a
+ * cap at the low end of this ladder was MEASURED to turn +43.7 net R into
+ * -2.1. The replay keeps TP1/TP2/TP3 because its own panel states, in the same
+ * frame, that the rule has no take-profit -- so the name is corrected on
+ * screen. `naming: 'ref'` is for every surface that cannot do that.
+ *
+ * `%g` in the Python drops a trailing zero, and String() does the same: 2 ->
+ * "2R ref", 3.5 -> "3.5R ref".
+ */
+export function refLabel(r) {
+  return `${r}R ref`;
+}
+
+/**
  * Bands for one position, in price.
  *
  * `side` is +1 long / -1 short. Returns [] when there is nothing to measure
  * from -- no position, or a stop on the wrong side of the entry, which is a
  * broken input rather than a zero-risk trade.
  */
-export function targetBands({ side, entry, stop, halfR = BAND_HALF_R } = {}) {
+export function targetBands({ side, entry, stop, halfR = BAND_HALF_R,
+                              naming = null } = {}) {
   if (!side || !Number.isFinite(entry) || !Number.isFinite(stop)) return [];
   /* MetaTrader reports an UNSET stop as 0.0, which is finite and sits on the
      right side of any long entry -- so a plain sign check accepts it and
@@ -70,6 +90,9 @@ export function targetBands({ side, entry, stop, halfR = BAND_HALF_R } = {}) {
     const z = entry + side * hi * risk;
     return {
       key: b.key,
+      /* null unless a caller asked to be named, so the replay's TP1/TP2/TP3
+         cannot be changed by adding a surface that needs the other naming. */
+      label: naming === 'ref' ? refLabel(b.r) : null,
       note: b.note,
       r: b.r,
       lo,

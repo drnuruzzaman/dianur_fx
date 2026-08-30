@@ -43,6 +43,8 @@ import numpy as np
 import pandas as pd
 
 from ..indicators import atr as atr_series
+from ..intrabar import (INTRABAR, PESSIMISTIC, STOP, SubBars, TARGET,
+                        UNRESOLVED, first_touch)
 from .engine import _break_strength
 from .engine import Params, TrendlineEngine
 from .lines import Role
@@ -74,35 +76,164 @@ class DiagParams:
     retest_atr: float = 0.4      # how close a return counts as a retest
     retest_bars: int = 24        # give up waiting for one after this many
     horizon: int = 48            # bars to resolve an outcome
+    # HOW a bar is resolved, which is a different question from WHICH events
+    # exist -- see _walk. CLOSE is the default because it is what every number
+    # already in runs/ was measured with; changing the default would silently
+    # restate published results.
+    resolution: str = None       # None -> CLOSE
+    sub_tf: str = None           # override the sub-timeframe INTRABAR consults
     placebo_atr: float = 1.5     # parallel-line offset for the placebo
     seed: int = 7
 
 
 HOLD, BREAK, CHOP = 'hold', 'break', 'chop'
 
+#: A fourth resolution mode, and the one this module was written with: barriers
+#: are tested against the CLOSE only. It is not in sim/intrabar.MODES because it
+#: is not an answer to "which came first inside the bar" -- it declines to look
+#: inside the bar at all. A wick straight through the stop that closes back
+#: above it leaves a real stop order filled and this mode blind to it, which is
+#: precisely the bias the other three exist to bound.
+CLOSE = 'close'
+RESOLUTIONS = (CLOSE, PESSIMISTIC, INTRABAR)
 
-def _resolve(bars_c, line_val, i, side, move, horizon, n, up=None, down=None):
+
+@dataclass
+class _Ctx:
     """
-    First barrier touched by a CLOSE, walking forward. `line_val` is a callable
-    giving the line's value at any bar, so a sloping line keeps sloping.
-    `side` is +1 for support (price above), -1 for resistance.
+    Everything the barrier walk needs, plus the tally of what it had to guess.
+
+    The counters are on the context rather than returned per call because the
+    interesting quantity is a RATE over a whole run: how often the OHLC bar was
+    genuinely unable to say, and how often finer data settled it. A resolver
+    that never reports its own fallback rate cannot be audited.
+    """
+    high: np.ndarray
+    low: np.ndarray
+    close: np.ndarray
+    times: object
+    mode: str = CLOSE
+    sub: object = None                  # SubBars, or None
+    ambiguous: int = 0                  # bars holding BOTH barriers
+    resolved_by: dict = None
+
+    def __post_init__(self):
+        if self.mode is None:
+            self.mode = CLOSE
+        if self.mode not in RESOLUTIONS:
+            raise ValueError('unknown resolution %r; expected one of %r'
+                             % (self.mode, RESOLUTIONS))
+        if self.resolved_by is None:
+            self.resolved_by = {}
+
+    def _tally(self, how):
+        self.resolved_by[how] = self.resolved_by.get(how, 0) + 1
+
+
+def _walk(ctx, i, horizon, n, target_val, stop_val, direction):
+    """
+    Walk forward from bar `i` and return (TARGET | STOP | None, bar).
+
+    `target_val`/`stop_val` are callables of the bar index, so a barrier that
+    tracks a SLOPING line keeps sloping -- which is the whole difference
+    between a trendline barrier and a fixed bracket. `direction` is +1 when the
+    target sits above the entry, -1 when below.
+
+    THE MODES DIFFER ONLY ON BARS THAT REACHED BOTH BARRIERS. A bar that
+    touched one and not the other is a fact and every mode agrees on it; the
+    tie-break is the only judgement call, so it is the only place they may
+    disagree. That is what makes them comparable, and it is why `ambiguous` is
+    counted: it is the exact upper bound on how much any two modes can differ.
+
+        CLOSE        never looks inside the bar, so it can never be ambiguous
+                     -- and can never see a wick through the stop either.
+        PESSIMISTIC  gives every tie to the stop. Safe, and the number the
+                     gates are quoted at.
+        INTRABAR     goes and looks, on the sub-timeframe. Validated against
+                     ticks at zero errors (see sim/intrabar.py), and falls back
+                     to the stop when the finer bars still cannot tell.
+
+    Returns (None, None) when the horizon expires with neither reached, which
+    the caller reads as CHOP.
+    """
+    end = min(n - 1, i + horizon)
+    for j in range(i + 1, end + 1):
+        tv, sv = target_val(j), stop_val(j)
+
+        if ctx.mode == CLOSE:
+            c = ctx.close[j]
+            if (c >= tv) if direction > 0 else (c <= tv):
+                ctx._tally(CLOSE)
+                return TARGET, j
+            if (c <= sv) if direction > 0 else (c >= sv):
+                ctx._tally(CLOSE)
+                return STOP, j
+            continue
+
+        if direction > 0:
+            hit_t, hit_s = ctx.high[j] >= tv, ctx.low[j] <= sv
+        else:
+            hit_t, hit_s = ctx.low[j] <= tv, ctx.high[j] >= sv
+
+        if hit_t and hit_s:
+            ctx.ambiguous += 1
+            if ctx.mode == INTRABAR and ctx.sub is not None and ctx.sub.available:
+                verdict = first_touch(ctx.sub.slice(ctx.times[j]),
+                                      direction, sv, tv)
+                if verdict != UNRESOLVED:
+                    ctx._tally(ctx.sub.sub_tf)
+                    return verdict, j
+                ctx._tally('fallback')
+                return STOP, j
+            # PESSIMISTIC, or INTRABAR with nothing finer to consult. Both give
+            # the tie to the stop, and both say so, so the two are
+            # distinguishable in the tally afterwards.
+            ctx._tally('fallback' if ctx.mode == INTRABAR else PESSIMISTIC)
+            return STOP, j
+        if hit_t:
+            ctx._tally(ctx.mode)
+            return TARGET, j
+        if hit_s:
+            ctx._tally(ctx.mode)
+            return STOP, j
+    return None, None
+
+
+def _outcome(hit):
+    """The walk's answer in this module's vocabulary. HOLD is always the
+    favourable barrier, whichever side of the line it happens to sit on."""
+    if hit == TARGET:
+        return HOLD
+    if hit == STOP:
+        return BREAK
+    return CHOP
+
+
+def _resolve(ctx, line_val, i, side, move, horizon, n, up=None, down=None):
+    """
+    First barrier reached, walking forward from an approach at bar `i`.
+
+    `line_val` is a callable giving the line's value at any bar, so a sloping
+    line keeps sloping. `side` is +1 for support (price above the line), -1 for
+    resistance -- and it doubles as the trade's direction, because a bounce off
+    support is long and a bounce off resistance is short.
 
     `up`/`down` allow the two barriers to sit at different distances; both
-    default to `move`, which is the symmetric case the structural test uses.
+    default to `move`, the symmetric case the structural test uses. The HOLD
+    barrier is the one `side` points at, so it maps to the walk's TARGET and
+    the break barrier to its STOP.
     """
     up = move if up is None else up
     down = move if down is None else down
-    end = min(n - 1, i + horizon)
-    for j in range(i + 1, end + 1):
-        v = line_val(j)
-        if bars_c[j] >= v + up:
-            return (HOLD if side > 0 else BREAK), j
-        if bars_c[j] <= v - down:
-            return (BREAK if side > 0 else HOLD), j
-    return CHOP, None
+    hold_at, break_at = (up, down) if side > 0 else (down, up)
+    hit, j = _walk(ctx, i, horizon, n,
+                   lambda k: line_val(k) + side * hold_at,
+                   lambda k: line_val(k) - side * break_at,
+                   side)
+    return _outcome(hit), j
 
 
-def _resolve_bracket(bars_c, i, direction, target_px, stop_px, horizon, n):
+def _resolve_bracket(ctx, i, direction, target_px, stop_px, horizon, n):
     """
     A fixed bracket around an entry that has already happened, rather than
     barriers tracking a sloping line.
@@ -112,29 +243,29 @@ def _resolve_bracket(bars_c, i, direction, target_px, stop_px, horizon, n):
     point the line is history and what matters is whether price continues.
     `direction` is +1 when the trade is long, -1 when short.
     """
-    end = min(n - 1, i + horizon)
-    for j in range(i + 1, end + 1):
-        c = bars_c[j]
-        if direction > 0:
-            if c >= target_px:
-                return HOLD, j
-            if c <= stop_px:
-                return BREAK, j
-        else:
-            if c <= target_px:
-                return HOLD, j
-            if c >= stop_px:
-                return BREAK, j
-    return CHOP, None
+    hit, j = _walk(ctx, i, horizon, n,
+                   lambda k: target_px, lambda k: stop_px, direction)
+    return _outcome(hit), j
 
 
 def run(bars, tf, params: Params = None, dp: DiagParams = None,
-        sensitivity=None):
+        sensitivity=None, symbol=None):
     """
     Returns (events DataFrame, summary DataFrame).
 
     One row per approach, per arm ('line', 'placebo', 'random'), with the
     outcome, the line's quality at that bar, and the ATR at that bar.
+
+    `symbol` is needed only by `resolution='intrabar'`, which loads the
+    sub-timeframe to settle bars that reached both barriers. Without it that
+    mode still runs and simply falls back to the stop every time -- which is
+    PESSIMISTIC, and the returned `resolved_by` tally says so rather than
+    letting a run silently claim a resolution it never performed.
+
+    The events frame carries two diagnostics in `.attrs`:
+        ambiguous_bars  bars that reached both barriers -- the exact upper
+                        bound on how far any two resolutions can differ
+        resolved_by     how each decided bar was settled, by name
     """
     dp = dp or DiagParams()
     eng = TrendlineEngine(tf, TF_MS[tf], params or Params(),
@@ -147,6 +278,15 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None,
     atr = atr_series(bars, 14)
     n = len(close)
     rng = np.random.default_rng(dp.seed)
+
+    mode = dp.resolution or CLOSE
+    sub = None
+    if mode == INTRABAR and symbol:
+        sub = SubBars(symbol, tf, dp.sub_tf)
+    # ONE context for the whole run, so `ambiguous` and `resolved_by` are a
+    # rate over every barrier walked rather than per-approach noise.
+    ctx = _Ctx(high=high, low=low, close=close, times=bars.index,
+               mode=mode, sub=sub)
 
     # per-line state: has price been far enough away to allow a new approach?
     armed = {}
@@ -220,7 +360,7 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None,
 
             for arm in ('line', 'placebo'):
                 lv = arm_val(arm)
-                outcome, j_res = _resolve(close, lv, i, side, move,
+                outcome, j_res = _resolve(ctx, lv, i, side, move,
                                           dp.horizon, n, up_move, down_move)
                 if 'approach' in dp.phases:
                     rows.append({**common, 'arm': arm, 'phase': 'approach',
@@ -234,7 +374,7 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None,
                 tp = ent + bdir * tgt_atr * a
                 sl = ent - bdir * stp_atr * a
                 if 'breakout' in dp.phases:
-                    bo, _ = _resolve_bracket(close, j_res, bdir, tp, sl,
+                    bo, _ = _resolve_bracket(ctx, j_res, bdir, tp, sl,
                                              dp.horizon, n)
                     # How energetic was the candle that actually broke it? The
                     # engine used to record every break identically; this is the
@@ -262,7 +402,7 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None,
                         ent2 = close[k]
                         tp2 = ent2 + bdir * tgt_atr * a
                         sl2 = ent2 - bdir * stp_atr * a
-                        rt, _ = _resolve_bracket(close, k, bdir, tp2, sl2,
+                        rt, _ = _resolve_bracket(ctx, k, bdir, tp2, sl2,
                                                  dp.horizon, n)
                         rows.append({**common, 'arm': arm, 'phase': 'retest',
                                      'bar': k, 'occurred_at': bars.index[k],
@@ -274,7 +414,7 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None,
                 rbase = close[rj]
                 r_up = (tgt_atr if side > 0 else stp_atr) * atr[rj]
                 r_dn = (stp_atr if side > 0 else tgt_atr) * atr[rj]
-                r_out, _ = _resolve(close, lambda j, b=rbase: b, rj, side,
+                r_out, _ = _resolve(ctx, lambda j, b=rbase: b, rj, side,
                                     dp.move_atr * atr[rj], dp.horizon, n,
                                     r_up, r_dn)
                 # the random arm fires at an unrelated bar and has no line to
@@ -284,6 +424,10 @@ def run(bars, tf, params: Params = None, dp: DiagParams = None,
                              'dist_atr': np.nan, 'outcome': r_out})
 
     ev = pd.DataFrame(rows)
+    ev.attrs['resolution'] = mode
+    ev.attrs['ambiguous_bars'] = ctx.ambiguous
+    ev.attrs['resolved_by'] = dict(ctx.resolved_by)
+    ev.attrs['sub_lookups'] = sub.lookups if sub is not None else 0
     return ev, summarise(ev)
 
 
