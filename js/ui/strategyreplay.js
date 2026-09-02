@@ -22,10 +22,25 @@
  * reproduces the backtest; stopping halfway shows you the drawdown you would
  * have been sitting in.
  *
- * THERE IS NO TAKE-PROFIT LINE, and that is not an omission. 138 of 207
- * out-of-sample exits were the trailing 10-bar channel and none were a target;
- * tools/tp_sweep.py measured that capping at 1R turns +43.7 net R into -2.1.
- * The exit level is drawn as what it is -- a level that moves every bar.
+ * THERE IS NO TAKE-PROFIT, AND THERE WAS ONE FOR A WHILE. It was asked for,
+ * built five ways -- structural and fitted, whole position and half -- wired
+ * into this panel and then into the live chart, and then withdrawn from both.
+ * The reason it went is in logs/tp_struct_eval.txt: across twelve cells out of
+ * sample, no target beat the trailing exit on net R, and the full structural
+ * cap was the worst of them. The walker can still execute a target and the
+ * study can still be re-run; no surface in the app trades one.
+ *
+ * WHAT REMAINS OPTIONAL is the STOP WIDTH, off by default, fitted per cell and
+ * per side from the heat a favourable path takes. It is a different kind of
+ * change from a target -- it moves where the trade starts rather than capping
+ * where it ends -- and it has its own toggle and its own warning.
+ *
+ * THE FIT IS CAUSAL, WHICH IS THE ONLY REASON IT IS ALLOWED HERE AT ALL. It is
+ * measured from `full.slice(0, cursor + 1)`, the same slice the signal is, and
+ * re-measured on every step. A fit taken once over the loaded window would put
+ * a number from the future onto a chart whose whole purpose is not to have one
+ * -- and it would be invisible, because a stop fitted on bars you have not
+ * reached looks exactly like one fitted on bars you have.
  */
 
 import { api } from '../api.js';
@@ -37,7 +52,13 @@ import { openAudio, pickMime } from './recaudio.js';
 import { openSymbolSearch } from './search.js';
 import { FLAT, LONG, instruction, runRule, tally } from '../chart/rules.js';
 import { STATUS_TEXT, STRATEGIES, byKey, coversCell } from '../chart/strategies.js';
-import { describeBand, targetBands } from '../chart/targets.js';
+import {
+  STOP_ATR, ruleVerdictNote, setStopEnabled, stopEnabled, stopMultiples,
+  stopOption,
+} from '../chart/stopmode.js';
+import { displayLevels } from '../chart/levels.js';
+import { trailOption } from '../chart/trailmode.js';
+import { structuralTrail } from '../chart/exittrail.js';
 
 const SPEEDS = [{ label: '1x', ms: 400 }, { label: '2x', ms: 200 }, { label: '4x', ms: 100 }];
 
@@ -46,10 +67,12 @@ const SPEEDS = [{ label: '1x', ms: 400 }, { label: '2x', ms: 200 }, { label: '4x
    a strategy the backtest never ran. */
 const SLIP_ATR = 0.02;
 
-/* The traced exit level. Deliberately NOT the SL colour: the stop is fixed
-   and this moves, and colouring them alike is how a reader concludes the
-   stop trails when it does not. */
-const TRAIL_COL = '#31c7d6';
+/* The traced exit. Deliberately NOT the SL colour: the stop is fixed and this
+   moves, and colouring them alike is how a reader concludes the stop trails
+   when it does not. Violet and dashed because it is the structural trail most
+   of the time -- and dashed for the same reason the target bands are: a level
+   that moves every bar should not carry the weight of one that does not. */
+const TRAIL_COL = '#c07cf0';
 
 /* Ribbon colours come from the segment renderer's vocabulary, which is named
    for market episodes rather than trade outcomes. The label carries the real
@@ -356,6 +379,62 @@ export class StrategyReplay {
                           : rule.defaults;
   }
 
+  /**
+   * The cell this replay is standing in: instrument AND timeframe.
+   *
+   * One string, built in one place, because it is the key every per-cell
+   * setting is stored under and a second spelling of it would silently give the
+   * take-profit switch a different scope from the evidence that justifies it.
+   * The same shape `strategies.js` uses for `cells`.
+   */
+  cell() {
+    return `${this.symbol}|${this.tf}`;
+  }
+
+  /**
+   * Turn the fitted take-profit on or off FOR THIS CELL, and say what it did.
+   *
+   * The re-walk is free -- `runRule` is a pure function of the slice -- so the
+   * cursor stays exactly where it is and the whole ledger behind it is recut
+   * under the new rule. That is the point of putting the switch here: the
+   * comparison worth making is the same bar under both configurations, not two
+   * separate runs you have to hold in your head.
+   *
+   * THE EVIDENCE IS QUOTED ON THE WAY IN, not on the way out. Turning a target
+   * on is the moment to be told it is reached 51% of the time and pays
+   * -0.02 R [-0.07, +0.05] gross; being told when you turn it off is too late
+   * to matter. It costs a thousand bootstrap resamples a side, which is why it
+   * happens on a click and never in `render`.
+   */
+  /**
+   * Turn the fitted stop on or off FOR THIS CELL.
+   *
+   * Separate from the target because it is a bigger change than one: the stop
+   * sets R, so moving it moves every number on the panel including the ones
+   * describing trades that were already closed, and it decides which signals
+   * are placeable at all. `stopMultiples` reports the survival its width
+   * actually delivers, which is the claim being made and the thing to say.
+   */
+  toggleStop() {
+    const cell = this.cell();
+    const on = !stopEnabled(cell);
+    setStopEnabled(cell, on);
+    this.stop();
+    this._apply();
+    if (!on) { toast(`Stop back to ${STOP_ATR} ATR for ${cell} — as validated`); return; }
+    const slice = this.full.slice(0, this.i + 1);
+    const m = stopMultiples(slice, cell);
+    if (m.source !== 'measured') {
+      toast(`Fitted stop on for ${cell}, but ${slice.length} bars is too few to `
+            + `measure one — still ${STOP_ATR} ATR`, 6000);
+      return;
+    }
+    const pct = (x) => (Number.isFinite(x) ? `${(x * 100).toFixed(0)}%` : '—');
+    toast(`Fitted stop on for ${cell} — long ${m[1]} ATR (survives `
+          + `${pct(m.survival[1])} of favourable paths), short ${m['-1']} ATR `
+          + `(${pct(m.survival['-1'])}). R now means something different here.`, 9000);
+  }
+
   /* -------------------------------------------------------------- render */
 
   _apply({ keepPeek = false } = {}) {
@@ -373,11 +452,50 @@ export class StrategyReplay {
     this.chart.setFutureHidden(this.futureHidden);
     this.chart.setFuturePeek(this.peek);
     const rule = byKey(this.strategyKey);
-    /* the tf goes in so the replay steps the SAME rule the live panel draws
-       and the same one Python measured. Without it this walked rule.defaults
-       -- a flat 20/10 on every timeframe. */
-    const sig = runRule(slice, rule, { upto: slice.length - 1, tf: this.tf });
+
+    /* THE PLAN, FITTED ON THE SLICE AND NOT ON THE SERIES. `slice` is the bars
+       up to and including the cursor -- the same array the signal is walked
+       over, passed one line apart from it so the two cannot drift. Handing
+       `this.full` here instead would fit the target on bars the replay is
+       pretending not to have seen, and would look identical on screen.
+
+       Both come back `undefined` when their mode is off or the slice is too
+       short to measure, and an absent option is the validated rule: a 2.0 ATR
+       stop and no target. `atrMult` is spread conditionally because `undefined`
+       would OVERRIDE the rule's default rather than fall through to it -- the
+       three-layer merge in runRule takes the last value, not the last defined
+       one. */
+    const cell = this.cell();
+    /* THE STOP WIDTH IS THE ONLY THING THIS CAN VARY NOW.
+     *
+     * There was a take-profit here -- five modes, structural and fitted, whole
+     * and half -- withdrawn from every surface, and then from the walker
+     * itself. The replay was the last to keep the switch, on the argument that
+     * a sandbox should run what the live chart will not; the answer was to
+     * remove it here too, and then to remove the machinery entirely. What
+     * survives is the measurement it went on the strength of:
+     * logs/tp_struct_eval.txt, twelve cells out of sample, no target beating
+     * the trailing exit on net R. */
+    const atrMult = stopOption(slice, cell);
+    const exitTrail = trailOption(cell, this.tf);
+    const sig = runRule(slice, rule, {
+      upto: slice.length - 1, tf: this.tf,
+      ...(atrMult ? { atrMult } : {}),
+      ...(exitTrail ? { exitTrail } : {}),
+    });
     this.sig = sig;
+    /* Kept for the panel and the sidecar so neither re-fits: both want to say
+       WHICH numbers this walk used, and computing them a second time is how a
+       screen ends up quoting a stop the walker did not use. */
+    this.plan = {
+      cell,
+      stop: atrMult ? atrMult.multiples : null,
+      trail: !!exitTrail,
+      /* ONLY THE FITTED STOP STILL ANNOUNCES ITSELF. The trail's note was
+         removed by request from both surfaces; its measurement is recorded in
+         js/chart/trailmode.js and logs/exit_trail_eval.txt instead. */
+      notes: [ruleVerdictNote(slice, cell)].filter(Boolean),
+    };
 
     /* Closed trades as ribbons, coloured by outcome and labelled with the R
        they actually returned -- the sequence is the thing a summary hides. */
@@ -418,60 +536,159 @@ export class StrategyReplay {
     }
     this.chart.setMarks(marks);
 
-    /* TP bands off the live stop. Reference only -- this strategy has no
-       take-profit and capping it at 1R was measured to lose money. */
-    this.bands = sig.position ? targetBands({
-      side: sig.position.side, entry: sig.position.entryPrice, stop: sig.position.stop,
-    }) : [];
-    this.chart.setTargets(this.bands);
+    /* WHAT IS IN THE WAY -- THE SAME OBJECT THE LIVE CHART DRAWS.
+     *
+     * This was a 2R / 3.5R / 5R ladder from a `targetBands` helper, labelled
+     * "reference
+     * only" -- js/chart/targets.js, now deleted along with the parity test that
+     * pinned it to sim/targets.py. It was the last fixed-R ladder left in the
+     * app, and it
+     * had the defect the live chart's version was removed for: three numbers
+     * computed from the stop alone, identical in shape on every chart, blind to
+     * what is actually in front of the trade. On a sandbox whose entire job is
+     * to show what the rule does, a ladder that is the same on every symbol is
+     * the one thing on screen that cannot be wrong and cannot be informative.
+     *
+     * Now it is `displayLevels` -- swing points, S/R, supply/demand bases,
+     * trendlines and the unbroken swing whose break would be the next BOS --
+     * derived from the SLICE, not from `this.full`, so the levels are the ones
+     * visible at the cursor and not the ones today's chart would produce.
+     *
+     * THEY ARE NOT TARGETS ON THIS SURFACE EITHER. The rule has no
+     * take-profit; it exits on the stop or on the trail traced below. These say
+     * how much room the trade has, which is the question an entry raises.
+     */
+    this.levels = [];
+    this.levelsCleared = false;
+    {
+      const held0 = sig.position;
+      const pend0 = (!held0 && sig.pending && sig.pending.side !== FLAT)
+        ? sig.pending : null;
+      if (held0 || pend0) {
+        const sd = ((held0 ? held0.side : pend0.side) > 0) ? 1 : -1;
+        const anchor = held0 ? held0.entryPrice : pend0.signalPrice;
+        const at = held0 ? held0.entryI : pend0.signalI;
+        /* MORE THAN ARE SHOWN, because some are about to be discarded as
+           spent -- the same over-fetch the live panel does. */
+        const found = displayLevels(slice, {
+          side: sd, from: anchor, upto: at, tf: this.tf, max: 8,
+        });
+        /* A LEVEL PRICE HAS ALREADY TOUCHED IS SPENT. Checked against every bar
+           from the decision to the CURSOR -- never past it, which is the whole
+           discipline of this file: `slice` ends at `this.i`, so a level the
+           future clears cannot be discarded early. */
+        const reached = (price) => {
+          for (let k = at; k < slice.length; k++) {
+            const b = slice[k];
+            if (sd > 0 ? b.h >= price : b.l <= price) return true;
+          }
+          return false;
+        };
+        const ahead = found.filter((lv) => !reached(lv.price));
+        this.levels = ahead.slice(0, 3).map((lv, k) => ({ ...lv, key: `TP${k + 1}` }));
+        this.levelsCleared = found.length > 0 && ahead.length === 0;
+      }
+    }
+    this.chart.setRuleTargets(this.levels.length ? {
+      levels: this.levels,
+      entry: sig.position ? sig.position.entryPrice
+        : (sig.pending ? sig.pending.signalPrice : NaN),
+      tickSize: this.spec ? (this.spec.tick_size || this.spec.point || 0) : 0,
+      tickValue: this.spec ? (this.spec.tick_value || 0) : 0,
+    } : null);
 
-    /* THE EXIT LEVEL, TRACED. This is the closest thing the rule has to a take
-       profit and it is the only one of the three levels that MOVES, so a static
-       row in the panel was the wrong way to show it: two thirds of exits are
-       taken by this line, and the thing worth seeing is it ratcheting up under
-       a long until price finally closes through it. Traced from the entry bar
-       to the cursor, so stepping forward shows each jump as it happens. */
+    /* THE EXIT, TRACED -- ONE LINE, AND IT IS THE ONE THAT WILL FIRE.
+     *
+     * There were two for a while: the channel solid in cyan and the structural
+     * trail dashed in violet, on the argument that seeing which binds is the
+     * whole question. It is -- but that question has a written answer in the
+     * panel now, where both levels sit with a LIVE/behind badge, and two moving
+     * lines over the same price action asked the reader to do the comparison by
+     * eye instead of reading it.
+     *
+     * So the chart draws the EFFECTIVE exit: the tighter of the two at every
+     * bar, which is by definition the level that will close the trade. It is
+     * still dashed violet -- the trail's colour -- because the trail is what it
+     * is most of the time; where the channel is tighter the same line simply
+     * traces the channel instead. What it must never be is a line the trade
+     * does NOT exit at, which is what drawing only the trail would have been:
+     * the channel still takes about a quarter of the exits, usually early on
+     * before any structure has formed behind the trade.
+     *
+     * Traced from the entry bar to the cursor, so stepping forward shows it
+     * ratchet -- which is the thing worth watching and the reason this is a
+     * line and not a row. */
     this.trail = null;
     if (sig.position) {
       const long = sig.position.side === LONG;
       const lvl = long ? sig.series.exitLo : sig.series.exitHi;
+      const closes = slice.map((b) => b.c);
       const pts = [];
+      let held = null;
       for (let k = sig.position.entryI; k <= this.i; k++) {
-        if (Number.isFinite(lvl[k])) pts.push({ i: k, price: lvl[k] });
+        if (exitTrail) {
+          const cand = structuralTrail({
+            side: sig.position.side, i: k, view: slice,
+            series: sig.series, close: closes,
+            /* The walker measures the break-even floor from this; a line drawn
+               without it would sit somewhere the trade never exits. */
+            entryPrice: sig.position.entryPrice,
+          }, { tf: this.tf, cell });
+          if (Number.isFinite(cand)) {
+            const better = held === null || (long ? cand > held : cand < held);
+            if (better) held = cand;
+          }
+        }
+        const ch = lvl[k];
+        let eff = null;
+        if (Number.isFinite(ch) && Number.isFinite(held)) {
+          eff = long ? Math.max(ch, held) : Math.min(ch, held);
+        } else if (Number.isFinite(ch)) eff = ch;
+        else if (Number.isFinite(held)) eff = held;
+        if (Number.isFinite(eff)) pts.push({ i: k, price: eff });
       }
       if (pts.length > 1) {
-        this.trail = { points: pts, label: 'exit', color: TRAIL_COL, width: 1.4 };
+        this.trail = { points: pts, label: 'exit', color: TRAIL_COL,
+                       width: 1.4, dash: [4, 3] };
       }
     }
     this.chart.setTrail(this.trail);
 
-    /* The open trade's entry and stop, drawn by the same renderer the live
-       chart uses for real positions. `tp` is deliberately null: this strategy
-       has none, and putting the moving exit level in a slot labelled TP would
-       misrepresent the rule the panel exists to state correctly.
-
-       A PENDING signal is drawn too, dashed and at the level it WOULD take.
-       Without it the decision bar -- the one moment you are actually being
-       asked something -- was the only bar with no levels on the chart at all. */
+    /* THE PLAN: ENTRY, THE RISK BLOCK, AND THE ROOM AHEAD.
+     *
+     * This used to go through `setPositions` -- the renderer for REAL BROKER
+     * ROWS -- with a synthetic row carrying volume 1 and a null tp. It drew the
+     * right two lines for the wrong reason, and it put a simulated trade
+     * through the one code path in the app that is supposed to mean "you hold
+     * this". `setRuleZone` is the renderer that means "the rule says", which is
+     * all the replay ever shows, and it is what the live chart uses. Both
+     * surfaces now draw the same object from the same call.
+     *
+     * A PENDING signal is drawn too, at the level it WOULD take. Without it the
+     * decision bar -- the one moment you are actually being asked something --
+     * was the only bar with no plan on the chart at all. Its `ref` still works:
+     * the levels above are computed from the signal close when there is no
+     * fill, because the next open does not exist yet.
+     *
+     * `ref` IS TP1 AND NOTHING ELSE. Zero when nothing is ahead, and the block
+     * is simply not drawn -- clear air drawn as clear air. */
     const held = sig.position;
     const pend = (!held && sig.pending && sig.pending.side !== FLAT)
       ? sig.pending : null;
-    this.chart.setPositions(held ? [{
-      symbol: this.symbol,
-      side: held.side === LONG ? 'buy' : 'sell',
-      volume: 1,
-      price_open: held.entryPrice,
-      sl: held.stop,
-      tp: null,
-    }] : (pend ? [{
-      symbol: this.symbol,
-      side: pend.side === LONG ? 'buy' : 'sell',
-      volume: 1,
-      // the fill does not exist yet; the signal close is the only price known
-      price_open: pend.signalPrice,
-      sl: pend.stop,
-      tp: null,
-    }] : []));
+    this.chart.setPositions([]);
+    if (held || pend) {
+      const long = (held ? held.side : pend.side) > 0;
+      this.chart.setRuleZone({
+        entry: held ? held.entryPrice : pend.signalPrice,
+        stop: held ? held.stop : pend.stop,
+        ref: this.levels.length ? this.levels[0].price : 0,
+        i0: held ? held.entryI : pend.signalI,
+        label: held ? (long ? 'RULE holding LONG' : 'RULE holding SHORT')
+                    : (long ? 'RULE would BUY' : 'RULE would SELL'),
+      });
+    } else {
+      this.chart.setRuleZone(null);
+    }
 
     /* Park the window on the cursor with a little of the future showing, so a
        step forward reveals the next bar rather than scrolling an unchanged
@@ -576,6 +793,18 @@ export class StrategyReplay {
       + 'stays frozen on the bar it decided on, so the stop and the moving '
       + 'exit stay where they were when the decision was made.',
       () => this.peekAhead(1));
+    /* TWO SWITCHES, PER CELL, ON THE BAR RATHER THAN IN A MENU. The take-profit
+       changes what the walker does on every bar you are about to step through,
+       so it belongs beside the transport that steps it -- a mode you have to go
+       and look for is a mode you forget is on. They sit AFTER the recorder's
+       separator, away from the transport, because a misclick between "step one
+       bar" and "re-run the whole walk under a different rule" is expensive. */
+    this.stopBtn = btn('SL fit',
+      'Fitted stop for THIS symbol and timeframe. On: the stop is the 75th '
+      + 'percentile of the heat a favourable path takes, per side. Off: '
+      + `${STOP_ATR} ATR, the width the rule was validated with. Changing it `
+      + 'changes which trades are placeable at all, so it is off by default.',
+      () => this.toggleStop());
     this.recBtn = btn('⏺ Rec',
       'Record the walk — video of the chart and panel, plus a JSON ledger, '
       + 'written to data/replays/. Press again to stop and save.',
@@ -631,6 +860,7 @@ export class StrategyReplay {
          the one thing a button you aim at should not do. */
       this.futBtn,
       this.peekBtn,
+      this.stopBtn,
       this.recBtn,
       this.pngBtn,
       this.status);
@@ -661,6 +891,19 @@ export class StrategyReplay {
                                            : 'Next bar ›';
       this.peekBtn.classList.toggle('on', !!this.peek);
       this.peekBtn.disabled = !this.futureHidden;
+    }
+    /* THE MODE BUTTONS SAY WHICH CELL THEY ARE ANSWERING FOR. The setting is
+       per instrument and per timeframe, so the same button is lit on 4h and
+       dark on 15m of the same symbol -- which reads as a bug unless the label
+       says whose switch it is. `_apply` has already fitted the plan, so "on but
+       unmeasured" is a state the button can show rather than one you discover
+       by wondering why nothing changed. */
+    if (this.stopBtn) {
+      const fitted = !!(this.plan && this.plan.stop);
+      this.stopBtn.classList.toggle('on', fitted);
+      this.stopBtn.textContent = fitted
+        ? `SL ${this.plan.stop[1]}/${this.plan.stop['-1']} ATR`
+        : (stopEnabled(this.cell()) ? 'SL —' : `SL ${STOP_ATR}`);
     }
     /* The frame count lives ON the Rec button. A recorder with no readout is
        one you discover is still running when you find the file, and the count
@@ -958,6 +1201,18 @@ export class StrategyReplay {
       /* the rule AS RUN, which on a horizon-matched timeframe is not its
          defaults -- see js/chart/donchian.js */
       params: this._params(rule),
+      /* AND THE MODES, because they are not part of `params` and change what
+         the trades below mean. Null for both is the validated configuration;
+         anything else is a rule `measured.js` never scored, and a ledger that
+         did not say so would be read six months later as evidence about the one
+         that was. `fittedOn` is the cursor, not the window: the numbers were
+         measured causally and a reader has to be able to check that. */
+      plan: this.plan ? {
+        stopAtr: this.plan.stop,
+        fittedOnBars: this.i + 1,
+        notes: this.plan.notes,
+        trail: this.plan.trail,
+      } : null,
       started: rec.started,
       saved: new Date().toISOString(),
       audio: rec.audio || null,
@@ -1144,6 +1399,12 @@ export class StrategyReplay {
            + 'these read about 19% higher than the backtest engine '
            + '(+0.2147 vs +0.1799 R per trade).',
            { size: 9, colour: C.warn, gap: 10 });
+      /* Above the verdict badge it contradicts, in the export as on the screen.
+         This is the caption that stops a shared image being read as evidence
+         about the rule that was measured. */
+      for (const n of (this.plan ? this.plan.notes : [])) {
+        line(n, { size: 9, colour: C.warn, gap: 10 });
+      }
     }
 
     rule();
@@ -1241,41 +1502,74 @@ export class StrategyReplay {
       rows.push(['stop distance', bits.join('  ')]);
     }
 
-    /* WHICH EXIT IS LIVE. The trade has two, and only one of them can be
-       reached first, so showing both as equals leaves the reader to work out
-       which is actually holding the position -- which is the whole question.
+    /* WHICH EXIT IS LIVE. The trade now has THREE levels that can end it and
+       only one of them can be reached first, so listing them as equals leaves
+       the reader to work out which is actually holding the position -- which is
+       the whole question.
 
-       For a long, price falls to whichever level is HIGHER: if the channel sits
-       below the stop, the stop is hit before any close can print below the
-       channel, and the channel is inert until it ratchets above it. Early in a
-       trend trade that is the normal state, and it is why the exit level can
-       look absurdly far away for the first few bars. */
-    if (sig.exitLevel !== null && Number.isFinite(sig.exitLevel)) {
-      const long = sig.position && sig.position.side === LONG;
+       For a long, price falls to whichever level is HIGHEST: the tightest one
+       binds and the others are inert behind it. Early in a trend trade the
+       channel is usually the loosest of the three, which is why it can look
+       absurdly far away for the first few bars.
+
+       THE CHART DRAWS ONLY THE WINNER. This is the one place both are written
+       down, because "which binds" is a fact about the trade rather than a
+       picture of it. */
+    if (sig.position && Number.isFinite(sig.exitLevel)) {
+      const long = sig.position.side === LONG;
       const stop = stopNow;
+      const trail = sig.position.trail;
+      /* The tighter of two, for this side: a long exits at the HIGHER level. */
+      const tighter = (a, b) => {
+        if (!Number.isFinite(a)) return b;
+        if (!Number.isFinite(b)) return a;
+        return long ? Math.max(a, b) : Math.min(a, b);
+      };
+      const effective = tighter(sig.exitLevel, trail);
+      const badge = (v) => {
+        if (ins.action === 'exit') return null;
+        if (!Number.isFinite(v)) return null;
+        return v === effective ? 'LIVE' : 'behind';
+      };
+
       let liveStop = null;
       let liveExit = null;
+      let liveTrail = null;
       if (ins.action === 'exit') {
-        /* Already fired. Neither level is "waiting" any more: the exit is
-           spent and the stop is the only thing still able to act, for the one
-           bar until the close order fills. */
+        /* Already fired. Nothing is "waiting" any more: the exit is spent and
+           the stop is the only thing still able to act, for the one bar until
+           the close order fills. */
         liveExit = 'triggered';
         liveStop = 'until fill';
-      } else if (Number.isFinite(stop) && sig.position) {
-        const exitBinds = long ? sig.exitLevel > stop : sig.exitLevel < stop;
-        liveExit = exitBinds ? 'LIVE' : 'not yet';
+      } else if (Number.isFinite(stop)) {
+        /* The stop only binds when it is TIGHTER than the moving exits -- which
+           for a long means higher than both. */
+        const exitBinds = long ? effective > stop : effective < stop;
         liveStop = exitBinds ? 'behind' : 'LIVE';
+        liveExit = exitBinds ? badge(sig.exitLevel) : 'behind';
+        liveTrail = exitBinds ? badge(trail) : 'behind';
       }
-      // rewrite the stop row now that we know which one binds
       const si = rows.findIndex((r) => r[0] === 'stop loss');
       if (si >= 0 && liveStop) rows[si] = ['stop loss', px(stop, d), liveStop];
       rows.push(['exit level', px(sig.exitLevel, d), liveExit]);
+      if (Number.isFinite(trail)) {
+        rows.push(['trail', px(trail, d), liveTrail]);
+      }
     }
+
+    /* THE TAKE-PROFIT, WHEN THERE IS ONE. Struck off the fill price at entry
+       and fixed from then on, which is what makes it a target rather than a
+       third trailing level -- and why it is shown with the multiple it was
+       given: `2.31R` is the claim, `4,712.85` is only where that claim landed
+       for this particular trade.
+
+       The remaining distance is quoted in R too. "18 dollars away" says nothing
+       without the risk beside it, and the whole question while a trade is open
+       is which of the three levels price reaches first. */
     if (sig.position) {
-      const bars = this.i - sig.position.entryI;
-      rows.push(['bars held', String(bars)]);
-      const openR = (this.full[this.i].c - sig.position.entryPrice)
-        * sig.position.side / sig.position.risk;
+      const pos = sig.position;
+      rows.push(['bars held', String(this.i - pos.entryI)]);
+      const openR = (this.full[this.i].c - pos.entryPrice) * pos.side / pos.risk;
       rows.push(['open R', (openR >= 0 ? '+' : '') + openR.toFixed(2)]);
     }
 
@@ -1290,19 +1584,64 @@ export class StrategyReplay {
                 text: note,
               }) : null)))));
 
-    if (this.bands && this.bands.length) {
-      p.append(el('div', { class: 'sr-h' }, 'target bands (reference)'));
-      p.append(el('table', { class: 'sr-kv' }, ...this.bands.map((b) =>
+    /* WHAT IS IN THE WAY -- A RULE, NOT A HEADING, and no names on the rows.
+       Both were removed by request on the live panel and the replay follows, so
+       the two surfaces stay one design: the words "in the way — not targets"
+       are gone, and so is what each level IS ("demand zone, fresh", "swing
+       high"). The kind still decides WHICH prices are listed; it is no longer
+       printed beside them.
+     *
+       The hairline replaces the heading rather than being added to it. Every
+       `.sr-h` here draws a border under itself, so dropping the words would
+       have dropped the divider too and run TP1 straight on from `open R`. */
+    if (this.levels && this.levels.length) {
+      p.append(el('table', { class: 'sr-kv sr-rule' }, ...this.levels.map((lv) =>
         el('tr', {},
-          el('td', { text: `${b.key}  ${b.r}R` }),
-          el('td', { class: 'mono', text: px(b.price, d) })))));
+          el('td', { text: lv.key }),
+          el('td', { class: 'mono' }, px(lv.price, d))))));
+    } else if (this.levelsCleared) {
+      /* SPENT IS NOT THE SAME AS NONE FOUND. A trade that has run through
+         everything ahead of it is in clear air -- the best thing that can
+         happen to a trend trade -- and showing the same blank for both would
+         make the good case look broken. */
+      p.append(el('div', { class: 'sr-note sr-rule' }, 'all reached — clear air ahead'));
     }
 
     if (sig.exitLevel !== null && Number.isFinite(sig.exitLevel)) {
       p.append(el('div', { class: 'sr-warn' },
         'The exit level is NOT a take-profit — it is the 10-bar channel and '
-        + 'it moves every bar. Capping this strategy at 1R was measured to turn '
-        + '+43.7 net R into −2.1.'));
+        + 'it moves every bar. Capping this strategy at a fixed 1R was measured '
+        + 'to turn +43.7 net R into −2.1.'));
+    }
+
+    /* WHAT IS BEING STEPPED, WHEN IT IS NOT THE RULE THAT WAS MEASURED.
+       Printed on every bar the mode is on, above the verdict badge it
+       contradicts, because a switch whose consequence is only visible in the
+       settings that turned it on is a switch that gets left on by accident. */
+    for (const n of (this.plan ? this.plan.notes : [])) {
+      p.append(el('div', { class: 'sr-warn' }, n));
+    }
+
+    /* THE FIT ITSELF, and the sample it came off.
+       Two numbers per side and the count behind them, because "2.31R" and
+       "2.31R measured on 1,145 samples" are different claims and the panel is
+       the only place the difference can be seen. Recomputed nowhere: these are
+       the values `_apply` handed the walker, so the panel cannot quote a target
+       the trades were not taken against.
+
+       The reach rate is deliberately NOT here. It costs a thousand bootstrap
+       resamples a side and this redraws on every step; it is computed once, on
+       the click that turns the mode on, and toasted there. */
+    if (this.plan && this.plan.stop) {
+      p.append(el('div', { class: 'sr-h' },
+        `fitted on bars 1–${this.i + 1} (causal)`));
+      const fit = [];
+      fit.push(['stop width',
+                `${this.plan.stop[1]} ATR long  ${this.plan.stop['-1']} ATR short`]);
+      const n = (this.plan.stop || {}).n;
+      if (n) fit.push(['samples', `${n} per side`]);
+      p.append(el('table', { class: 'sr-kv' }, ...fit.map(([k, v]) =>
+        el('tr', {}, el('td', { text: k }), el('td', { class: 'mono', text: v })))));
     }
 
     /* NO LOT SIZE HERE, and the omission is deliberate rather than unfinished.
@@ -1323,7 +1662,12 @@ export class StrategyReplay {
 
     /* THE SCORECARD, from trades closed at or before the cursor only. */
     const t = tally(sig.trades);
-    p.append(el('div', { class: 'sr-h' }, 'as of this bar — GROSS'));
+    /* NOT "— GROSS" any more; the word came off by request. What it warned
+       about is still stated, in full sentences, in the note a few lines below:
+       the replay charges no spread, slippage or swap. The SNAPSHOT and the
+       video keep the word in their own header, because those leave the app and
+       nothing travels with them to explain the numbers. */
+    p.append(el('div', { class: 'sr-h' }, 'as of this bar'));
     /* SAID OUT LOUD, because the number is otherwise indistinguishable from a
        gate result. js/chart/rules.js fills at open[i] exactly: no spread, no
        slippage, no swap. On gold 4h 2018-2026 that reads +0.2147 R against the

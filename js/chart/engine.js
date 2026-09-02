@@ -21,6 +21,16 @@ import { TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp, withZone
    leaves a couple of pixels of breathing room and hands 10px back to the
    candles -- 64 was inherited from a larger font and never re-measured. */
 const AXIS_W = 54;
+
+/* Vertical room one 12px tag needs before the next can start. Anything closer
+   overprints; anything closer than this gets nudged, never dropped. */
+const LAB_GAP = 13;
+
+/* The smallest position any broker here accepts, and the size every money
+   figure on the rule's levels is quoted at. Fixed on purpose: a figure that
+   scaled with a live position would move whenever equity did, and would make
+   two charts incomparable. */
+const MIN_LOT = 0.01;
 const TIME_H = 22;        // bottom time axis
 const PANE_GAP = 6;
 const MIN_SPAN = 12;
@@ -75,8 +85,28 @@ const COL = {
   area2: 'rgba(49,199,214,0)',
   axisBg: '#041E42',
   pos: '#FF9E1B',
-  sl: '#E31C79',
-  tp: '#93C90F',
+  /* THE RULE'S OWN TWO COLOURS, AND THEY BELONG TO NOTHING ELSE.
+   *
+   * The chart draws two different families of thing on the same price scale.
+   * MARKET STRUCTURE -- s/r zones, supply and demand bases, channel edges,
+   * trendlines -- is coloured by direction: lime `up` when it should hold price
+   * up, magenta `down` when it should hold price down. THE RULE'S PLAN -- where
+   * it got in, where it is out, how far to the first level -- is not a
+   * direction, it is a decision, and it was being drawn in exactly those same
+   * two colours: the stop shared magenta with every resistance band on screen
+   * and the room-to-TP1 block shared lime with every demand base. On a chart
+   * with four zones near the stop, the one line that says "you are out here"
+   * was indistinguishable from scenery.
+   *
+   * So the plan gets hues structure never uses: a true red for the stop (not
+   * the brand magenta #E31C79 it used to be, which is also the down candle, the
+   * active tab and half the chrome) and a teal for the targets. Neither appears
+   * anywhere in the structure palette, so nothing on the chart can be mistaken
+   * for the rule's plan and the plan cannot be mistaken for structure. Entry
+   * keeps `pos` orange and the trail keeps its violet -- both already outside
+   * the structure palette, which is why they never had this problem. */
+  sl: '#FF4D4D',
+  tp: '#2FD4C0',
   draw: '#D9D9D6',
   pink: '#E31C79',
 };
@@ -169,8 +199,9 @@ export class Chart {
     this.positions = [];
     this.autoLines = [];
     this.channels = [];
-    this.trail = null;
+    this.trail = [];
     this.ruleZone = null;
+    this.ruleTargets = null;
     this.zones = [];
     this.segments = [];
     this.asOfMark = null;
@@ -179,7 +210,6 @@ export class Chart {
     this.futureHidden = false;
     this.futurePeek = 0;
     this.sdZones = [];
-    this.targets = [];
     this.marks = [];
     this.msEvents = [];
     this.swings = [];
@@ -355,9 +385,6 @@ export class Chart {
   setSegments(sg) { this.segments = sg || []; }
 
   setSdZones(zs) { this.sdZones = zs || []; }
-  /* TP bands, from js/chart/targets.js. Reference levels measured in R off
-     the live stop -- NOT exits. See that file for why 1.5R is the floor. */
-  setTargets(t) { this.targets = t || []; }
   /* Trade events at the bar they happened on. See _marks for why a signal and
      a fill are drawn differently. */
   setMarks(m) { this.marks = m || []; }
@@ -368,11 +395,32 @@ export class Chart {
      straight interpolation between bar values would imply the level moved
      continuously, when in fact it holds flat and then jumps to a new
      extreme, and WHEN it jumps is the interesting part. Callers draw(). */
-  setTrail(t) { this.trail = t || null; }
+  /* ONE TRACE OR SEVERAL. A trade can have two moving exits -- the rule's own
+     channel and an optional structural trail -- and the whole point of drawing
+     them is to see WHICH ONE BINDS. Collapsing to the tighter of the two before
+     drawing would answer that question by hiding it. A single object is still
+     accepted: every caller that has one exit passes one. */
+  setTrail(t) {
+    this.trail = !t ? [] : (Array.isArray(t) ? t.filter(Boolean) : [t]);
+  }
 
   /* The RULE's own risk picture, which is not a position and must never
      look like one. See _ruleZone. */
   setRuleZone(z) { this.ruleZone = z || null; }
+
+  /* THE RULE'S STRUCTURAL TARGETS. Not a ladder of R multiples -- those were
+     the same three numbers on every chart, blind to what is actually in front
+     of the trade. These are the levels price has to get through: swing highs,
+     S/R, supply/demand bases, trendlines, and the unbroken swing whose break
+     would be the next BOS. js/chart/levels.js finds them, causally.
+
+     `entry`, `tickSize` and `tickValue` decide whether the distance and the
+     money are printed beside each level. They come from the rule's own fill and
+     the contract spec; without them the tag still names the level and the axis
+     still marks the price. */
+  setRuleTargets(t) {
+    this.ruleTargets = (t && t.levels && t.levels.length) ? t : null;
+  }
 
   setMsEvents(ev) { this.msEvents = ev || []; }
   setSwings(sw) { this.swings = sw || []; }
@@ -678,7 +726,6 @@ export class Chart {
       for (const run of pane.runs) this._plots(pane, run);
       if (pane.isMain) {
         this._segments(pane); this._zones(pane); this._sdZones(pane);
-        this._targets(pane);
         this._price(pane); this._foreignPlots(pane);
         this._channels(pane); this._autoLines(pane);
         this._msEvents(pane);
@@ -688,12 +735,13 @@ export class Chart {
         this._marks(pane);
         this._asOfMark(pane);
         this._ruleZone(pane);
+        this._ruleTargets(pane);
         this._positions(pane); this._drawings(pane);
       }
       ctx.restore();
       this._axisY(pane);
       this._valueTag(pane);
-      if (pane.isMain) this._zoneAxisLabels(pane);
+      if (pane.isMain) { this._zoneAxisLabels(pane); this._ruleTargetAxis(); }
       if (!pane.isMain) this._paneTitle(pane);
     }
 
@@ -987,7 +1035,10 @@ export class Chart {
   }
 
   _trail(pane) {
-    const tr = this.trail;
+    for (const tr of (this.trail || [])) this._oneTrail(pane, tr);
+  }
+
+  _oneTrail(pane, tr) {
     if (!tr || !tr.points || tr.points.length < 2) return;
     const ctx = this.ctx;
     ctx.save();
@@ -1036,17 +1087,41 @@ export class Chart {
    * THE RED BLOCK IS REAL. Entry to the 2-ATR stop is the rule's actual risk,
    * fixed at entry, and it is the one level here you could place.
    *
-   * THE GREEN BLOCK IS NOT A TARGET. Donchian has none: 138 of 207
-   * out-of-sample exits were the trailing channel and none were a target, and
-   * capping at 1R was measured to turn +43.7 net R into -2.1. It is drawn to a
-   * REFERENCE R multiple and HATCHED so the eye reads it as a measurement
-   * rather than a level. The real exit is the moving channel line drawn by
-   * _trail, which sits BELOW a long's entry early on and ratchets up -- a shape
-   * no static box can show.
+   * THE TEAL BLOCK IS THE ROOM TO THE FIRST LEVEL, and its far edge is TP1
+   * exactly -- the same price `_ruleTargets` marks on the scale and the panel
+   * lists. It used to be drawn to a REFERENCE 2R instead, which could only ever
+   * disagree with them: on XAUUSD 4h that edge sat at 4303.01 while the nearest
+   * real level was 4253.40, a 49-point gap with nothing on screen to explain it
+   * because the two were never measuring the same thing.
    *
-   * NO TEXT. The bands carried three prose labels and they crowded the price
-   * action they were drawn over. The meaning moved to the Donchian panel, which
-   * states the stop, the moving exit level and "no take-profit" in words. */
+   * IT IS STILL NOT A TARGET. The rule does not exit there -- it exits on the
+   * stop or on the line `_trail` draws. The block says how much room the trade
+   * has before it meets something, which is the question an entry raises and
+   * the one a price alone cannot answer.
+   *
+   * IT WAS HATCHED FOR A WHILE, on the argument that solid shading reads as a
+   * zone price has been in while this is space it has not yet crossed. Drawn,
+   * the texture lost that argument: seven-pixel dotted rows over a candle body
+   * read as a rendering artefact rather than as a distinction, and at the band
+   * heights this thing actually takes -- a few hundred pixels on 4h, a dozen on
+   * 1m -- the rows either striped the whole trade or collapsed into one smear.
+   * It is a light solid fill now, with a single solid line on the TP1 edge,
+   * which is the boundary that means something. Nothing about the semantics
+   * changed: this is still not a level the rule exits at.
+   *
+   * No block when there is no level ahead -- clear air is drawn as clear air.
+   *
+   * TWO LABELS, NOT THREE SENTENCES. An earlier version carried prose tags --
+   * "RULE holding LONG", and the like -- which crowded the price action they
+   * were drawn over, and they were removed. What came back is narrower and is
+   * the part that could not be got from the panel at a glance: WHICH line is
+   * which, and how far away it is. A chart with an unlabelled dashed line and
+   * an unlabelled box asks the reader to hold the panel's numbers in their head
+   * and match them by height.
+   *
+   * Distance in the instrument's own units, from the LAST CLOSE rather than
+   * from the entry: "the stop is 47 pts below here" is the question a reader
+   * standing at the right edge is actually asking. */
   _ruleZone(pane) {
     const z = this.ruleZone;
     if (!z || !(z.entry > 0)) return;
@@ -1059,9 +1134,9 @@ export class Chart {
     ctx.save();
     if (z.stop > 0) {
       const yS = this.y(pane, z.stop);
-      ctx.fillStyle = 'rgba(227,28,121,.11)';
+      ctx.fillStyle = 'rgba(255,77,77,.11)';
       ctx.fillRect(x0, Math.min(yE, yS), x1 - x0, Math.abs(yS - yE));
-      ctx.strokeStyle = 'rgba(227,28,121,.6)';
+      ctx.strokeStyle = 'rgba(255,77,77,.6)';
       ctx.setLineDash([4, 3]);
       ctx.lineWidth = 1;
       ctx.strokeRect(x0 + 0.5, Math.min(yE, yS) + 0.5,
@@ -1071,16 +1146,25 @@ export class Chart {
       const yR = this.y(pane, z.ref);
       const top = Math.min(yE, yR);
       const h = Math.abs(yR - yE);
-      ctx.fillStyle = 'rgba(147,201,15,.07)';
+      /* SOLID, AND LIGHT ENOUGH TO SEE THROUGH. The candles inside this band
+         are the trade so far; a fill that hides them costs more than the band
+         is worth. .09 alpha over the chart ground is the same weight the red
+         risk block carries, so the two read as one pair rather than as a block
+         and a texture. Teal, not lime: `COL.tp`'s note says why. */
+      ctx.fillStyle = 'rgba(47,212,192,.09)';
       ctx.fillRect(x0, top, x1 - x0, h);
-      ctx.strokeStyle = 'rgba(147,201,15,.30)';
-      ctx.setLineDash([2, 5]);
+      /* The far edge is TP1 and is the only line here worth drawing: it is the
+         price `_ruleTargets` tags on the scale. Entry already has its own
+         dashed line below, so the band's other edge is left implicit. */
+      ctx.strokeStyle = 'rgba(47,212,192,.38)';
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let y = top; y < top + h; y += 7) {
-        ctx.moveTo(x0, y); ctx.lineTo(x1, y);
-      }
+      const yEdge = Math.round(yR) + 0.5;
+      ctx.moveTo(x0, yEdge); ctx.lineTo(x1, yEdge);
       ctx.stroke();
     }
+
     ctx.setLineDash([5, 4]);
     ctx.strokeStyle = COL.pos || '#e8eef6';
     ctx.beginPath();
@@ -1088,6 +1172,204 @@ export class Chart {
     ctx.lineTo(x1, Math.round(yE) + 0.5);
     ctx.stroke();
     ctx.setLineDash([]);
+
+    /* Right-aligned at the plot edge, where the levels are and where the eye
+       already is. Left would put them over the bars that formed the trade.
+     *
+     * READABLE, BECAUSE THESE TWO ARE THE PLAN. Everything else this renderer
+     * draws is context; ENTRY and SL are the two prices a reader acts on, and
+     * they were the faintest text on the chart -- 9px at 0.85 alpha on a chip
+     * that was itself 0.82 transparent, so candles showed through the letters
+     * and the label washed out over exactly the busy price action it sits in.
+     * Now: 10px bold, an OPAQUE chip, and a hairline in the level's own colour
+     * so the tag and the line it names are visibly one object. The two together
+     * cost about thirty pixels of width and are the difference between a label
+     * you read and one you decode. */
+    const last = this.bars.length ? this.bars[this.bars.length - 1].c : NaN;
+    const tag = (y, text, col) => {
+      if (!Number.isFinite(y) || y < pane.y + 8 || y > pane.y + pane.h - 5) return;
+      ctx.font = 'bold 10px "Roboto Mono", monospace';
+      ctx.textAlign = 'right';
+      const w = ctx.measureText(text).width + 12;
+      const h = 15;
+      const bx = x1 - w - 4;
+      const by = y - h - 1;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#02101f';
+      ctx.fillRect(bx, by, w, h);
+      /* The hairline is the tie to the line: same colour, and on the edge
+         nearest it, so a reader never has to match a tag to a level by
+         height. */
+      ctx.fillStyle = col;
+      ctx.fillRect(bx, by + h - 2, w, 2);
+      ctx.fillText(text, x1 - 10, by + h - 5);
+      ctx.textAlign = 'left';
+    };
+    /* Pips, like the target tags directly beneath these. Two units in one
+       stack of labels is a reader doing arithmetic to compare two lines. */
+    const away = (v) => (Number.isFinite(last) ? `  ${this._pips(v - last)}` : '');
+    tag(yE, `ENTRY ${z.entry.toFixed(this.digits)}${away(z.entry)}`,
+        COL.pos || '#e8eef6');
+    if (z.stop > 0) {
+      tag(this.y(pane, z.stop),
+          `SL ${z.stop.toFixed(this.digits)}${away(z.stop)}`, COL.sl);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * The rule's structural targets, drawn the way a trade plan is read.
+   *
+   * A TAG AT THE RIGHT EDGE AND A MARK ON THE AXIS. This went through a
+   * full-width line across the plot (removed: a level not yet reached is not
+   * structure and should not have the weight of one), then a tag on its own,
+   * then an axis mark on its own. Both, without the line, is where it landed:
+   * the tag carries the reading and the axis mark ties it to a price.
+   *
+   * OFF-SCREEN LEVELS STILL COUNT. One above the visible range is clamped to
+   * the edge, dimmed and prefixed with an arrow rather than dropped: "there is
+   * a level up there, off your window" is information, and omitting it makes a
+   * plan look shorter than it is.
+   */
+  _ruleTargets(pane) {
+    this._rtSlots = null;
+    const t = this.ruleTargets;
+    if (!t) return;
+    const ctx = this.ctx;
+    const last = this.bars.length ? this.bars[this.bars.length - 1].c : NaN;
+    const x1 = pane.x + pane.w;
+    if (x1 <= pane.x) return;
+
+    /* What one unit of price is worth at the broker minimum. `tickValue /
+       tickSize` is a property of the CONTRACT -- no equity, no FX rate -- which
+       is what makes it safe to print without the app sizing a position. Zero
+       when the spec has not arrived, and the tag simply omits the money. */
+    const perPrice = (t.tickSize > 0 && t.tickValue > 0)
+      ? (t.tickValue / t.tickSize) * MIN_LOT : 0;
+
+    ctx.save();
+    ctx.font = '9px "Roboto Mono", monospace';
+    const used = [];      // the y each tag was finally drawn at
+    const drawn = [];     // and the price it belongs to, for the nudge direction
+    const slots = [];
+    for (const lv of t.levels) {
+      const yRaw = this.y(pane, lv.price);
+      if (!Number.isFinite(yRaw)) continue;
+      const off = yRaw < pane.y + 7 ? -1 : yRaw > pane.y + pane.h - 7 ? 1 : 0;
+      let y = Math.round(clamp(yRaw, pane.y + 7, pane.y + pane.h - 7)) + 0.5;
+
+      /* NUDGED, NOT DROPPED.
+       *
+       * Two tags on the same pixel row overprint into a smear, and the first
+       * fix was to skip the further one. That silently removed a level from the
+       * chart while the panel went on listing it -- the two disagreeing about
+       * how many things are in front of the trade, which is worse than a tag
+       * sitting a few pixels off its exact height.
+       *
+       * Pushed in the direction the levels are already travelling, so a nudged
+       * tag can never cross its neighbour and reorder the sequence. Each tag
+       * prints its own price, so the number stays exact even where the position
+       * is approximate -- which is the trade every crowded price scale makes.
+       */
+      if (used.length) {
+        const prevY = used[used.length - 1];
+        const prevP = drawn[drawn.length - 1];
+        if (Math.abs(y - prevY) < LAB_GAP) {
+          const dir = Math.sign(y - prevY)
+            || (lv.price > prevP ? -1 : 1);   // higher price sits higher up
+          y = prevY + dir * LAB_GAP;
+        }
+      }
+      y = Math.round(clamp(y, pane.y + 7, pane.y + pane.h - 7)) + 0.5;
+      used.push(y);
+      drawn.push(lv.price);
+
+      /* TWO MARKS PER LEVEL: a tag in the plot and the price on the axis.
+       *
+       * The tag says WHICH level, HOW FAR FROM THE FILL and WHAT IT PAYS at the
+       * broker minimum -- the three things a reader scanning the right-hand
+       * side is actually asking, and price alone answers none of them. It is
+       * right-aligned against the axis so it sits in the margin most charts
+       * leave empty rather than over the bars that formed the trade.
+       *
+       * BOTH DISTANCES FROM THE ENTRY, never one from the entry and one from
+       * the current price. That mix existed briefly and nothing about the label
+       * revealed it: "5.4 pips" measured from now beside "$228" measured from
+       * the fill. A level's defining pair is how far it is from where you got in
+       * and what it pays there, and both are fixed for the life of the trade --
+       * which is also what stops the tag flickering on every tick.
+       *
+       * A MAGNITUDE, not a signed difference: every level here is ahead of the
+       * trade by construction, so `price - entry` being negative for a short
+       * would put a minus sign against a profit.
+       */
+      const anchor = Number.isFinite(t.entry) ? t.entry : last;
+      const bits = [lv.key];
+      if (Number.isFinite(anchor)) {
+        bits.push(this._pips(Math.abs(lv.price - anchor)));
+        if (perPrice > 0) {
+          bits.push(`$${Math.round(Math.abs(lv.price - anchor) * perPrice)}`);
+        }
+      }
+      const text = `${off < 0 ? '▲' : off > 0 ? '▼' : ''}${bits.join('  ')}`;
+
+      ctx.globalAlpha = off ? 0.6 : 1;
+      ctx.font = '9px "Roboto Mono", monospace';
+      ctx.textAlign = 'left';
+      const w = ctx.measureText(text).width + 10;
+      ctx.fillStyle = COL.tp;
+      ctx.fillRect(x1 - w - 2, y - 6, w, 12);
+      ctx.fillStyle = '#04201d';
+      ctx.fillText(text, x1 - w + 3, y + 3.5);
+
+      /* THE AXIS MARK IS NOT DRAWN HERE. It used to be, and it never appeared:
+         this method runs inside the pane's `ctx.clip()`, so everything at
+         `plot.r` or beyond was clipped away silently. The tag rendered, the
+         price on the scale did not, and nothing about the code said why.
+         `_ruleTargetAxis` paints it after the clip is released -- the same
+         place, and for the same reason, that `_zoneAxisLabels` runs. The slot
+         is recorded here so the two cannot disagree about where the level is.
+
+         SKIPPED WHERE IT WOULD SIT ON THE LIVE PRICE TAG: that one has to win,
+         and a number drawn beside the wrong line is worse than one fewer. */
+      const lastY = Number.isFinite(last) ? this.y(pane, last) : NaN;
+      if (!(Number.isFinite(lastY) && Math.abs(lastY - y) < 15)) {
+        slots.push({ y, off, price: lv.price });
+      }
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    this._rtSlots = slots;
+  }
+
+  /**
+   * The levels' prices, on the price scale.
+   *
+   * SEPARATE FROM `_ruleTargets` ONLY BECAUSE OF THE CLIP. Anything the chart
+   * draws in the axis gutter has to happen after the pane's clip is released,
+   * which is why `_axisY`, `_valueTag` and `_zoneAxisLabels` all live out here
+   * too. Drawing it inside cost nothing and showed nothing.
+   *
+   * Painted from the slots `_ruleTargets` recorded rather than recomputed, so a
+   * mark can never end up beside a tag for a different level.
+   */
+  _ruleTargetAxis() {
+    const slots = this._rtSlots;
+    if (!slots || !slots.length) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.font = '9px "Roboto Mono", monospace';
+    ctx.textAlign = 'left';
+    for (const sl of slots) {
+      /* Solid for a level on screen, dimmed only for one clamped to an edge --
+         the same weighting the plot-side tag uses, so a mark and its tag always
+         read as the same object. */
+      ctx.globalAlpha = sl.off ? 0.6 : 1;
+      ctx.fillStyle = COL.tp;
+      ctx.fillRect(this.plot.r, sl.y - 6, AXIS_W, 12);
+      ctx.fillStyle = '#04201d';
+      ctx.fillText(sl.price.toFixed(this.digits), this.plot.r + 5, sl.y + 3.5);
+    }
     ctx.restore();
   }
 
@@ -1647,58 +1929,6 @@ export class Chart {
      +7.21 vs +6.53, +4.28 vs +3.39), so the distinction is real -- but the gap
      is about one percentage point, so it is a hint in the styling rather than a
      different colour. */
-  /* TP bands.
-   *
-   * Drawn from the LAST BAR rightward, not across the whole chart: a target is
-   * a claim about where price might go, and painting it back over history it
-   * never reached reads as though it had. Deliberately thin, unfilled and
-   * dashed -- the supply/demand renderer above fills its zones because a zone
-   * is a region price moved through, whereas these are lines price has not
-   * reached yet, and giving them the same visual weight as observed structure
-   * would overstate them.
-   */
-  _targets(pane) {
-    if (!this.targets || !this.targets.length) return;
-    const ctx = this.ctx;
-    /* Anchor at the AS-OF bar when there is one, not at the end of the array.
-       A replay hands the chart the whole series and marks how far knowledge
-       reaches, so `bars.length - 1` is 1,950 bars past the cursor and 12,418px
-       off the right edge -- the bands computed correctly and drew nothing at
-       all. "From where knowledge stops, rightward" is the right anchor in both
-       contexts: the live chart has no mark and falls back to its last bar. */
-    const anchor = Number.isFinite(this.asOfMark) ? this.asOfMark : this.bars.length - 1;
-    const x0 = Math.max(pane.x, this.x(anchor));
-    const x1 = pane.x + pane.w;
-    if (x1 <= x0) return;
-    ctx.save();
-    ctx.font = '9px "Roboto Mono", monospace';
-    for (const b of this.targets) {
-      const yHi = this.y(pane, b.high);
-      const yLo = this.y(pane, b.low);
-      if (!Number.isFinite(yHi) || !Number.isFinite(yLo)) continue;
-      if (yLo < pane.y - 40 || yHi > pane.y + pane.h + 40) continue;
-      ctx.globalAlpha = 0.07;
-      ctx.fillStyle = COL.up;
-      ctx.fillRect(x0, yHi, x1 - x0, Math.max(2, yLo - yHi));
-      ctx.globalAlpha = 0.55;
-      ctx.strokeStyle = COL.up;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      for (const y of [yHi, yLo]) {
-        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = COL.up;
-      /* The CENTRE is the level; the band is only there to be visible at a
-         glance. Labelling the range implied the whole span mattered. */
-      const label = `${b.key} ${b.r}R`;
-      ctx.fillText(label, x0 + 4,
-        clamp((yHi + yLo) / 2 + 3, pane.y + 9, pane.y + pane.h - 3));
-    }
-    ctx.restore();
-  }
-
   _sdZones(pane) {
     if (!this.sdZones || !this.sdZones.length) return;
     const ctx = this.ctx;
@@ -2333,6 +2563,26 @@ export class Chart {
    * definition of the zone type, because the first question is always "what is
    * this band telling me", not "what is a supply zone".
    */
+  /**
+   * A PIP IS TEN POINTS, on every instrument this app quotes.
+   *
+   * A point is the last digit the broker prints; a pip is the digit traders
+   * actually count in. Fractional-pip FX quotes five decimals and the pip is
+   * the fourth (0.0001 = 10 points); JPY quotes three and the pip is the second
+   * (0.01 = 10 points); gold quotes two and the pip is the first (0.1 = 10
+   * points). One rule covers all three, which is why it is written as one.
+   *
+   * SEPARATE FROM `_units`, which reports metals in points and is used by the
+   * zone tooltips. Both are correct for their own readers -- a zone's thickness
+   * is a property of the chart and reads naturally in points -- and the trade
+   * levels use pips because that is the unit a plan is written in.
+   */
+  _pips(diff) {
+    const pip = Math.pow(10, -(this.digits - 1));
+    const v = Math.abs(diff) / pip;
+    return `${v >= 100 ? Math.round(v) : v.toFixed(1)} pips`;
+  }
+
   _units(diff) {
     // FX quotes in pips (5- and 3-digit); metals and indices in price points.
     const d = this.digits;

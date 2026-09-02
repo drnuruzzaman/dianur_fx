@@ -71,6 +71,69 @@ export const BARS_PER_DAY = { '1m': 1440, '5m': 288, '15m': 96, '30m': 48,
 /** The horizon that passed every gate in both eras, at 4h, 1h and 15m. */
 export const HORIZON_DAYS = 3.3;
 
+/*
+ * AND IT WAS RE-ASKED ON 5m, WHERE IT LOOKS MOST WRONG. A 5m gold chart is
+ * visibly full of moves and this rule sits flat through nearly all of them: at
+ * N=950 the channel was 349 points wide while the preceding day spanned 105.
+ * That is the complaint the sweep in tools/horizon_5m_eval.py answers -- eight
+ * durations from the literal 20/10 (100 minutes) up to 3.3 days, four symbols,
+ * both eras, ~740k bars each, paired on calendar blocks. logs/horizon_5m_eval.txt
+ * has it in full. Pooled, against this baseline:
+ *
+ *     native 20/10   -3616 R [-4493,-2669]   -3672 R [-4506,-2788]   WORSE, both
+ *     2h             -3345 R                 -3381 R                 WORSE, both
+ *     4h             -2117 R                 -1804 R                 WORSE, both
+ *     8h              -846 R                  -597 R                 not shown
+ *     12h             -581 R                  -285 R                 not shown
+ *     24h              -29 R                  +246 R                 not shown
+ *     48h             +156 R                   +63 R                 not shown
+ *
+ * THE ROW A READER'S EYE ASKS FOR IS THE WORST ONE. Native 20/10 takes 21,071
+ * trades on gold alone and loses by more than three thousand R in both eras,
+ * with intervals nowhere near zero. Nothing beats 3.3 days in both eras, and
+ * the two rows that lead on a point estimate do not survive being picked in one
+ * era and read in the other: 48h is +156 R where it was chosen and +63 R
+ * [-207,+341] where it was not; 24h is +246 R where chosen and -29 R
+ * [-486,+395] where not.
+ *
+ * AND ALL OF THAT IS GROSS. On XAUUSD 5m the 18-point spread is 0.122 R per
+ * trade in 2016-2020 and 0.061 R in 2021-2026 (median ATR 0.74 and 1.48, so a
+ * 2-ATR stop is 1.47 and 2.96 wide). The short-horizon rows take 10-20x the
+ * baseline's trades and owe hundreds of R that these numbers never pay.
+ *
+ * So 5m keeps the 3.3-day channel and keeps being quiet. The silence is the
+ * rule working, not the rule failing to see.
+ *
+ * THEN THE SAME QUESTION ON EVERY FRAME. tools/horizon_eval.py generalises it:
+ * a ladder of 0.1x / 0.25x / 0.5x / 2x / 4x the SHIPPED duration plus the
+ * literal 20/10, on 5m 15m 30m 1h 4h 1d 1w, four symbols, both eras
+ * (logs/horizon_eval.txt). NOT ONE ROW ON ANY TIMEFRAME IS BETTER IN BOTH
+ * ERAS. The only decisive verdict in the whole sweep is native 20/10 on 5m,
+ * worse in both by ~3,600 R.
+ *
+ * The one thing that recurred was 0.5x: positive in both eras on 4h (+15/+37),
+ * 30m (+131/+175), 15m (+118/+98) and 5m (+48/+43), every interval spanning
+ * zero. Four frames leaning one way is not four observations -- same
+ * instruments, same decade, the same moves resampled -- so it went to the only
+ * test that is not selected on itself: the same sweep on AUDUSD, AUDJPY and
+ * USDCAD, which fed none of it (logs/horizon_holdout.txt). It did not repeat.
+ * 0.5x came back -2.2/-17.4 R on 4h, -5.7/+39.1 on 1h, and -314.1 R on 15m in
+ * 2016-2020 with an interval excluding zero. The lean was the sample.
+ *
+ * That hold-out also re-derived the reason this map exists, on symbols that
+ * never fed it: native 20/10 on 15m is WORSE IN BOTH ERAS there (-1230 R,
+ * -470 R). 3.3 days stands on every frame, and the map stays as it is.
+ *
+ * AND THE ONE FRAME THAT LOOKED WEAK WAS NOT THE FRAME. 1h pooled to -59.8 R in
+ * 2021-2026, the worst showing the shipped horizon had anywhere. Split per cell
+ * (tools/horizon_1h_look.py) it is XAUUSD +51.9/+72.2 and USDJPY +23.3/+15.8 --
+ * positive in both eras -- against EURUSD -20.0/-70.9, AUDUSD -18.7/-110.8, and
+ * three more that flip. Re-pooled on the two cells tools/entry_filter_eval.py
+ * had ALREADY called positive, 1h is +75.2/+87.9, and the same restriction gives
+ * +72.3/+57.3 on 4h, +239.1/+244.2 on 15m and +511.5/+444.3 on 5m. The horizon
+ * was never the problem on 1h; the pool was.
+ */
+
 /**
  * Where a 3.3-day channel is a sensible number of bars.
  *
@@ -165,6 +228,13 @@ export const donchianRule = {
   decide(i, { series, close, pos, p }) {
     const a = series.atr[i];
     if (!Number.isFinite(a) || a <= 0) return null;
+    /* THE STOP WIDTH MAY BE A FUNCTION OF SIDE, so a caller that measured the
+       two sides separately can hand both in without the rule learning where the
+       numbers came from. A plain number is the normal case and the validated
+       one: `DEFAULTS.atrMult` is 2.0 and nothing in the live panel passes
+       anything else. `js/chart/stopmode.js` is the only caller that does. */
+    const mult = (side) => (typeof p.atrMult === 'function'
+      ? p.atrMult(side) : p.atrMult);
     if (pos) {
       const out = pos.side === LONG_ ? close[i] < series.exitLo[i]
                                      : close[i] > series.exitHi[i];
@@ -181,10 +251,10 @@ export const donchianRule = {
       allowShort = close[i] < t;
     }
     if (allowLong && Number.isFinite(series.hi[i]) && close[i] > series.hi[i]) {
-      return { side: LONG_, stop: close[i] - p.atrMult * a, tag: 'breakout_up' };
+      return { side: LONG_, stop: close[i] - mult(LONG_) * a, tag: 'breakout_up' };
     }
     if (allowShort && Number.isFinite(series.lo[i]) && close[i] < series.lo[i]) {
-      return { side: SHORT_, stop: close[i] + p.atrMult * a, tag: 'breakout_dn' };
+      return { side: SHORT_, stop: close[i] + mult(SHORT_) * a, tag: 'breakout_dn' };
     }
     return null;
   },

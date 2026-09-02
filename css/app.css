@@ -940,6 +940,30 @@ table.grid tr.cal-now:hover td{background:var(--surface-2)}
    nothing that stays visible moves when the rest go. */
 body.acct-hidden .acct-cell:not(.acct-keep){display:none}
 body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
+/* The tab counters are the account leaking through a side door: "Positions 3"
+   says as much as most people wanted covered. */
+body.acct-hidden #posCount, body.acct-hidden #ordCount{visibility:hidden}
+.sealed{color:var(--orange)}
+
+/* PRIVATE VALUES, revealed a row at a time.
+ *
+ * Even once the eye is open, a position's size and P&L are not something to
+ * leave standing on a shared screen -- so they are covered by default and each
+ * row uncovers only while the pointer is on it. The bar keeps the cell's own
+ * width so nothing reflows on hover: a table that jumps as the mouse crosses it
+ * announces which row is being read.
+ *
+ * `color:transparent` rather than `visibility:hidden` so the text still lays
+ * the column out, and the covering bar is drawn behind it. While the account is
+ * covered entirely these rows are not rendered at all -- see `sealed` in
+ * js/ui/panels.js -- so this rule only ever applies in the revealed state. */
+tr .pv{color:transparent; position:relative}
+tr .pv::after{
+  content:''; position:absolute; left:2px; right:2px; top:50%;
+  height:9px; transform:translateY(-50%); border-radius:2px;
+  background:var(--line); opacity:.75}
+tr:hover .pv{color:inherit}
+tr:hover .pv::after{display:none}
 .rp-verdict{
   font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
   cursor:help; white-space:nowrap; border:1px solid}
@@ -962,6 +986,69 @@ body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
 .rp-k{color:var(--text-dim); white-space:nowrap}
 .rp-v{font-variant-numeric:tabular-nums; white-space:nowrap}
 .rp-n{font-size:9.5px; color:var(--text-faint); line-height:1.3}
+
+/* "All reached." Green, because a trade that has run through everything in
+   front of it is the good case, and an empty space would have read as a fault. */
+.rp-clear{margin-top:5px; font-size:10px; color:var(--up); letter-spacing:.04em}
+
+/* THE TAKE-PROFIT SWITCH and the warning under it. One block: a mode changed in
+   one place whose cost is printed in another is a mode people leave on. */
+.rp-tp{margin-top:11px; padding-top:7px; border-top:1px solid var(--line-soft);
+  display:flex; align-items:center; justify-content:space-between; gap:8px}
+.rp-tp-k{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint)}
+.rp-tp-sel{height:21px; background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px; font-family:var(--mono);
+  font-size:10px; padding:0 4px; max-width:150px}
+.rp-tp-warn{margin-top:6px; font-size:9.5px; line-height:1.45; color:var(--orange);
+  padding:5px 7px; background:rgba(255,158,27,.08);
+  border-left:2px solid var(--orange); border-radius:2px}
+
+/* THE VERDICT, at the foot of the panel. Quiet on purpose: it is context for
+   everything above it, not a headline, and it was removed from the header twice
+   for being loud there. Uppercase and letter-spaced so it reads as a label
+   rather than as another number. */
+/* THE SAME HAIRLINE, NAMED, so the two places that draw it cannot drift. It
+   separates the levels from the rows above them and the verdict from the levels
+   -- one rule, two users, and it is the only divider on this panel. */
+.rp-rule{margin-top:10px; padding-top:6px; border-top:1px solid var(--line-soft)}
+.rp-cell{margin-top:10px; padding-top:6px; border-top:1px solid var(--line-soft);
+  display:flex; align-items:baseline; justify-content:space-between; gap:8px}
+.rp-cell-k{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint)}
+.rp-cell-v{font-size:9.5px; letter-spacing:.08em; color:var(--text-dim);
+  text-align:right}
+
+/* THE SECOND LABEL beside the action badge: which way the rule is, or what the
+   market is doing when it is not in anything.
+
+   FILLED FOR A DIRECTION, OUTLINED FOR A REGIME, and the split is the point. A
+   direction is a fact about your trade; a regime is a claim about the market.
+   One shared style would invite reading SIDEWAYS as "I am flat" or LONG as
+   "the market is rising", which are two different mistakes. */
+.rp-state{
+  font-family:var(--sans); font-size:9px; letter-spacing:.1em;
+  padding:2px 6px; border-radius:2px; white-space:nowrap; align-self:center}
+.rp-state-long{color:#0b1a05; background:var(--up); border:1px solid var(--up)}
+.rp-state-short{color:#fff; background:var(--down); border:1px solid var(--down)}
+.rp-state-regime{color:var(--text-dim); border:1px solid var(--line);
+  background:transparent}
+
+/* WHICH EXIT BINDS. Same vocabulary as the strategy replay's badge, deliberately
+   -- the two panels describe the same rule and a reader moving between them
+   should not have to learn the notation twice. Named rp- rather than reusing
+   .sr-live because the two panels own their own styles; if they are ever
+   unified, this is the pair to merge. */
+.rp-live{
+  margin-left:6px; font-family:var(--sans); font-size:9px; letter-spacing:.09em;
+  padding:1px 4px; border-radius:2px; vertical-align:1px;
+  color:var(--text-faint); border:1px solid var(--line)}
+.rp-live-on{color:#0b1a05; background:var(--up); border-color:var(--up);
+  font-weight:500}
+/* Section heading inside the panel, matching the replay's. */
+.rp-h{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint); margin:11px 0 4px; padding-bottom:3px;
+  border-bottom:1px solid var(--line-soft)}
 
 .rp-untradeable{
   margin-top:8px; padding:5px 7px; border-radius:3px; cursor:help;
@@ -1046,6 +1133,13 @@ body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
    bar does not reflow when a longer ticker is picked. */
 .rp-btn.rp-symbtn{min-width:96px; font-family:var(--mono); font-size:10.5px;
   justify-content:flex-start; text-align:left; color:var(--text)}
+/* The take-profit selector. It is the one control on this bar that changes what
+   the RULE does rather than where you are standing in it, so it is lit whenever
+   it is not on "off" -- the same affordance the toggles use, for the same
+   reason: a mode you cannot see is on is a mode you forget is on. Wider than a
+   plain select because its options are sentences, not tickers. */
+.rp-tpsel{width:132px}
+.rp-tpsel.on{border-color:var(--accent, #31c7d6); color:var(--accent, #31c7d6)}
 .rp-sep{width:1px; height:16px; background:var(--line); margin:0 4px}
 .rp-lbl{font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--text-faint)}
 .rp-status{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:6px}
@@ -1130,6 +1224,10 @@ body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
 .sr-h{font-size:9px; letter-spacing:2px; text-transform:uppercase;
   color:var(--text-faint); margin:11px 0 4px; padding-bottom:3px;
   border-bottom:1px solid var(--line-soft)}
+/* The divider an `.sr-h` would have drawn, for the blocks that no longer have
+   a heading. Same hairline, same spacing -- see `.rp-rule`, which does this on
+   the live panel for the same reason. */
+.sr-rule{margin-top:11px; padding-top:6px; border-top:1px solid var(--line-soft)}
 .sr-kv{width:100%; border-collapse:collapse; font-size:11.5px}
 .sr-kv td{padding:2px 0; color:var(--text-dim)}
 .sr-kv td:last-child{text-align:right; color:var(--text); font-family:var(--mono)}

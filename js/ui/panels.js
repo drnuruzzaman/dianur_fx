@@ -15,7 +15,30 @@ const table = (cols, rows) => {
 
 const empty = (msg) => el('div', { class: 'empty', text: msg });
 
-const plCell = (v) => el('td', { class: v >= 0 ? 'up' : 'down', text: (v >= 0 ? '+' : '') + num(v) });
+const plCell = (v, extra = '') => el('td', {
+  class: `${v >= 0 ? 'up' : 'down'}${extra ? ' ' + extra : ''}`,
+  text: (v >= 0 ? '+' : '') + num(v),
+});
+
+/* IS THE ACCOUNT COVERED. The eye in the status bar owns this class and the app
+   starts with it on, so this is the default state, not the exception. */
+const covered = () => document.body.classList.contains('acct-hidden');
+
+/**
+ * What Positions and Orders show while the account is covered.
+ *
+ * NOTHING, AND IT SAYS SO. These two tabs are the account by another route --
+ * a row carries the instrument, the size and the running P&L, which is most of
+ * what the eye was pressed to conceal. Leaving them readable made the eye a
+ * gesture rather than a control.
+ *
+ * A NOTE RATHER THAN AN EMPTY PANEL, because "no open positions" and "not
+ * shown" are opposite facts and a blank tab reads as the first. Someone
+ * checking whether they are flat must not be told they are.
+ */
+const sealed = (what) => el('div', { class: 'empty sealed' },
+  `${what} are hidden with the account figures — press the eye in the status `
+  + 'bar to reveal');
 
 export class Panels {
   constructor() {
@@ -303,39 +326,41 @@ export class Panels {
     const d = this.data;
 
     if (this.tab === 'positions') {
+      if (covered()) return void h.append(sealed('positions'));
       if (!d.positions.length) return void h.append(empty('no open positions'));
       const rows = d.positions.map((p) => el('tr', {},
         el('td', { class: 'sym', text: p.symbol }),
         el('td', { class: p.side === 'buy' ? 'up' : 'down', text: p.side.toUpperCase() }),
-        el('td', { text: num(p.volume, 2) }),
-        el('td', { text: px(p.price_open, 5) }),
-        el('td', { text: px(p.price_current, 5) }),
-        el('td', { text: p.sl ? px(p.sl, 5) : '—' }),
-        el('td', { text: p.tp ? px(p.tp, 5) : '—' }),
-        el('td', { text: num(p.swap) }),
-        plCell(p.profit),
+        el('td', { class: 'pv', text: num(p.volume, 2) }),
+        el('td', { class: 'pv', text: px(p.price_open, 5) }),
+        el('td', { class: 'pv', text: px(p.price_current, 5) }),
+        el('td', { class: 'pv', text: p.sl ? px(p.sl, 5) : '—' }),
+        el('td', { class: 'pv', text: p.tp ? px(p.tp, 5) : '—' }),
+        el('td', { class: 'pv', text: num(p.swap) }),
+        plCell(p.profit, 'pv'),
         el('td', { text: stamp(p.time_ms) }),
         el('td', { text: p.ticket })));
       const total = d.positions.reduce((a, p) => a + (p.profit || 0), 0);
       rows.push(el('tr', {},
         el('td', { class: 'sym', text: 'TOTAL' }),
         ...Array.from({ length: 7 }, () => el('td', { text: '' })),
-        plCell(total), el('td', { text: '' }), el('td', { text: '' })));
+        plCell(total, 'pv'), el('td', { text: '' }), el('td', { text: '' })));
       h.append(table(['Symbol', 'Side', 'Lots', 'Open', 'Current', 'SL', 'TP', 'Swap',
         `P/L ${this.currency}`, 'Opened', 'Ticket'], rows));
       return;
     }
 
     if (this.tab === 'orders') {
+      if (covered()) return void h.append(sealed('orders'));
       if (!d.orders.length) return void h.append(empty('no pending orders'));
       h.append(table(['Symbol', 'Type', 'Lots', 'Price', 'SL', 'TP', 'Placed', 'Ticket'],
         d.orders.map((o) => el('tr', {},
           el('td', { class: 'sym', text: o.symbol }),
           el('td', { text: String(o.type || o.side || '').toUpperCase() }),
-          el('td', { text: num(o.volume, 2) }),
-          el('td', { text: px(o.price_open ?? o.price, 5) }),
-          el('td', { text: o.sl ? px(o.sl, 5) : '—' }),
-          el('td', { text: o.tp ? px(o.tp, 5) : '—' }),
+          el('td', { class: 'pv', text: num(o.volume, 2) }),
+          el('td', { class: 'pv', text: px(o.price_open ?? o.price, 5) }),
+          el('td', { class: 'pv', text: o.sl ? px(o.sl, 5) : '—' }),
+          el('td', { class: 'pv', text: o.tp ? px(o.tp, 5) : '—' }),
           el('td', { text: stamp(o.time_ms) }),
           el('td', { text: o.ticket })))));
       return;

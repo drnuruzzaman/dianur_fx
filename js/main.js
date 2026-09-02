@@ -29,6 +29,7 @@ import { Panels } from './ui/panels.js';
 import { TrendRead, readTfs } from './ui/trendread.js';
 import { SignalPanel } from './ui/signalpanel.js';
 import { RulePanel } from './ui/rulepanel.js';
+import { structuralTrail } from './chart/exittrail.js';
 import { installTips } from './ui/tips.js';
 import { installChat } from './ui/chat.js';
 
@@ -637,6 +638,11 @@ async function loadSpec(symbol) {
        shows 1.16 where the instrument quotes 1.16393. */
     app.spec = await api.spec(symbol);
   } catch { app.spec = null; }
+  /* The rule panel prices its levels at 0.01 lots and needs the contract to do
+     it. Attached rather than fetched there: the panel redraws on every tick and
+     should not be making network calls to label a row. */
+  rulePanel.spec = app.spec;
+  if (rulePanel.sig) rulePanel.render();
 }
 
 /* The stock watchlist ships plain names, but a broker serves its own tickers
@@ -1059,16 +1065,22 @@ async function runAuto(chart) {
    The zone appears whether or not anything is open at the broker, because it
    describes what the RULE would risk, not what you hold.
 
-   The reference level is 2R and is NOT a target -- the rule has none. It is
-   drawn hatched so the eye reads it as a measurement rather than a level, and
-   carries no text: the Donchian panel states the stop, the moving exit level
-   and "no take-profit" in words. The REAL exit is the moving channel, drawn as
-   a step line by setTrail. */
+   THE 2R REFERENCE BAND IS GONE. It shaded entry to twice the risk, which was
+   the last of the fixed-R ladder still drawing after the rest was removed --
+   and on a chart whose forward marks are structural it could only ever
+   disagree with them. The levels ahead are marked on the price scale by
+   setRuleTargets; the exit is one line from setTrail. */
 function paintRuleSignal(chart, sig) {
-  if (!sig || !sig.series) { chart.setRuleZone(null); chart.setTrail(null); return; }
+  if (!sig || !sig.series) {
+    chart.setRuleZone(null); chart.setTrail(null); chart.setRuleTargets(null);
+    return;
+  }
   const held = sig.position;
   const pend = (!held && sig.pending && sig.pending.side !== 0) ? sig.pending : null;
-  if (!held && !pend) { chart.setRuleZone(null); chart.setTrail(null); return; }
+  if (!held && !pend) {
+    chart.setRuleZone(null); chart.setTrail(null); chart.setRuleTargets(null);
+    return;
+  }
 
   const long = (held ? held.side : pend.side) > 0;
   /* A pending signal has no fill yet: the rule decided on THIS close and the
@@ -1077,42 +1089,126 @@ function paintRuleSignal(chart, sig) {
   const entry = held ? held.entryPrice : pend.signalPrice;
   const stop = held ? held.stop : pend.stop;
   const risk = Math.abs(entry - stop);
+
+  /* THE LEVELS COME FROM THE PANEL, which computed them from the same closed
+     bars it walked the rule over. Read BEFORE the zone is set, because the
+     zone's green block is drawn to the first of them. */
+  const levels = rulePanel.levels || [];
+
   chart.setRuleZone({
     entry,
     stop,
-    ref: risk > 0 ? entry + (long ? 2 : -2) * risk : 0,
-    refR: 2,
+    /* THE FAR EDGE OF THE GREEN BLOCK IS TP1 ITSELF -- the same price the scale
+       is marked at and the panel lists, so the block and the tag can never
+       disagree. It was a fixed 2R once and could only ever miss. Zero when
+       nothing is ahead, and the block is simply not drawn: clear air is drawn
+       as clear air rather than as a band of arbitrary depth. */
+    ref: levels.length ? levels[0].price : 0,
     atrMult: (sig.params && sig.params.atrMult) || 2,
     i0: held ? held.entryI : pend.signalI,
     label: held ? (long ? 'RULE holding LONG' : 'RULE holding SHORT')
                 : (long ? 'RULE would BUY' : 'RULE would SELL'),
   });
 
-  /* the moving exit, traced from the entry bar -- the level that actually
-     closes two thirds of this rule's trades */
+  /* THE MOVING EXIT, TRACED -- ONE LINE, AND IT IS THE ONE THAT WILL FIRE.
+   *
+   * The trade has two moving exits now: the rule's own channel and the
+   * structural trail. This draws the EFFECTIVE one, the tighter of the two at
+   * every bar, which is by definition the level that closes the trade. Violet
+   * and dashed because it is the trail most of the time; where the channel is
+   * tighter the same line traces the channel instead.
+   *
+   * NOT JUST THE TRAIL. The channel still takes roughly a quarter of the exits,
+   * usually early on before any structure has formed behind the trade -- so a
+   * line showing only the trail would sit at a level the trade sometimes does
+   * not exit at, and draw nothing at the level it does.
+   *
+   * No label: the Donchian panel names all three levels and marks which binds,
+   * and a tag floating over price is the thing that made the zone labels worth
+   * removing. The strategy replay still passes one -- there the line has no
+   * panel beside it to explain what it is. */
   if (held) {
     const lvl = long ? sig.series.exitLo : sig.series.exitHi;
+    const closes = rulePanel.bars ? rulePanel.bars.map((b) => b.c) : [];
     const pts = [];
+    let trail = null;
     for (let k = held.entryI; k < sig.bars; k++) {
-      if (Number.isFinite(lvl[k])) pts.push({ i: k, price: lvl[k] });
+      if (closes.length) {
+        const cand = structuralTrail({
+          side: held.side, i: k, view: rulePanel.bars,
+          series: sig.series, close: closes,
+          /* As in the replay: the break-even floor is measured from the fill,
+             so the drawn line must be told which fill it belongs to. */
+          entryPrice: held.entryPrice,
+        }, { tf: rulePanel.rawTf, cell: `${chart.symbol}|${rulePanel.rawTf}` });
+        if (Number.isFinite(cand)) {
+          const better = trail === null || (long ? cand > trail : cand < trail);
+          if (better) trail = cand;
+        }
+      }
+      const ch = lvl[k];
+      let eff = null;
+      if (Number.isFinite(ch) && Number.isFinite(trail)) {
+        eff = long ? Math.max(ch, trail) : Math.min(ch, trail);
+      } else if (Number.isFinite(ch)) eff = ch;
+      else if (Number.isFinite(trail)) eff = trail;
+      if (Number.isFinite(eff)) pts.push({ i: k, price: eff });
     }
-    /* No label on the live chart: the Donchian panel already names this level
-       and its value, and a tag floating over price is the thing that made the
-       zone labels worth removing. The strategy replay still passes one -- there
-       the line has no panel beside it to explain what it is. */
     chart.setTrail(pts.length > 1
-      ? { points: pts, color: '#31c7d6', width: 1.4 } : null);
+      ? { points: pts, color: '#c07cf0', width: 1.4, dash: [4, 3] } : null);
   } else {
     chart.setTrail(null);
   }
+
+  /* THE LEVELS AHEAD, from the bar the rule decided on -- not from the last
+     bar. A trade opened 700 bars ago was planned against the structure visible
+     THEN, and re-deriving it from today's chart would silently rewrite the plan
+     every time a new high printed. */
+  /* THE MONEY. Two sources and they mean different things, so the label says
+     which: `/signal` gives the lots Python would actually take, and when it has
+     not answered -- it returns no size for a position already held -- the value
+     falls back to ONE LOT and is marked `/lot`.
+   *
+   * PER LOT IS NOT A GUESS. It is a property of the CONTRACT: tick value over
+   * tick size is what one lot is worth per unit of price, and it needs no
+   * equity and no FX rate. That is the whole reason it is a safe fallback,
+   * where inventing a position size would not be. */
+  /* THE LEVELS, PLUS WHAT THE TAG NEEDS TO PRICE THEM. `entry` is the rule's
+     own fill -- both the distance and the money on a tag are measured from it,
+     never from the current price -- and the contract decides the money. The
+     panel lists the same three numbers from the same two sources, so the tag
+     and the row can never disagree. */
+  const spec = app.spec;
+  chart.setRuleTargets({
+    levels,
+    entry,
+    tickSize: spec ? (spec.tick_size || spec.point || 0) : 0,
+    tickValue: spec ? (spec.tick_value || 0) : 0,
+  });
 }
 
-/* TP BANDS ARE GONE FROM THE LIVE CHART. They were drawn off an open
-   position, which made them order-derived, and shading here is now reserved
-   for the Donchian rule alone. They remain in the STRATEGY REPLAY, where the
-   whole point is to inspect a rule against reference levels and where they are
-   labelled "(REFERENCE)" beside a warning that the rule has no take-profit.
-   js/chart/targets.js is unchanged and still used there. */
+/* THE TARGETS ARE STRUCTURE, NOT R MULTIPLES.
+ *
+ * They were a 2R / 3.5R / 5R ladder, which has one virtue -- it is computable
+ * from any entry -- and one fatal defect: it is the same three numbers on every
+ * chart, and it is blind to what is actually in front of the trade. Two longs a
+ * hundred points apart got identical targets when one had clear air above it
+ * and the other was sitting under a supply zone that had turned price back four
+ * times.
+ *
+ * WHAT REPLACED IT is the first few things price actually has to get through,
+ * from js/chart/levels.js: swing highs, S/R levels, supply and demand bases,
+ * trendlines projected forward, and the unbroken swing whose break would be the
+ * next BOS -- plus the levels earlier BOS and CHoCH events happened at. Nearest
+ * first, near-duplicates collapsed, each carrying the name of what it is.
+ *
+ * CAUSAL, like everything else: every detector sees bars up to the signal bar
+ * and no further. A supply zone fitted with tomorrow's bars in view stops
+ * today's rally with uncanny precision and nothing about the chart looks wrong.
+ *
+ * THE RULE STILL HAS NO TAKE-PROFIT, and these are still not one -- it exits on
+ * the stop or the moving channel. They are where the trade is going to meet
+ * resistance, which is the thing an open R of +7.8 means nothing without. */
 
 function recomputeAll() { app.charts.forEach((c) => computeAuto(c, 0)); }
 
@@ -1167,6 +1263,9 @@ function paintAccount(a) {
     lvl.className = ml < 100 ? 'down' : ml < 200 ? 'warn' : 'up';
   }
   panels.currency = c;
+  /* The rule panel names the unit its money figures are quoted in, and the
+     account is the only place that knows it. */
+  rulePanel.currency = c;
 }
 
 /* REALISED profit for the broker's current day and month.
@@ -1811,6 +1910,13 @@ function wireToolbar() {
       icon.textContent = hidden ? '🔒' : '👁';
       eye.title = hidden ? 'Show account figures'
                          : 'Hide account figures (shared screen)';
+      /* THE TWO ACCOUNT-BEARING TABS ARE REBUILT, not just restyled. Positions
+         and Orders render nothing at all while covered, so the class alone
+         cannot bring them back -- and without this the panel kept whatever it
+         was showing when the eye was last pressed, which on the covering
+         direction is exactly the wrong leftover. */
+      panels.render();
+
       /* ONLY THE COVERED STATE IS REMEMBERED.
          Persisting "revealed" defeated the entire gate: reveal once, and every
          later load showed the balance with no PIN asked -- reloading the page

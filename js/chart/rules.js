@@ -21,6 +21,19 @@
  * `decide` returns null, `{ side: FLAT }`, or `{ side, stop, tag }`. It must
  * read nothing past index i -- that is the whole causality contract, and
  * tests/test_*_parity.py checks it against the Python engine per strategy.
+ *
+ * A TRAILING EXIT IS AVAILABLE AND A TAKE-PROFIT IS NOT, and the difference is
+ * the whole reason one survived and the other did not. `exitTrail` returns a
+ * PRICE BEHIND the trade that can only ratchet toward it; it never caps how far
+ * the trade may run. A target does exactly that, which is a bet against the
+ * tail a trend rule is paid from.
+ *
+ * THERE IS NO TAKE-PROFIT, and the walker has no way to express one. It had:
+ * `takeProfitR` for a multiple, `takeProfitAt` for a price, and
+ * `takeProfitFraction` for a scale-out, built when a target was asked for and
+ * removed when it was withdrawn. `logs/tp_struct_eval.txt` holds the run they went on the strength of: across
+ * twelve cells out of sample, no target beat the trailing exit on net R. Rules leave on their stop or
+ * on a close through their exit level, and nothing else.
  */
 
 export const LONG = 1;
@@ -101,17 +114,23 @@ export function runRule(bars, rule, opts = {}) {
   let pos = null;
   let pending = null;
 
+  /* ONE PLACE THAT COMPUTES `r`. It was three at one point and they disagreed
+     the moment a fourth exit was added; three call sites that each derive the
+     same number is three chances to derive it differently. */
+  const closeAt = (i, px, reason) => {
+    trades.push({
+      ...pos, exitI: i, exitTime: view[i].t, exitPrice: px, reason,
+      r: (px - pos.entryPrice) * pos.side / pos.risk,
+    });
+    pos = null;
+  };
+
   for (let i = 0; i < n; i++) {
     /* 1. fill what the previous close ordered, at THIS bar's open, before any
           of this bar's own logic runs. */
     if (pending) {
       if (pending.side === FLAT) {
-        if (pos) {
-          trades.push({ ...pos, exitI: i, exitTime: view[i].t, exitPrice: open[i],
-                        reason: pending.reason || 'signal',
-                        r: (open[i] - pos.entryPrice) * pos.side / pos.risk });
-          pos = null;
-        }
+        if (pos) closeAt(i, open[i], pending.reason || 'signal');
       } else if (!pos) {
         const px = open[i];
         const risk = Math.abs(px - pending.stop);
@@ -128,23 +147,74 @@ export function runRule(bars, rule, opts = {}) {
     }
 
     /* 2. the stop, on this bar's range. Pessimistic: a gap past it fills at
-          the open. None of these rules sets a target, so nothing races. */
+          the open. Nothing races it -- there is no target. */
     if (pos) {
       const gapped = pos.side === LONG ? open[i] <= pos.stop : open[i] >= pos.stop;
       const touched = pos.side === LONG ? low[i] <= pos.stop : high[i] >= pos.stop;
       if (gapped || touched) {
-        const px = gapped ? open[i] : pos.stop;
-        trades.push({ ...pos, exitI: i, exitTime: view[i].t, exitPrice: px,
-                      reason: gapped ? 'stop_gap' : 'stop',
-                      r: (px - pos.entryPrice) * pos.side / pos.risk });
-        pos = null;
+        closeAt(i, gapped ? open[i] : pos.stop, gapped ? 'stop_gap' : 'stop');
       }
     }
 
     if (i < warmup) continue;
 
     /* 3. decide on THIS close, to be acted on at the next open */
-    const asked = rule.decide(i, { series, close, open, high, low, pos, p });
+    let asked = rule.decide(i, { series, close, open, high, low, pos, p });
+
+    /* 3b. THE ENTRY GATE, which may only ever say NO TO AN ENTRY.
+          It is not shown exits and it is not shown FLAT intents, and that
+          restriction is the whole discipline: a filter that could suppress an
+          exit would be a second exit rule competing with the channel that
+          carries the edge, and sim/strategies/emafilter.py records what
+          happened the last time a gate was allowed to reach further than its
+          name suggested -- two strategies silently became different
+          strategies, and nothing failed loudly.
+
+          A gate that throws is treated as no gate rather than as a rejection.
+          A filter erroring on one bar must not quietly turn into "take no
+          trades", which is a configuration that looks flat rather than
+          broken. */
+    if (asked && asked.side !== FLAT && typeof p.entryFilter === 'function') {
+      let ok = true;
+      try {
+        ok = p.entryFilter({ ...asked, i, signalPrice: close[i],
+                             view, series, close, open, high, low, p, tf: p.tf });
+      } catch { ok = true; }
+      if (!ok) asked = null;
+    }
+
+    /* 3c. THE TRAILING EXIT, which is NOT a take-profit and must not be read as
+          one. A target caps the winner -- it says "this is far enough" -- and
+          that is the bet twelve cells said not to take. A trail says nothing
+          about how far a move can go; it only decides when one is over. It can
+          never limit the upside, only shorten the give-back.
+
+          THE TIGHTER OF THE TWO ALWAYS WINS. The rule's own exit stays exactly
+          as it is and this can only sit inside it, so the effective exit is
+          monotone: adding a trail can never produce a looser exit than the
+          rule already had. That is what makes the comparison interpretable --
+          any difference is the trail acting, never the rule being weakened.
+
+          RATCHET ONLY, and checked on the CLOSE like the channel it competes
+          with. An intrabar check would be a different kind of exit and the
+          comparison would be measuring two things at once. */
+    if (pos && typeof p.exitTrail === 'function') {
+      let cand = null;
+      try {
+        cand = p.exitTrail({ ...pos, i, view, series, close, high, low, p });
+      } catch { cand = null; }
+      if (Number.isFinite(cand)) {
+        const better = pos.trail === undefined || pos.trail === null
+          || (pos.side === LONG ? cand > pos.trail : cand < pos.trail);
+        if (better) pos.trail = cand;
+      }
+      if (Number.isFinite(pos.trail) && !(asked && asked.side === FLAT)) {
+        const through = pos.side === LONG
+          ? close[i] < pos.trail : close[i] > pos.trail;
+        if (through) asked = { side: FLAT, reason: 'trail' };
+      }
+    }
+
     if (asked) {
       /* Stamp the bar the decision was made on. It is always one before the
          fill, but recording it beats deriving it: the panel marks both, and a
@@ -219,7 +289,7 @@ export function instruction(sig) {
     out.action = 'hold';
     out.side = sig.position.side === LONG ? 'LONG' : 'SHORT';
     out.stop = sig.position.stop;
-    out.note = 'stop is fixed at entry; the exit level moves with each bar';
+    out.note = 'stop is fixed; exit moves with each bar';
   }
   return out;
 }

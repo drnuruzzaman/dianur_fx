@@ -55,6 +55,7 @@ status pill (top right) to retry or point at a different bridge URL.
 | Account row | Balance, Equity, Floating, Margin free and **Margin level** in the footer, hidden behind `$` until asked for |
 | Drawings | Horizontal line, trend line, ray, rectangle, Fib retracement — saved per symbol, shared across timeframes |
 | Snapshot | `⤓ Snapshot` (or `s`) saves the chart as a 2x PNG on a white background, branded and timestamped, with positions excluded |
+| Donchian rule | The validated rule's plan on the focused chart: entry, the 2-ATR risk block, the levels in the way, and the exit that fires |
 | Position lines | Open positions draw entry / SL / TP on the matching chart |
 | Bottom tabs | Positions (with running total), Orders, History (7 days, net), Calendar |
 
@@ -1215,9 +1216,9 @@ trade from, and "it restores correctly" is a promise that has to be re-earned
 after every future edit. The cost of it being broken once is your working
 layout.
 
-The four panels sit behind ONE MENU rather than a row of segments -- four labels
-across the top ate the width the panels underneath need, and the row would only
-grow. `Components` is now `Download market data`, named for what it is used for;
+The panels sit behind ONE MENU rather than a row of segments -- labels across the
+top ate the width the panels underneath need, and the row would only grow (it has:
+there are five now, `Strategy Replay` being the newest). `Components` is now `Download market data`, named for what it is used for;
 the view key is unchanged.
 
 A HOVER-OPENED MENU HAS TO CLOSE ON HOVER-OUT, which the shared `openMenu` does
@@ -1229,8 +1230,8 @@ its anchor, so crossing that gap fires mouseleave before mouseenter), bridged by
 the same 160ms grace the rail peek uses.
 
 The menu hangs off the BACKTEST TAB, on hover, and THE TAB TAKES THE NAME of the
-panel it is showing -- `Runs`, `Elliott Replay`, `Download market data` -- so the
-strip says which of the four is up. It falls back to `Backtest` whenever that
+panel it is showing -- `Runs`, `Elliott Replay`, `Strategy Replay`, `Download
+market data` -- so the strip says which of the five is up. It falls back to `Backtest` whenever that
 panel is not what you are looking at: another tab selected, or the panel
 collapsed and nothing being shown at all.
 
@@ -3388,6 +3389,265 @@ Verified bit-exact for pivots (strength 2/3/6), EMA, SMA, Bollinger, RSI, MACD,
 ATR, Stochastic, VWAP and Heikin Ashi. Negative controls confirm the test bites:
 pandas' default `ewm` seeding differs from the JS by 1.9 in price, which is
 exactly the trap the explicit SMA seeding in `sim/indicators.py` avoids.
+
+## The Donchian rule on screen
+
+The one validated rule, drawn on the live chart and stepped in the sandbox. The
+measurements behind every choice below sit beside the code they justify --
+`js/chart/trailmode.js`, `js/chart/levels.js`, `logs/tp_struct_eval.txt`,
+`logs/exit_trail_eval.txt` -- and what follows says what is drawn and why, not
+what was hoped for.
+
+**The rule.** Enter at the next open after a close through the 20-bar channel;
+leave when a close crosses the 10-bar channel the other way, or on a 2-ATR stop
+measured from the signal close. `paramsForTf` holds the horizon fixed in TIME
+rather than in bars, so N=20 on 4h becomes 317 on 15m and 950 on 5m -- the same
+3.3 days of history on every frame.
+
+### There is no take-profit, and that is a measurement
+
+Two separate measurements say so, and they say different things.
+
+`tools/tp_sweep.py` asked what a FIXED cap costs on the cell the rule was
+validated on: a 1R take-profit lifts the win rate from 36% to 49% and turns
+**+43.7 net R into -2.1**. A trend rule is paid from the tail, and a cap is a bet
+against the tail.
+
+A second study then asked whether a STRUCTURAL target -- one placed at the next
+real level rather than at a multiple of risk -- escapes that. Twelve cells out of
+sample, four target variants against the plain trailing exit, pooled in
+`logs/tp_struct_eval.txt`: every variant lands below the trail (structural -40.3
+net R, fitted-R -9.9, the half-position versions -11.7 and -13.4) and every
+interval spans zero. Nothing was demonstrated in the target's favour anywhere, so
+the machinery came out of the walker and off every surface -- and the eval script
+went with it, which is why that log is the record and there is nothing left to
+re-run. `tools/tp_sweep.py` survives; it measures the fixed cap above.
+
+So nothing on either chart is a price the rule exits at, except the stop and the
+trailing exit.
+
+`TP1 / TP2 / TP3` are named for what a reader recognises and captioned for what
+they are -- **"in the way -- not targets"**. They are the levels price has to get
+through: swing points, S/R zones, supply/demand bases, trendlines, and the
+unbroken swing whose break would be the next BOS (`js/chart/levels.js`). They are
+chosen ONCE, at the signal bar, from bars that existed then; levels price has
+since touched are dropped as spent, and a trade that has run through all of them
+is drawn as clear air rather than as an empty list. Three are shown, not four --
+the fourth was the furthest, the least likely to be reached and the first to go
+stale.
+
+### The exit moves; the stop does not
+
+Two things can end a trade, and the chart draws the one that will. The rule's own
+channel exit is a window fixed in TIME -- on XAUUSD 5m it is 39.6 hours, so after
+a fast move it sits wherever the high was a day and a half ago and cannot
+compress faster than the clock. The structural trail puts the exit behind the
+nearest S/R or swing instead, and the walker takes whichever of the two is
+TIGHTER, so the trail can never loosen the rule's own exit. One violet dashed
+line traces that effective level.
+
+**The honest verdict on the trail is NOT DEMONSTRATED.** Against the channel it
+looks strong in the recent era (+85.9 R) and indistinguishable in the earlier one
+(+0.2 R). Against the control that decides it -- an ATR trail matched to the same
+average distance from price, knowing nothing about the chart -- it is -49.1 R in
+2016-2020 and +38.9 R in 2021-2026, both spanning zero. Every refinement that
+made it more sensible as a stop made it harder to distinguish from a dumb one.
+Nothing on screen says this: the verdict chip is earned on the channel exit, and
+`js/chart/trailmode.js` is the only place that records the difference.
+
+### Entry filters: eleven gates, none of them real
+
+Eleven entry gates were measured across eight cells and two eras -- headroom to
+the next level, thrust, ADX, EMA regime, and combinations -- each against a
+random gate held to the SAME retention rate. None beat its matched coin flip. The
+finding that did replicate is about WHERE, not WHEN: XAUUSD is positive in both
+eras (+51.9 / +72.2 and +57.4 / +49.5), USDJPY positive in both, EURUSD negative
+in both, GBPUSD flips sign. **The edge is the cell, not the signal.**
+
+### Why 5m looks empty, and what a sweep said about it
+
+A 5m gold chart is full of moves and the rule sits flat through nearly all of
+them. That is the horizon, not a detection failure: at N=950 the channel measured
+349 points wide while the whole preceding day spanned 105, so nothing on the
+screen came close to the edge of it.
+
+`tools/horizon_5m_eval.py` re-asked the question properly -- eight durations from
+the literal 20/10 (100 minutes) to the shipped 3.3 days, four symbols, both eras,
+about 740k 5m bars per symbol, paired on calendar blocks. Pooled net R against
+the shipped horizon, full output in `logs/horizon_5m_eval.txt`:
+
+| horizon | N | 2016-2020 | 2021-2026 | verdict |
+|---|---|---|---|---|
+| native 20/10 | 20 | -3616 R [-4493, -2669] | -3672 R [-4506, -2788] | worse in both |
+| 2h | 24 | -3345 R | -3381 R | worse in both |
+| 4h | 48 | -2117 R | -1804 R | worse in both |
+| 8h | 96 | -846 R | -597 R | not demonstrated |
+| 12h | 144 | -581 R | -285 R | not demonstrated |
+| 24h | 288 | -29 R | +246 R | not demonstrated |
+| 48h | 576 | +156 R | +63 R | not demonstrated |
+| **79.2h (3.3d)** | **950** | baseline | baseline | **ships** |
+
+**The row a reader's eye asks for is the worst one.** Native 20/10 takes 21,071
+trades on gold alone and loses by more than three thousand R in both eras, with
+intervals nowhere near zero. Nothing beats 3.3 days in both eras, and neither row
+that leads on a point estimate survives being picked in one era and read in the
+other: 48h is +156 R where it was chosen and +63 R [-207, +341] where it was not;
+24h is +246 R where chosen and -29 R [-486, +395] where not.
+
+And all of it is gross. On XAUUSD 5m the 18-point spread is **0.122 R per trade**
+in 2016-2020 and **0.061 R** in 2021-2026 -- median ATR 0.74 and 1.48, so a 2-ATR
+stop is 1.47 and 2.96 wide. The short-horizon rows take 10-20x the baseline's
+trades and owe hundreds of R these numbers never pay. Even the best row on gold,
+24h, is only about +0.09 R per trade gross before roughly half of that goes to
+the spread on its extra trades.
+
+So 5m keeps the 3.3-day channel and keeps being quiet. The silence is the rule
+working, not the rule failing to see.
+
+### And the same question on every other frame
+
+`tools/horizon_eval.py` generalises that sweep: a ladder of **multiples of the
+shipped duration** -- 0.1x, 0.25x, 0.5x, 2x, 4x -- plus the literal 20/10, on
+5m / 15m / 30m / 1h / 4h / 1d / 1w, four symbols, both eras
+(`logs/horizon_eval.txt`). Multiples rather than absolute hours because an hour
+ladder cannot span the frames: 2h is a 5-bar channel on 4h and a 24-bar one on
+5m. On 4h and above the shipped rule IS 20/10, so those rows are one run.
+
+Pooled net R against what ships:
+
+| TF | ships | native 20/10 | 0.5x | 2x | 4x |
+|---|---|---|---|---|---|
+| 4h | 20 (3.3d) | *is* shipped | +15.4 / +36.7 | -111.3 / -17.9 | -146.1 / -10.9 |
+| 1h | 79 | +93.8 / +196.6 | +49.1 / +115.7 | -18.2 / +73.0 | -143.6 / +19.7 |
+| 30m | 158 | -32.9 / +6.7 | +131.3 / +174.8 | -19.9 / +181.7 | -173.2 / +10.7 |
+| 15m | 317 | -438.6 / -185.9 | +117.7 / +98.3 | -32.5 / +208.8 | -257.1 / +34.6 |
+| 5m | 950 | **-3616 / -3672** | +47.5 / +43.2 | -225.1 / +315.9 | -490.7 / +64.9 |
+| 1d | 20 | *is* shipped | -22.2 / +8.7 | +5.5 / +7.2 | +3.7 / +53.0 |
+| 1w | 20 | *is* shipped | +10.7 / -2.4 | +3.2 / -27.6 | — |
+
+**Not one row on any timeframe is better in both eras.** Every cell above is
+"not demonstrated" except native 20/10 on 5m, which is decisively worse in both.
+
+The one thing that recurred was **0.5x**: positive in both eras on 4h, 30m, 15m
+and 5m, with every interval spanning zero. Four frames leaning the same way is
+not four observations -- the same instruments over the same decade, the same
+moves resampled at different resolutions -- so it went to the only test that is
+not selected on itself: the same sweep on **AUDUSD, AUDJPY and USDCAD**, which
+fed none of it (`logs/horizon_holdout.txt`).
+
+It did not repeat. 0.5x came back -2.2 / -17.4 R on 4h, -5.7 / +39.1 on 1h, and
+**-314.1 R on 15m in 2016-2020 with an interval excluding zero**. The lean was
+the sample.
+
+That hold-out also re-derived the reason the horizon map exists, on symbols that
+never fed it: native 20/10 on 15m is worse in BOTH eras there (-1230 R, -470 R).
+So 3.3 days stands on every frame and nothing changed.
+
+**4h reproduces its own history** -- going longer is significantly worse (2x:
+-111.3 R early, interval excluding zero) and only the halving leans positive --
+which is a check on the sweep rather than a finding, since 4h is the cell N=20
+was validated on.
+
+### The 1h pool was the wrong pool
+
+1h came out of that sweep as the weakest case for the shipped horizon anywhere:
+-59.8 R in the recent era, with the literal 20/10 leading both. That is either
+3.3 days being wrong on the frame or the POOL containing instruments the rule
+does not work on, and a pooled row cannot tell those apart.
+`tools/horizon_1h_look.py` splits it, reading runs already on disk
+(`logs/horizon_1h_look.txt`).
+
+Per cell, the shipped horizon on 1h:
+
+| symbol | 2016-2020 | 2021-2026 | |
+|---|---|---|---|
+| XAUUSD | +51.9 | +72.2 | positive both |
+| USDJPY | +23.3 | +15.8 | positive both |
+| GBPUSD | +13.2 | -76.9 | flips |
+| AUDJPY | +58.9 | -20.5 | flips (hold-out) |
+| USDCAD | +17.2 | -35.6 | flips (hold-out) |
+| EURUSD | -20.0 | -70.9 | negative both |
+| AUDUSD | -18.7 | -110.8 | negative both (hold-out) |
+
+Re-pooled on **XAUUSD + USDJPY** -- the two cells `tools/entry_filter_eval.py`
+had already called positive in both eras, on its own data, so this is a prior
+applied rather than a selection made here -- 1h is **+75.2 R and +87.9 R**. The
+dropped pair is -6.8 and -147.7. There was never a 1h horizon problem; there was
+a pool containing four instruments this rule should not be run on.
+
+The same restriction holds everywhere it can be applied: 4h +72.3 / +57.3, 15m
++239.1 / +244.2, 5m +511.5 / +444.3 -- the shipped horizon positive in both eras
+on every intraday frame, once the cells are the ones the rule works on.
+
+And the "shorter is better on 1h" impression is an era, not a horizon. Tallied
+across all seven 1h cells, native 20/10 beats the shipped horizon in 3 of 7 cells
+in 2016-2020 (-10.5 R in total) and 6 of 7 in 2021-2026 (+348.9 R). A change that
+only helps after 2021 is a bet on the regime, which is exactly what the two-era
+rule exists to catch.
+
+### What the chart draws, and in what colour
+
+| Object | Drawn as |
+|---|---|
+| Entry | Orange dashed line, opaque `ENTRY <price> <pips>` tag with an orange hairline |
+| Risk | Light-red block from entry to the 2-ATR stop, dashed border, `SL` tag with a red hairline |
+| Room ahead | Light teal band from entry to TP1 -- solid, see-through, one solid line on the TP1 edge |
+| Levels | Teal `TP1 / TP2 / TP3` tags at the plot edge, plus a chip on the price scale |
+| Exit | Violet dashed line at the tighter of channel and trail |
+
+**The plan and the market are coloured from different palettes, deliberately.**
+Structure is coloured by direction -- lime where it should hold price up, magenta
+where it should hold price down -- and the plan used to borrow those same two
+colours, so the stop was magenta beside every resistance band and the
+room-to-TP1 block was lime beside every demand base. The plan now owns orange,
+red, teal and violet, none of which structure uses: nothing on the chart can be
+mistaken for the rule's plan, and the plan cannot be mistaken for structure.
+
+The `ENTRY` and `SL` tags are bold on an opaque chip because they are the two
+prices a reader acts on, and they were the faintest text on the chart.
+
+### Units: a pip is ten points, everywhere
+
+A point is the last digit the broker prints; a pip is the digit traders count in.
+One rule covers every instrument this app quotes, checked against each symbol's
+own `/spec`:
+
+| Instrument | digits | point | pip |
+|---|---|---|---|
+| 5-digit FX (EURUSD, GBPUSD, AUDUSD, USDCAD) | 5 | 0.00001 | 0.0001 |
+| JPY crosses (USDJPY, AUDJPY) | 3 | 0.001 | 0.01 |
+| Gold (XAUUSD), BTCUSD | 2 | 0.01 | 0.1 |
+| Indices (NAS100, US30) | 1 | 0.1 | 1.0 |
+
+So a $1.00 move in gold is 10 pips, and a 342-point move on US30 is 342 pips. Two
+things follow from applying one rule everywhere: on an index "pips" means index
+points, where the zone tooltips say "pts" for the same distance; and on BTCUSD a
+pip is $0.10, which makes routine moves print five-figure pip counts. Both are
+naming rather than arithmetic -- `_pips` is one line in `js/chart/engine.js` and
+one in `js/ui/rulepanel.js`, and the two agree.
+
+Money beside a level is quoted at the broker minimum, 0.01 lots, from
+`tick_value / tick_size` -- a property of the CONTRACT, needing no equity and no
+FX rate, which is why it is a safe fallback where inventing a position size would
+not be.
+
+### The strategy replay draws the same object
+
+`Backtest -> Strategy Replay` steps the rule bar by bar through history under the
+same causality contract as the Elliott sandbox: the signal is computed from the
+slice up to the cursor, never from the whole series, and it owns its own `Chart`
+so it cannot disturb the one you trade from.
+
+It draws what the live chart draws, from the same two calls -- `setRuleZone` for
+the plan and `setRuleTargets` for the levels. Two things were removed to get
+there. It had been drawing its simulated trade through `setPositions`, the
+renderer for REAL BROKER ROWS, which put a fabricated position through the one
+code path that is supposed to mean "you hold this". And it kept a fixed
+2R / 3.5R / 5R reference ladder from a `js/chart/targets.js` that no other
+surface still used -- three numbers computed from the stop alone, the same shape
+on every symbol, blind to what was actually in front of the trade. That file and
+its parity test are gone. `sim/targets.py` stays, because `/signal` still quotes
+reference R multiples in text, where they are labelled as such.
 
 ## Strategies and the confluence question
 
