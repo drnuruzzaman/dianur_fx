@@ -156,6 +156,38 @@ export function runRule(bars, rule, opts = {}) {
       }
     }
 
+    /* 2b. THE SAME EXIT, CHECKED INTRABAR -- opt-in, off in everything that
+          ships, and present only so `tools/exittouch_eval.py` can measure the
+          question "why wait for the close?" against the SAME lifecycle rather
+          than a second copy of it. A private walker in the research script was
+          the obvious alternative and is exactly how the ATR divergence got in.
+
+          THE LEVEL IS KNOWN BEFORE THE BAR OPENS. `exitLo`/`exitHi` are
+          rollingShifted -- extremes over the n bars ENDING BEFORE i -- so the
+          price checked here could have been a resting order placed at the
+          previous close. That is what makes this a fair comparison with the
+          close-based exit: same number, same information, only the moment of
+          acting on it differs.
+
+          TIES GO TO THE STOP, which is why this sits after it: on a bar that
+          reaches both, the loss is taken. The trail is folded in on the same
+          `tighter wins` rule the close path uses, and a gap through the level
+          fills at the open, pessimistic like the stop above. */
+    if (pos && p.exitTouch && i >= warmup) {
+      let lvl = rule.exitLevel(i, { series, pos, p });
+      if (Number.isFinite(pos.trail)) {
+        lvl = !Number.isFinite(lvl) ? pos.trail
+          : (pos.side === LONG ? Math.max(lvl, pos.trail) : Math.min(lvl, pos.trail));
+      }
+      if (Number.isFinite(lvl)) {
+        const gapped = pos.side === LONG ? open[i] <= lvl : open[i] >= lvl;
+        const touched = pos.side === LONG ? low[i] <= lvl : high[i] >= lvl;
+        if (gapped || touched) {
+          closeAt(i, gapped ? open[i] : lvl, gapped ? 'exit_gap' : 'exit_touch');
+        }
+      }
+    }
+
     if (i < warmup) continue;
 
     /* 3. decide on THIS close, to be acted on at the next open */

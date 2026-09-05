@@ -991,18 +991,16 @@ tr:hover .pv::after{display:none}
    front of it is the good case, and an empty space would have read as a fault. */
 .rp-clear{margin-top:5px; font-size:10px; color:var(--up); letter-spacing:.04em}
 
-/* THE TAKE-PROFIT SWITCH and the warning under it. One block: a mode changed in
-   one place whose cost is printed in another is a mode people leave on. */
-.rp-tp{margin-top:11px; padding-top:7px; border-top:1px solid var(--line-soft);
-  display:flex; align-items:center; justify-content:space-between; gap:8px}
-.rp-tp-k{font-size:9px; letter-spacing:2px; text-transform:uppercase;
-  color:var(--text-faint)}
-.rp-tp-sel{height:21px; background:var(--surface-2); color:var(--text);
-  border:1px solid var(--line); border-radius:3px; font-family:var(--mono);
-  font-size:10px; padding:0 4px; max-width:150px}
-.rp-tp-warn{margin-top:6px; font-size:9.5px; line-height:1.45; color:var(--orange);
-  padding:5px 7px; background:rgba(255,158,27,.08);
-  border-left:2px solid var(--orange); border-radius:2px}
+/* THE TAKE-PROFIT SWITCH IS GONE, and so are its styles. It went when the
+   measurement did -- no target beat the trailing exit across twelve cells --
+   and the rules outlived the markup by long enough to cause a bug worth
+   recording: `.rp-tp` was ALSO the class on every transport button, so a block
+   style meant for a panel row was landing `margin-top:11px` and a `border-top`
+   on the play controls, pushing them out of line with the selects beside them
+   and drawing a stray rule above them. `.rp-btn.rp-tp` overrode the padding and
+   nothing else, which is why it looked like a one-off spacing glitch rather
+   than two features sharing a name. The transport buttons are `.rp-trans` now.
+   Deleting dead CSS is not tidying here; it is the fix. */
 
 /* THE VERDICT, at the foot of the panel. Quiet on purpose: it is context for
    everything above it, not a headline, and it was removed from the header twice
@@ -1107,7 +1105,7 @@ tr:hover .pv::after{display:none}
 .rp-btn:hover{color:#fff; border-color:var(--accent)}
 /* The transport glyphs are square, and the one that is RUNNING is lit -- the
    bar says what it is doing, not only what it can do. */
-.rp-btn.rp-tp{width:26px; padding:0; text-align:center; font-size:11px}
+.rp-btn.rp-trans{width:26px; padding:0; text-align:center; font-size:11px}
 .rp-btn.on{background:var(--accent-soft); color:#fff; border-color:transparent}
 .rp-btn:disabled{opacity:.4; cursor:default}
 .rp-btn:disabled:hover{color:var(--text-dim); border-color:var(--line)}
@@ -1133,13 +1131,6 @@ tr:hover .pv::after{display:none}
    bar does not reflow when a longer ticker is picked. */
 .rp-btn.rp-symbtn{min-width:96px; font-family:var(--mono); font-size:10.5px;
   justify-content:flex-start; text-align:left; color:var(--text)}
-/* The take-profit selector. It is the one control on this bar that changes what
-   the RULE does rather than where you are standing in it, so it is lit whenever
-   it is not on "off" -- the same affordance the toggles use, for the same
-   reason: a mode you cannot see is on is a mode you forget is on. Wider than a
-   plain select because its options are sentences, not tickers. */
-.rp-tpsel{width:132px}
-.rp-tpsel.on{border-color:var(--accent, #31c7d6); color:var(--accent, #31c7d6)}
 .rp-sep{width:1px; height:16px; background:var(--line); margin:0 4px}
 .rp-lbl{font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--text-faint)}
 .rp-status{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:6px}

@@ -1,6 +1,60 @@
 /* util.js — formatting, DOM and persistence helpers. */
 
 export const TF = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
+
+/* THE AUTO-TRENDLINE SETTINGS BOTH CHART SURFACES USE.
+ *
+ * Here rather than in js/main.js because js/ui/strategyreplay.js needs the same
+ * four numbers, and the last time they lived in one place and were retyped in
+ * the other the two surfaces drew different lines on the same market -- which
+ * is worse than either being wrong, since nothing on screen says which to
+ * believe. `htf` is every frame; `autoSources` keeps only those above the
+ * chart's own. */
+/* How much history each frame is fetched with. Shared because the strategy
+   replay draws trendlines from the same higher frames the live chart does, and
+   a projection fitted on 1200 daily bars is not the line a 1000-bar fetch
+   finds -- the two surfaces matched on SETTINGS and still disagreed until they
+   also matched on how much history each source got. */
+export const BAR_COUNT = {
+  '1m': 3000, '5m': 2500, '15m': 2000, '30m': 2000,
+  '1h': 1500, '4h': 1200, '1d': 1000, '1w': 800,
+};
+
+export const AUTO_DEFAULTS = {
+  sens: 'major',
+  maxLines: 2,          // per side, per source timeframe
+  own: true,
+  minDraw: 70,
+  htf: ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'],
+};
+
+export const symKey = (sym) => `sym.${sym}`;
+
+/**
+ * The auto-trendline settings actually in force for a symbol and frame.
+ *
+ * WHY THIS IS SHARED. The live chart resolves global defaults, then a
+ * per-instrument override, then a per-timeframe one. The strategy replay used a
+ * fixed constant, so the moment anyone changed a chart setting the two surfaces
+ * drew different lines on the same market -- and nothing on screen said which
+ * to believe. Matching DEFAULTS is not enough for that; they have to resolve
+ * the same SAVED state, which is what this does.
+ *
+ * The legacy-shape branch is kept verbatim from js/main.js `autoByTf`: a flat
+ * object predates per-timeframe overrides and belongs to the frame it was
+ * chosen on, not to every frame.
+ */
+export function resolveAuto(symbol, tf, base) {
+  const global = { ...AUTO_DEFAULTS, ...(base || {}), ...(load('auto', {}) || {}) };
+  if (!symbol || !tf) return global;
+  const v = load(symKey(symbol), null) || {};
+  const a = v.auto;
+  if (!a || typeof a !== 'object') return global;
+  const byTf = ('sens' in a || 'on' in a || 'maxLines' in a)
+    ? { [v.tf || '15m']: a } : a;
+  return byTf[tf] ? { ...global, ...byTf[tf] } : global;
+}
+
 export const TF_MS = {
   '1m': 60e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3,
   '1h': 3600e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3,

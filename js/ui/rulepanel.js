@@ -37,6 +37,9 @@ import { el, px } from '../util.js';
 import { tip } from './tips.js';
 import { LONG, donchianRule, instruction, signalsAsOf, strategyForTf }
   from '../chart/donchian.js';
+import { BULL as MS_BULL, BEAR as MS_BEAR, latest as msLatest }
+  from '../chart/marketstructure.js';
+import { levelCash } from '../chart/engine.js';
 import { displayLevels } from '../chart/levels.js';
 import { VERDICT_TEXT, measuredFor } from '../chart/measured.js';
 import { trailOption } from '../chart/trailmode.js';
@@ -235,24 +238,94 @@ export class RulePanel {
   }
 
   /**
-   * What that move is worth at the SMALLEST position a broker accepts.
+   * What that move pays FOR THE RISK TAKEN, on the stated account.
    *
-   * `tick_value / tick_size` is what one lot is worth per unit of price -- a
-   * property of the contract, needing no equity and no FX rate -- taken at 0.01
-   * lots. A fixed unit, so every row on every instrument answers the same
-   * question; scaling by a live position size would move the number whenever
-   * equity did and make two charts incomparable.
+   * `levelCash` is imported rather than reimplemented, and that is the whole
+   * design of this method: the chart tags and these rows quote the same
+   * levels, so a second copy of the arithmetic here is a guarantee that one
+   * day they disagree and nothing on screen says which is stale. This once
+   * held its own copy of the 0.05-lot constant with a comment asking the two
+   * to be kept in step by hand.
    *
-   * Empty when the contract is unknown, which is the honest degradation: the
-   * row still shows the price and the distance.
+   * `risk` is the stop distance -- the number that sizes the position and so
+   * every figure derived from it. Empty when it is unknown, which is the
+   * honest degradation: the row still shows the price and the distance.
    */
-  _cash(diff) {
+  _cash(diff, risk) {
     const sp = this.spec;
     if (!sp || !Number.isFinite(diff)) return '';
-    const ts = sp.tick_size || sp.point || 0;
-    const tv = sp.tick_value || 0;
-    if (!(ts > 0 && tv > 0)) return '';
-    return `$${Math.round(Math.abs(diff) * (tv / ts) * 0.01)}`;
+    const pays = levelCash(diff, risk, sp.tick_size || sp.point || 0);
+    return pays === null ? '' : `$${Math.round(pays)}`;
+  }
+
+  /**
+   * WHAT THE STRUCTURE IS DOING, for a trade that has run out of levels.
+   *
+   * It read "all reached — clear air above/below", which says what is NOT there
+   * and nothing about what is. This says what price is doing right now:
+   * whether it is extending or giving back, how far off its best the trade sits,
+   * and what market structure has done most recently.
+   *
+   * DESCRIPTION, NOT INSTRUCTION, and the distinction is load-bearing. The three
+   * detectors that would turn this into "pullback — buy here" were measured this
+   * week: a supply/demand retest, a trendline retest and an S/R retest, each
+   * against a coin flip trading at the same rate, and none of them beat it
+   * (logs/retest_*.txt). So the panel reports the state and stops. Anything that
+   * reads as a suggestion would be a signal the measurements do not support.
+   *
+   * EVERY NUMBER HERE IS ALREADY ON THE PANEL or derivable from it -- open R,
+   * the excursion since entry, the structure bias -- so nothing new is asserted,
+   * it is assembled into one sentence a reader would otherwise build themselves.
+   */
+  _clearAirRead(sig) {
+    const side = this.levelsSide > 0 ? 1 : -1;
+    const where = side > 0 ? 'above' : 'below';
+    const pos = sig.position;
+    const bars = this.bars || [];
+    const last = bars.length ? bars[bars.length - 1].c : NaN;
+    if (!pos || !Number.isFinite(last) || !(pos.risk > 0)) {
+      return `all reached — clear air ${where}`;
+    }
+
+    /* HOW FAR OFF THE BEST IT HAS BEEN. The give-back is the number a reader
+       actually wants once the levels are gone: +3.1 R holding near its high is
+       a different situation from +3.1 R after touching +5.2. */
+    let peak = -Infinity;
+    for (let k = pos.entryI; k < bars.length; k++) {
+      const ex = side > 0 ? bars[k].h : -bars[k].l;
+      if (ex > peak) peak = ex;
+    }
+    const openR = (last - pos.entryPrice) * side / pos.risk;
+    /* `peak` holds the favourable extreme with the side already folded in
+       (`-low` for a short), so it becomes a price again by multiplying by
+       `side`, and only THEN gets the usual (price - entry) * side / risk. The
+       first version applied `side` to the entry instead and a short in profit
+       read "605.3 R off the high". */
+    const peakR = Number.isFinite(peak)
+      ? ((peak * side) - pos.entryPrice) * side / pos.risk : openR;
+    const give = peakR - openR;
+
+    /* Extending or retracing, from the last three closes -- short enough to say
+       what is happening now rather than what happened over the trade. */
+    const n = bars.length;
+    const recent = n >= 4 ? (bars[n - 1].c - bars[n - 4].c) * side : 0;
+    const atr = sig.series && sig.series.atr ? sig.series.atr[n - 1] : NaN;
+    const move = Number.isFinite(atr) && atr > 0 ? recent / atr : 0;
+    const motion = move > 0.3 ? 'extending'
+      : move < -0.3 ? 'pulling back' : 'stalling';
+
+    const st = msLatest(bars, { strength: 3 });
+    let structure = '';
+    if (st && st.lastEvent) {
+      const agrees = (st.lastEventDir === MS_BULL && side > 0)
+        || (st.lastEventDir === MS_BEAR && side < 0);
+      structure = `; last structure event ${st.lastEvent.toUpperCase()} `
+        + `${agrees ? 'with' : 'against'} the trade`
+        + (Number.isFinite(st.barsSince) ? `, ${st.barsSince} bars ago` : '');
+    }
+
+    return `clear air ${where} — ${motion}, ${give < 0.05 ? 'at its high'
+      : `${give.toFixed(1)} R off the high`}${structure}`;
   }
 
   /**
@@ -611,6 +684,12 @@ export class RulePanel {
          now, money from entry -- which nothing about the label revealed. */
       const from = sig.position ? sig.position.entryPrice
         : (sig.pending ? sig.pending.signalPrice : NaN);
+      /* The stop distance sizes every money figure below -- see ACCOUNT in
+         js/chart/engine.js. Taken entry-to-stop like the chart's, so the row
+         and the tag can never disagree about what a level pays. */
+      const stop = sig.position ? sig.position.stop
+        : (sig.pending ? sig.pending.stop : NaN);
+      const risk = Math.abs(from - stop);
       for (const lv of this.levels) {
         const row = el('div', { class: 'rp-row' });
         row.appendChild(el('span', { class: 'rp-k' }, lv.key));
@@ -618,7 +697,7 @@ export class RulePanel {
         const bits = [];
         const away = this._pips(lv.price - from);
         if (away) bits.push(away);
-        const cash = this._cash(lv.price - from);
+        const cash = this._cash(lv.price - from, risk);
         if (cash) bits.push(cash);
         /* DISTANCE AND MONEY ONLY. The row used to end with what the level IS
            -- "demand zone, fresh", "LH high" -- and that was removed by
@@ -629,8 +708,7 @@ export class RulePanel {
       }
       r.appendChild(bt);
     } else if (this.levelsCleared) {
-      r.appendChild(el('div', { class: 'rp-clear' },
-        `all reached — clear air ${this.levelsSide > 0 ? 'above' : 'below'}`));
+      r.appendChild(el('div', { class: 'rp-clear' }, this._clearAirRead(sig)));
     }
 
     /* THE VERDICT, LAST. For the rule ACTUALLY RUNNING here, which on a

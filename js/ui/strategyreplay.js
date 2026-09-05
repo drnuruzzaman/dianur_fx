@@ -45,12 +45,13 @@
 
 import { api } from '../api.js';
 import { Chart } from '../chart/engine.js';
-import { TF_MS, el, hhmm, px, seekBar, ymd, ymdToMs } from '../util.js';
+import { AUTO_DEFAULTS, BAR_COUNT, TF, TF_MS, resolveAuto, el, hhmm, px, seekBar, ymd, ymdToMs } from '../util.js';
 import { toast } from './menu.js';
 import { tip } from './tips.js';
 import { openAudio, pickMime } from './recaudio.js';
 import { openSymbolSearch } from './search.js';
 import { FLAT, LONG, instruction, runRule, tally } from '../chart/rules.js';
+import { latestDimensions } from '../chart/regime.js';
 import { STATUS_TEXT, STRATEGIES, byKey, coversCell } from '../chart/strategies.js';
 import {
   STOP_ATR, ruleVerdictNote, setStopEnabled, stopEnabled, stopMultiples,
@@ -59,6 +60,16 @@ import {
 import { displayLevels } from '../chart/levels.js';
 import { trailOption } from '../chart/trailmode.js';
 import { structuralTrail } from '../chart/exittrail.js';
+import { detect as detectMS } from '../chart/marketstructure.js';
+import { swingPoints } from '../chart/structure.js';
+import { atrSeries, liveLines } from '../chart/tlengine.js';
+import { liveZones } from '../chart/zones.js';
+import { liveSDZones } from '../chart/supplydemand.js';
+import { liveChannels } from '../chart/channels.js';
+import { build as buildSegments } from '../chart/segments.js';
+import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
+         upTo as newsUpTo, within as newsWithin } from '../chart/newsevents.js';
+import { SENSITIVITY } from '../chart/trendlines.js';
 
 const SPEEDS = [{ label: '1x', ms: 400 }, { label: '2x', ms: 200 }, { label: '4x', ms: 100 }];
 
@@ -111,6 +122,12 @@ export class StrategyReplay {
     this.strategyKey = STRATEGIES[0].key;
     this.full = [];
     this.i = 0;
+    /* Structure settings, taken from the SAME constant the live chart's auto
+       defaults are built from -- see AUTO_DEFAULTS in js/util.js. The replay
+       offers no menu for these; matching an unchanged live chart is the point.
+       `_htf` caches higher-frame bars per load so stepping costs no fetch. */
+    this.sens = AUTO_DEFAULTS.sens;
+    this._htf = new Map();
     this.chart = null;
     this.host = null;
     this.loading = false;
@@ -265,7 +282,9 @@ export class StrategyReplay {
    * the window that is loaded.
    *
    * WHY IT CAN NEED A FETCH AT ALL. The replay loads a fixed count of recent
-   * bars, so "3000 bars" is nine months on 4h and ten days on 5m -- the reach
+   * bars -- BAR_COUNT per frame, the same table the live chart loads with, so
+   * that both draw trendlines fitted on the same history -- so the window is
+   * nine months on 4h and about eight days on 5m: the reach
    * of the picker is not a property of the picker, it is a property of the
    * timeframe. Refusing dates outside the window would make the control lie
    * about what the data can do; silently clamping to the oldest loaded bar
@@ -328,7 +347,7 @@ export class StrategyReplay {
   /**
    * @param {object}  opts
    * @param {number}  opts.months  fetch a date RANGE this many months back
-   *                               instead of the recent 3000 bars
+   *                               instead of the recent BAR_COUNT bars
    * @param {number}  opts.seekTo  epoch ms to put the cursor on once loaded
    */
   async load({ months = 0, seekTo = null } = {}) {
@@ -338,7 +357,22 @@ export class StrategyReplay {
     this.months = months;
     this._paintBar();
     try {
-      const payload = await api.bars(this.symbol, this.tf, months ? 60000 : 3000,
+      /* THE SAME WINDOW THE LIVE CHART LOADS, by request, so the two surfaces
+         draw the same trendlines.
+       *
+         It was a flat 3000. Settings, sources, history for the higher frames
+         and the distance filter were all matched and the support lines still
+         disagreed: with 3000 own-frame bars the replay found 5m lines that a
+         2500-bar chart does not, and those extra lines deduped away the 15m
+         ones the chart was drawing. Trendline fitting is not local -- change
+         how far back the walk starts and you change which anchors win -- so
+         the window itself has to match or nothing downstream can.
+       *
+         THE COST IS A SHORTER WALK on the fast frames: 5m goes from 3000 bars
+         to 2500, about eight days instead of ten. `months` mode is untouched,
+         so asking for a date range still reaches as far as it ever did. */
+      const payload = await api.bars(this.symbol, this.tf,
+                                     months ? 60000 : (BAR_COUNT[this.tf] || 3000),
                                      months);
       this.full = payload.bars || [];
       this.digits = payload.digits ?? 2;
@@ -348,15 +382,29 @@ export class StrategyReplay {
          the geometry rows still stand. */
       try { this.spec = await api.spec(this.symbol); }
       catch { this.spec = null; }
-      /* Start far enough in that the rule has warmed up and there is history
-         to have lived through, but with most of the series still ahead. */
+      /* OPEN ON THE CURRENT BAR, by request.
+       *
+       * This started at 35% of the window, so the replay opened with most of
+       * the series still ahead to step through. That is the right default for
+       * a stepping exercise and the wrong one for the question people actually
+       * arrive with: what is the rule saying about the market NOW. Landing on a
+       * date eight months ago made the panel read as a historical curiosity,
+       * and getting to today meant holding a button.
+       *
+       * Nothing is lost, because the transport runs both ways: stepping BACK
+       * from the live edge reaches every bar the old default could, and the
+       * date field still jumps anywhere. What IS true is that there is no
+       * future left to reveal at the last bar -- `Reveal` and `Next bar` have
+       * nothing to show until you step back, which is the honest state of
+       * affairs when the cursor is on the most recent close.
+       */
       const rule = byKey(this.strategyKey);
       /* warmup off the params this timeframe will ACTUALLY run, not the flat
-         defaults -- a 3.3-day channel on 5m is 950 bars, and starting the
-         replay 40 bars in would step a rule that has no channel yet. */
+         defaults -- a 3.3-day channel on 5m is 950 bars, and opening the
+         replay 40 bars in would show a rule that has no channel yet. */
       const warm = rule.warmup(this._params(rule)) + 40;
-      this.i = Math.min(this.full.length - 1,
-                        Math.max(warm, Math.floor(this.full.length * 0.35)));
+      this.i = Math.max(Math.min(warm, this.full.length - 1),
+                        this.full.length - 1);
       /* A range fetch happens BECAUSE a date was asked for, so honour it here
          rather than leaving the cursor at the default 35% of a window whose
          size just changed. */
@@ -368,6 +416,41 @@ export class StrategyReplay {
       this.full = [];
       this.error = String(err.message || err);
     }
+    /* BUILT ONCE PER LOAD. The schedule is a function of the window, not of the
+       cursor, so regenerating it on every step would recompute a decade of
+       dates to draw the same marks. `_news` holds everything in the window;
+       `_apply` filters it to the cursor. */
+    /* HIGHER FRAMES FOR THE TRENDLINES, fetched once per load rather than per
+       step: a projection needs the source series, and refetching it on every
+       bar would make stepping a network operation. They are cut to the cursor
+       at draw time, not here. */
+    this._htf = new Map();
+    if (this.full.length) {
+      const rank = TF.indexOf(this.tf);
+      const want = resolveAuto(this.symbol, this.tf, AUTO_DEFAULTS).htf
+        || AUTO_DEFAULTS.htf;
+      await Promise.all(want
+        .filter((src) => TF.indexOf(src) > rank)
+        .map(async (src) => {
+          try {
+            /* The SAME count js/main.js uses via getSeries -- see BAR_COUNT
+               in js/util.js for why matching it matters. */
+            const p = await api.bars(this.symbol, src,
+                                     Math.min(BAR_COUNT[src] || 1000, 1200));
+            if (p && p.bars && p.bars.length) this._htf.set(src, p.bars);
+          } catch { /* a missing higher frame just contributes no lines */ }
+        }));
+    }
+
+    this._news = [];
+    if (this.full.length) {
+      try {
+        const from = this.full[0].t, to = this.full[this.full.length - 1].t;
+        this._news = mergeNews(derivedNews(from, to),
+                               newsWithin(await loadNews(), from, to));
+      } catch { this._news = []; }
+    }
+
     this.loading = false;
     if (this.chart) this._apply();
     this._paintBar();
@@ -497,14 +580,56 @@ export class StrategyReplay {
       notes: [ruleVerdictNote(slice, cell)].filter(Boolean),
     };
 
+    /* THE STRUCTURE THE LIVE CHART DRAWS, ON THE CAUSAL SLICE.
+     *
+     * Trendlines, S/R zones, BOS/CHoCH and swing points, from the SAME modules
+     * the live chart calls -- marketstructure.js, structure.js, tlengine.js,
+     * zones.js and the sensitivity presets -- so the replay and the chart
+     * cannot disagree about what a swing or a band is. The rule's own decisions were already computed on this
+     * slice; drawing structure from the full series beside them would put
+     * tomorrow's swing next to today's signal, which is the one thing this
+     * surface exists to prevent.
+     *
+     * ONE TIMEFRAME, unlike the live chart. The chart projects lines down from
+     * higher frames because it can fetch them; the replay loads one series and
+     * fetching more mid-walk would make each step a network call. A line here
+     * is therefore always this frame's own.
+     *
+     * MAJOR IS THE SAME WORD IT IS EVERYWHERE ELSE: a swing that also survives
+     * strength 6, which is what picking `Major structure` in the live menu
+     * shows. Both passes run on `slice`, so both inherit the as-of cut.
+     */
+    this._drawStructure(slice);
+
+    /* SCHEDULED RELEASES, up to the cursor and no further. Marking a print the
+       walk has not reached yet would put tomorrow's news beside today's signal,
+       which is the same violation as drawing tomorrow's swing. */
+    this.chart.setNewsMarks(newsUpTo(this._news, slice[slice.length - 1].t));
+
     /* Closed trades as ribbons, coloured by outcome and labelled with the R
        they actually returned -- the sequence is the thing a summary hides. */
-    this.chart.setSegments(sig.trades.map((t) => ({
+    /* TWO RIBBONS. Row 0 is the REGIME EPISODE strip the live chart draws --
+       RANGE, TRANSITION, UPTREND -- and row 1 is this replay's own trades.
+       They shared one array before, so the replay's trades silently replaced
+       the episodes and the two surfaces showed different things at the top of
+       the chart. Episodes are built on the causal slice like everything else
+       here, so the strip ends at the cursor rather than describing bars the
+       walk has not reached. */
+    let episodes = [];
+    try {
+      const auto = resolveAuto(this.symbol, this.tf, AUTO_DEFAULTS);
+      episodes = (auto.segments !== false && slice.length >= 60)
+        ? buildSegments(slice).map((sg) => ({ ...sg, row: 0 }))
+        : [];
+    } catch { episodes = []; }
+
+    this.chart.setSegments(episodes.concat(sig.trades.map((t) => ({
       t0: t.entryTime, t1: t.exitTime,
       kind: t.r > 0 ? WIN_KIND : LOSS_KIND,
       closed: true,
+      row: 1,
       label: `${t.side === LONG ? 'L' : 'S'} ${t.r >= 0 ? '+' : ''}${t.r.toFixed(1)}R`,
-    })));
+    }))));
 
     /* SIGNAL and FILL are marked separately, one bar apart. The rule fires on
        a CLOSE and the order fills at the NEXT OPEN, so marking only the fill
@@ -593,6 +718,10 @@ export class StrategyReplay {
       levels: this.levels,
       entry: sig.position ? sig.position.entryPrice
         : (sig.pending ? sig.pending.signalPrice : NaN),
+      /* THE STOP SIZES THE MONEY -- see js/chart/engine.js ACCOUNT. Without it
+         the tags fall back to prices only. */
+      stop: sig.position ? sig.position.stop
+        : (sig.pending ? sig.pending.stop : NaN),
       tickSize: this.spec ? (this.spec.tick_size || this.spec.point || 0) : 0,
       tickValue: this.spec ? (this.spec.tick_value || 0) : 0,
     } : null);
@@ -766,9 +895,9 @@ export class StrategyReplay {
       else this.play(dir);
     };
     this.playBtn = btn('▶', 'Play forward  (space) — press again to stop',
-                       runner(1), 'rp-tp');
+                       runner(1), 'rp-trans');
     this.backBtn = btn('◀', 'Play backward — press again to stop',
-                       runner(-1), 'rp-tp');
+                       runner(-1), 'rp-trans');
     /* A DATE, not a bar number. "Start at bar 1050" is meaningless -- it moves
        every time the window is refetched -- whereas a date is the thing you
        actually remember about a move you want to look at again. It doubles as
@@ -844,11 +973,11 @@ export class StrategyReplay {
          OUTSIDE the play pair so the two transports never sit adjacent --
          they are different gestures and a misclick between them costs you
          the bar you were standing on. */
-      btn('◀◀', 'One bar back  (,)', () => { this.stop(); this.step(-1); }, 'rp-tp'),
+      btn('◀◀', 'One bar back  (,)', () => { this.stop(); this.step(-1); }, 'rp-trans'),
       this.backBtn,
       this.playBtn,
-      btn('▶▶', 'One bar forward  (.)', () => { this.stop(); this.step(1); }, 'rp-tp'),
-      btn('▶▶|', 'Run to the end', () => { this.stop(); this.step(this.full.length); }, 'rp-tp'),
+      btn('▶▶', 'One bar forward  (.)', () => { this.stop(); this.step(1); }, 'rp-trans'),
+      btn('▶▶|', 'Run to the end', () => { this.stop(); this.step(this.full.length); }, 'rp-trans'),
       sel(SPEEDS.map((x) => x.label), SPEEDS[0].label, (v) => {
         this.speed = (SPEEDS.find((x) => x.label === v) || SPEEDS[0]).ms;
         if (this.timer) this.play();
@@ -1424,6 +1553,173 @@ export class StrategyReplay {
     ctx.fillText('DiaNurFx — strategy replay', x0 + pad, h - 12 * scale);
   }
 
+  /**
+   * Trendlines, BOS/CHoCH and swings for the bars up to the cursor.
+   *
+   * Every detector is wrapped: a frame one of them cannot read should cost the
+   * chart that one overlay, never the whole repaint. The live chart takes the
+   * same precaution for the same reason.
+   */
+  _drawStructure(slice) {
+    /* THE LIVE CHART'S OWN EFFECTIVE SETTINGS for this symbol and frame, not a
+       constant: global defaults, then the per-instrument override, then the
+       per-timeframe one. Reading the same saved state is the only way the two
+       surfaces stay in step once anyone touches the AUTO TL menu. */
+    const auto = resolveAuto(this.symbol, this.tf, AUTO_DEFAULTS);
+    this.sens = auto.sens || AUTO_DEFAULTS.sens;
+    const sens = SENSITIVITY[this.sens] || SENSITIVITY.normal;
+    const strength = sens.strength;
+    const minDraw = auto.minDraw ?? AUTO_DEFAULTS.minDraw;
+    const maxLines = auto.maxLines ?? AUTO_DEFAULTS.maxLines;
+    const sources = auto.htf || AUTO_DEFAULTS.htf;
+    const MAJOR = SENSITIVITY.major.strength;
+
+    try {
+      const r = (auto.ms !== false && slice.length >= 40)
+        ? detectMS(slice, { strength }) : null;
+      if (r && r.events && r.events.length) {
+        /* `external` marks a break that the MAJOR pass also saw -- the same
+           second-pass trick main.js uses, matched on the broken level's bar
+           rather than the breaking bar, because the two passes can notice one
+           break a bar apart while agreeing which swing was taken. */
+        if (strength < MAJOR) {
+          const major = detectMS(slice, { strength: MAJOR });
+          const levels = new Set(major.events.map((e) => e.levelI));
+          for (const e of r.events) e.external = levels.has(e.levelI);
+        } else {
+          for (const e of r.events) e.external = true;
+        }
+        this.chart.setMsEvents(r.events.slice(-12));
+      } else {
+        this.chart.setMsEvents([]);
+      }
+    } catch { this.chart.setMsEvents([]); }
+
+    try {
+      const sw = (auto.swings !== false && slice.length >= 40)
+        ? swingPoints(slice, { strength }) : [];
+      if (sw.length && strength < MAJOR) {
+        const major = new Set(swingPoints(slice, { strength: MAJOR }).map((x) => x.i));
+        for (const x of sw) x.major = major.has(x.i);
+      } else {
+        for (const x of sw) x.major = true;
+      }
+      this.chart.setSwings(sw);
+    } catch { this.chart.setSwings([]); }
+
+    /* S/R ZONES, from the chart's own pivots at its own timeframe.
+     *
+     * NO HIGHER-FRAME PROJECTION HERE, and unlike trendlines that is not a
+     * limitation of the replay -- the live chart does not project them either.
+     * A zone is horizontal by definition, so a 4h band and a 15m band at the
+     * same price are the same band, and drawing both would double-count one
+     * level.
+     *
+     * ON THE SURVIVORSHIP QUESTION: `zones.detect` is the detector that once
+     * scored levels partly on how they were later respected, which flatters
+     * anything measured through it. Running it on `slice` is what makes that
+     * safe here rather than merely unlikely -- the array it is handed ENDS at
+     * the cursor, so the "later" it could learn from does not exist yet. The
+     * same argument covers every detector on this chart, and it is the reason
+     * all of them are given the slice rather than the series. */
+    try {
+      this.chart.setZones(auto.zones !== false && slice.length >= 40
+        ? liveZones(slice, this.tf, { strengthPivots: strength })
+        : []);
+    } catch { this.chart.setZones([]); }
+
+    /* SUPPLY / DEMAND -- the impulse-origin bands, a different detector from
+       the pivot clusters above and gated by its own toggle on the live chart.
+       Off by default there, which is why the replay showed none while a chart
+       with it switched on showed six. */
+    try {
+      this.chart.setSdZones(auto.sdZones && slice.length >= 40
+        ? liveSDZones(slice, this.tf) : []);
+    } catch { this.chart.setSdZones([]); }
+
+    /* CHANNELS. What reads on screen as "the missing trendline" is usually
+       this: the ASCENDING CHANNEL rails are a corridor, not an auto line, and
+       the replay drew none because nothing here called for them. Detected from
+       the chart's OWN frame only, as on the live chart -- a corridor projected
+       down from 4h onto 15m would be drawn from rails whose containment was
+       measured on other bars. */
+    try {
+      if (auto.channels === false || slice.length < 60) {
+        this.chart.setChannels([]);
+      } else {
+        const now = liveChannels(slice, this.tf, { params: sens });
+        for (const ch of now) ch.live = true;
+        this.chart.setChannels(now);
+      }
+    } catch { this.chart.setChannels([]); }
+
+    /* TRENDLINES FROM EVERY SOURCE ABOVE THIS FRAME, exactly as the live chart
+       builds them -- `autoSources` there is `own` plus each `htf` ranked higher,
+       and this is the same set. It was this frame only, which is why the two
+       surfaces disagreed: a 15m replay drew none of the 1h/4h/1d lines the
+       chart beside it was drawing.
+     *
+       EVERY HIGHER FRAME IS CUT TO THE CURSOR'S INSTANT before it is walked.
+       A 4h series ending after the 15m cursor would project a line fitted with
+       knowledge of bars the replay has not reached -- the exact unfalsifiable
+       drawing the live chart's own as-of cut exists to prevent. */
+    try {
+      const cutoff = slice[slice.length - 1].t;
+      const rank = TF.indexOf(this.tf);
+      const lines = [];
+      if (slice.length >= 60) {
+        for (const l of liveLines(slice, this.tf, { params: sens, minDraw })) lines.push(l);
+      }
+      for (const src of sources) {
+        if (TF.indexOf(src) <= rank) continue;
+        const raw = this._htf.get(src);
+        if (!raw || !raw.length) continue;
+        const cut = raw.filter((b) => b.t <= cutoff);
+        if (cut.length < 40) continue;
+        try {
+          for (const l of liveLines(cut, src, { params: sens, minDraw })) lines.push(l);
+        } catch { /* one unreadable frame contributes nothing */ }
+      }
+      /* THE DISTANCE FILTER, WITHOUT WHICH THE TWO SURFACES CANNOT AGREE.
+       *
+       * js/main.js drops any line sitting more than DRAW_MAX_ATR of the
+       * CHART'S OWN atr from price, and dedupes lines arriving within 0.35 ATR
+       * of each other. Leaving both out was the whole remaining difference:
+       * with identical settings and identical history the replay still drew 4h
+       * and 1d lines at score 92 that the live chart had already discarded as
+       * unreachable, because a daily line can sit fifty chart-ATRs away and
+       * still pass its own proximity test. Score alone then ranked exactly the
+       * lines the chart refuses to draw straight to the top.
+       *
+       * The threshold is the engine's own detection threshold applied in the
+       * chart's units, so every source obeys the rule the chart's own frame
+       * obeys. When it leaves nothing, nothing is drawn. */
+      const DRAW_MAX_ATR = 5;
+      const atrSeq = atrSeries(slice, 14);
+      const atrNow = atrSeq[atrSeq.length - 1];
+      const spot = slice[slice.length - 1].c;
+      const near = [];
+      for (const l of lines) {
+        if (atrNow > 0) {
+          const v = l.valueAt(cutoff);
+          if (Number.isFinite(v) && Number.isFinite(spot)
+            && Math.abs(v - spot) / atrNow > DRAW_MAX_ATR) continue;
+          const dup = near.some((k) => k.kind === l.kind
+            && Math.abs(k.valueAt(cutoff) - v) / atrNow < 0.35);
+          if (dup) continue;
+        }
+        near.push(l);
+      }
+      /* Same budget the live chart applies, across ALL sources rather than per
+         source -- otherwise four frames quietly put a dozen lines on screen.
+         ACTIVE outranks merely CONFIRMED at equal score. */
+      const score = (l) => l.score + (l.status === 'ACTIVE' ? 2 : 0);
+      near.sort((a, b) => score(b) - score(a));
+      const budget = { support: maxLines, resistance: maxLines };
+      this.chart.setAutoLines(near.filter((l) => (budget[l.kind]-- > 0)));
+    } catch { this.chart.setAutoLines([]); }
+  }
+
   _paintPanel() {
     const p = this.panel;
     if (!p) return;
@@ -1573,6 +1869,35 @@ export class StrategyReplay {
       rows.push(['open R', (openR >= 0 ? '+' : '') + openR.toFixed(2)]);
     }
 
+    /* THE REGIME AS OF THIS BAR, from the same js/chart/regime.js the live
+       Trend read draws -- causal, so the label is one a reader had here.
+       REPORTED, NOT ACTED ON, and the note says which: measured on 15m gold,
+       splitting the rule's trades by regime does not beat a random gate of the
+       same size (p = 0.087) and does not clear a best-bucket null (p = 0.334),
+       so gating on it would be the twelfth entry filter to fail that test.
+       What the split DOES show is worth reading bar by bar, which is why the
+       row is here at all. */
+    const rg = latestDimensions(this.full.slice(0, this.i + 1));
+    if (rg) {
+      /* THREE AXES, NOT ONE LABEL. The single four-state read put 48.5% of 15m
+         bars in `transition`, which is a bucket too broad to say anything.
+         Direction, phase and volatility vary independently and are reported
+         independently -- see the dimensions() note in js/chart/regime.js.
+         REPORTED, NOT ACTED ON: the four-state version was measured as an entry
+         gate and did not clear a best-bucket null (p = 0.334 on 15m, 0.254 on
+         5m), and nothing about splitting the same readings differently changes
+         that until it is measured too. */
+      rows.push(['direction', rg.direction,
+                 'EMA(21) vs EMA(50) in ATR units, as of this bar']);
+      rows.push(['phase', rg.phase, Number.isFinite(rg.giveBackAtr)
+        ? `${rg.giveBackAtr.toFixed(2)} ATR back from the 40-bar extreme`
+        : 'no direction, so no trend to pull back from']);
+      rows.push(['volatility', rg.volatility, 'ATR now against its 56-bar mean']);
+      rows.push(['ema sep', `${rg.emaSepAtr >= 0 ? '+' : ''}${rg.emaSepAtr.toFixed(2)} ATR`]);
+      rows.push(['range pos', `${Math.round(rg.rangePos * 100)}%`,
+                 'where price sits in its own 40-bar range']);
+    }
+
     p.append(
       el('div', { class: 'sr-act ' + cls }, head),
       el('div', { class: 'sr-note', text: ins.note || '' }),
@@ -1676,7 +2001,8 @@ export class StrategyReplay {
     /* THE WINDOW, SAID AS PLAINLY AS THE COSTS.
        Cost drag is ~19%, and the scorecard routinely sits further from the
        validated figures than that -- because it is also a DIFFERENT WINDOW.
-       The replay loads the last 3000 bars (about 1.4 years at 4h), while the
+       The replay loads the last BAR_COUNT[tf] bars (1200 on 4h, about 200
+       days), while the
        verdict badge above quotes eras of 5 and 6 years. Reading +0.46 R here
        against a stated +0.19 and concluding the rule has improved is the
        mistake this line exists to prevent: it is a short, recent, gross sample,

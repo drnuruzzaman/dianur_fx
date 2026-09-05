@@ -91,6 +91,116 @@ export function compute(bars, {
            emaSepAtr: sep, rangePos: pos, energy };
 }
 
+/* ------------------------------------------------------------------------
+ * THE SAME READINGS, ON INDEPENDENT AXES.
+ *
+ * WHY. The four labels above are mutually exclusive, and markets are not. A
+ * bull trend IS simultaneously in a pullback, at some volatility, possibly on a
+ * structure event -- and forcing one label discards the other three readings.
+ * That is not a theoretical complaint: `trending_up` covers 50% of this rule's
+ * trades on 15m and 51% on 5m, which makes it a bucket so broad it cannot
+ * separate anything, and measuring it as an entry gate returned p = 0.334
+ * against a best-bucket null. A coarse bucket is one honest explanation for
+ * that result, and this is the way to test it.
+ *
+ * NOTHING ABOVE CHANGES. `compute` and `latest` keep their four states and
+ * their exact thresholds, because five surfaces read them -- read.js,
+ * segments.js, rulepanel.js, strategyreplay.js, trendread.js -- and a silent
+ * change to what `sideways` means would move the chart while nothing said so.
+ * These are additional views over the SAME three causal series.
+ *
+ * EVENT IS DELIBERATELY NOT HERE. BOS and CHoCH live in marketstructure.js, a
+ * channel break is what donchian.js already computes, and a sweep is
+ * liquidity.js. Re-deriving any of them here would be a second implementation
+ * of a detector that already has one, which is how the ATR divergence got in.
+ * The event axis is composed at the dataset layer from those three.
+ * ---------------------------------------------------------------------- */
+
+export const BULL = 'bull', BEAR = 'bear', NEUTRAL = 'neutral';
+export const IMPULSE = 'impulse', PULLBACK = 'pullback', CORRECTION = 'correction';
+export const RANGE = 'range', TRANSITIONAL = 'transitional';
+export const VOL_LOW = 'low', VOL_NORMAL = 'normal', VOL_HIGH = 'high',
+             VOL_EXTREME = 'extreme';
+
+/* Every threshold in one place and none of them claimed to be optimal. They
+   are starting values to be swept, which is the only honest status for a
+   constant nobody has measured yet. */
+export const DIMS_CONFIG = {
+  dirGap: 0.5,          // |EMA21-EMA50| / ATR above which a direction is called
+  impulseAtr: 0.5,      // give-back from the running extreme, in ATR
+  correctionAtr: 1.5,   // beyond this it is a correction, not a pullback
+  extremeLookback: 40,  // bars the running extreme is measured over
+  volLow: 0.75, volHigh: 1.25, volExtreme: 2.0,   // ATR-now / ATR-56 bands
+  band: 0.22,           // mid-range half-width, as in compute()
+};
+
+/**
+ * Direction, phase and volatility per bar, as separate axes.
+ *
+ * PHASE IS MEASURED AS GIVE-BACK FROM A RUNNING EXTREME, in ATR: how far price
+ * has come off the highest high of the last `extremeLookback` bars when the
+ * direction is bull, and off the lowest low when bear. Shallow is an impulse,
+ * middling is a pullback, deep is a correction. The extreme window ENDS at the
+ * current bar, so nothing here reads forward.
+ *
+ * A direction is required before a phase means anything: with no direction
+ * there is no trend to pull back from, so the phase is RANGE when price is
+ * pinned mid-range and TRANSITIONAL otherwise.
+ */
+export function dimensions(bars, opts = {}) {
+  const p = { ...DIMS_CONFIG, ...opts };
+  const r = compute(bars, opts);
+  const n = bars.length;
+  const direction = new Array(n).fill(NEUTRAL);
+  const phase = new Array(n).fill(TRANSITIONAL);
+  const volatility = new Array(n).fill(VOL_NORMAL);
+  const giveBack = new Array(n).fill(NaN);
+
+  for (let i = 0; i < n; i++) {
+    const sep = r.emaSepAtr[i], pos = r.rangePos[i], e = r.energy[i], a = r.atr[i];
+    if (!Number.isFinite(sep)) continue;
+
+    direction[i] = sep >= p.dirGap ? BULL : sep <= -p.dirGap ? BEAR : NEUTRAL;
+
+    volatility[i] = !Number.isFinite(e) ? VOL_NORMAL
+      : e < p.volLow ? VOL_LOW
+      : e < p.volHigh ? VOL_NORMAL
+      : e < p.volExtreme ? VOL_HIGH : VOL_EXTREME;
+
+    if (direction[i] === NEUTRAL) {
+      phase[i] = Number.isFinite(pos) && pos >= 0.5 - p.band && pos <= 0.5 + p.band
+        ? RANGE : TRANSITIONAL;
+      continue;
+    }
+    if (!(a > 0)) continue;
+
+    const lo = Math.max(0, i - p.extremeLookback + 1);
+    let ext = direction[i] === BULL ? -Infinity : Infinity;
+    for (let k = lo; k <= i; k++) {
+      if (direction[i] === BULL) { if (bars[k].h > ext) ext = bars[k].h; }
+      else if (bars[k].l < ext) ext = bars[k].l;
+    }
+    const g = direction[i] === BULL ? (ext - bars[i].c) / a : (bars[i].c - ext) / a;
+    giveBack[i] = g;
+    phase[i] = g < p.impulseAtr ? IMPULSE
+      : g < p.correctionAtr ? PULLBACK : CORRECTION;
+  }
+
+  return { direction, phase, volatility, giveBackAtr: giveBack,
+           emaSepAtr: r.emaSepAtr, rangePos: r.rangePos, energy: r.energy,
+           atr: r.atr, regime: r.regime };
+}
+
+/** The dimensional read for the final bar. */
+export function latestDimensions(bars, opts = {}) {
+  if (!bars || bars.length < 60) return null;
+  const d = dimensions(bars, opts);
+  const i = bars.length - 1;
+  return { direction: d.direction[i], phase: d.phase[i],
+           volatility: d.volatility[i], giveBackAtr: d.giveBackAtr[i],
+           emaSepAtr: d.emaSepAtr[i], rangePos: d.rangePos[i], energy: d.energy[i] };
+}
+
 /** Just the final bar — what the Trend read panel needs. */
 export function latest(bars, opts = {}) {
   if (!bars || bars.length < 60) return null;

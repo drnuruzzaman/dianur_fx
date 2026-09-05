@@ -20,8 +20,10 @@ import { liveZones } from './chart/zones.js';
 import { liveSDZones } from './chart/supplydemand.js';
 import { detect as detectMS } from './chart/marketstructure.js';
 import { swingPoints } from './chart/structure.js';
+import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
+         within as newsWithin } from './chart/newsevents.js';
 import { build as buildSegments } from './chart/segments.js';
-import { $, $$, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed, hydrateWorkspace } from './util.js';
+import { $, $$, AUTO_DEFAULTS, BAR_COUNT, resolveAuto, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed, hydrateWorkspace } from './util.js';
 import { closeMenu, openMenu, toast } from './ui/menu.js';
 import { SymbolSearch, registerSymbolSearch } from './ui/search.js';
 import { Watchlist } from './ui/watchlist.js';
@@ -70,10 +72,15 @@ const app = {
   downloading: false,
   auto: load('auto', {
     on: true,
-    sens: 'normal',
-    maxLines: 3,          // per side, per source timeframe
-    own: true,            // detect on the chart's own timeframe
-    htf: ['1h', '4h', '1d'],   // project from these when they are higher
+    /* THE DEFAULTS THE STRATEGY REPLAY ALSO USES, by request, so the two
+       surfaces draw the same lines. They differed before -- the chart ran
+       `normal` over three higher frames at three lines a side while the replay
+       ran `normal` on its own frame at three -- and two pictures of the same
+       market disagreeing is worse than either picture being wrong, because
+       there is no way to tell from the screen which one to believe.
+       js/ui/strategyreplay.js reads AUTO_DEFAULTS below rather than repeating
+       these numbers. */
+    ...AUTO_DEFAULTS,
     /* Per-instrument calibration (js/chart/sensitivity.js). Measured at
        +0.85 pp placebo-adjusted over three eras -- which makes the detector
        less bad rather than good, so it is offered rather than imposed. */
@@ -177,10 +184,12 @@ function autoByTf(symbol) {
   return a;
 }
 
+/* Delegates to util.js `resolveAuto` so js/ui/strategyreplay.js resolves the
+   IDENTICAL settings -- the two surfaces drew different lines while each had
+   its own copy of this logic. */
 function autoFor(symbol, tf) {
   if (!symbol || !tf) return app.auto;
-  const own = autoByTf(symbol)[tf];
-  return own ? { ...app.auto, ...own } : app.auto;
+  return resolveAuto(symbol, tf, app.auto);
 }
 
 /** The auto settings of the chart in front of you: its symbol AND its frame. */
@@ -412,10 +421,9 @@ const inflight = new Map();
 /* How many bars to ask for, per timeframe. Asking 2000 of everything means
    asking for 38 years of weeklies, which makes MetaTrader go and download them;
    these counts keep every timeframe to a sane span (~2-20 years on the highs). */
-const BAR_COUNT = {
-  '1m': 3000, '5m': 2500, '15m': 2000, '30m': 2000,
-  '1h': 1500, '4h': 1200, '1d': 1000, '1w': 800,
-};
+/* Moved to js/util.js: js/ui/strategyreplay.js fetches its higher frames with
+   the same counts, and two copies of this table is two charts drawing lines
+   fitted on different amounts of history. */
 
 /* Scrolling past the oldest loaded bar showed blank, because the initial fetch
    is all there ever was -- 1200 bars on 4h is nine months, and there was no
@@ -769,7 +777,7 @@ async function runAuto(chart) {
   if (!auto.on) {
     chart.setAutoLines([]); chart.setChannels([]); chart.setZones([]);
     chart.setSegments([]); chart.setSdZones([]);
-    chart.setMsEvents([]); chart.setSwings([]);
+    chart.setMsEvents([]); chart.setSwings([]); chart.setNewsMarks([]);
     return;
   }
   if (!chart.bars.length) return;
@@ -936,6 +944,27 @@ async function runAuto(chart) {
       chart.setChannels(now);
     }
   } catch { chart.setChannels([]); }
+
+  /* NFP, as a vertical mark. Derived from the schedule -- see
+     js/chart/newsevents.js for why it is dashed and what would make it solid.
+     Built from the DRAWN window rather than the whole series, because a decade
+     of monthly marks off-screen costs the same as the twelve on it. */
+  try {
+    const w = ownBars;
+    if (!w.length) chart.setNewsMarks([]);
+    else {
+      /* The sourced file arrives asynchronously and is cached after the first
+         call, so this is one fetch for the whole app. The derived marks are
+         drawn either way; the file only upgrades those it covers. */
+      loadNews().then((file) => {
+        if (chart.symbol !== symbol || chart.tf !== tf) return;
+        const a = w[0].t, b = w[w.length - 1].t;
+        chart.setNewsMarks(mergeNews(derivedNews(a, b), newsWithin(file, a, b)));
+        chart.draw();
+      }).catch(() => {});
+      chart.setNewsMarks(mergeNews(derivedNews(w[0].t, w[w.length - 1].t), []));
+    }
+  } catch { chart.setNewsMarks([]); }
 
   /* Zones come from the chart's own pivots at its own timeframe. They are
      horizontal by definition, so unlike trendlines there is nothing to project
@@ -1182,6 +1211,10 @@ function paintRuleSignal(chart, sig) {
   chart.setRuleTargets({
     levels,
     entry,
+    /* THE STOP TRAVELS WITH THE LEVELS because it is what sizes them: money on
+       a tag is now the level's R multiple against a stated account, so a tag
+       without a stop distance has no money to print. */
+    stop,
     tickSize: spec ? (spec.tick_size || spec.point || 0) : 0,
     tickValue: spec ? (spec.tick_value || 0) : 0,
   });

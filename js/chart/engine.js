@@ -26,11 +26,61 @@ const AXIS_W = 54;
    overprints; anything closer than this gets nudged, never dropped. */
 const LAB_GAP = 13;
 
-/* The smallest position any broker here accepts, and the size every money
-   figure on the rule's levels is quoted at. Fixed on purpose: a figure that
-   scaled with a live position would move whenever equity did, and would make
-   two charts incomparable. */
-const MIN_LOT = 0.01;
+/* THE ACCOUNT EVERY MONEY FIGURE ON THE RULE'S LEVELS IS QUOTED AGAINST.
+ *
+ * $10,000 risking 2% a trade, paying 8 points of spread, by request. This
+ * REPLACED a fixed 0.05 lots, and the change is not cosmetic: the old figure
+ * answered "what is this move worth at a stated size", which made a tight stop
+ * and a wide one look equally valuable. This one answers "what does this level
+ * pay for the risk I actually took", which is the question a plan is read to
+ * settle.
+ *
+ * THE ARITHMETIC FALLS OUT AS R. Sizing to lose `riskCash` at the stop makes
+ * every level's money `riskCash * distance / stopDistance` -- the level's R
+ * multiple in dollars. So the stop is always -$200 and a 1.5R level always
+ * pays $300, on gold, on the yen, on any timeframe. That is what makes two
+ * charts comparable now; the old fixed lot made them comparable only in the
+ * sense that a barrel and a bushel are both containers.
+ *
+ * STILL FIXED, WHICH WAS THE POINT OF THE OLD CONSTANT AND SURVIVES HERE. The
+ * equity is a stated $10,000, not the live balance, so the numbers do not move
+ * when the account does and two charts a week apart still say the same thing.
+ *
+ * SPREAD IS CHARGED ONCE, entry and exit together, at `spreadPoints` of the
+ * instrument's own point. It is small on these stops -- about $3 on gold 15m --
+ * and it is included because `tools/scalp_eval.py` measured that the same
+ * number decides whether 5m is worth trading at all.
+ *
+ * NOTHING ON SCREEN STATES ANY OF IT: the heading that read "· AUD at 0.01
+ * lots" was removed by request, so a reader sees `$300` with no unit and no
+ * size. Changing these constants silently changes every such number.
+ * js/ui/rulepanel.js `_cash` uses the same helpers and must not grow its own
+ * copy of them. */
+export const ACCOUNT = { equity: 10000, riskPct: 0.02, spreadPoints: 8 };
+
+/** What one trade is allowed to lose. */
+export function riskCash() { return ACCOUNT.equity * ACCOUNT.riskPct; }
+
+/**
+ * What a level `dist` from the fill pays, when the stop is `risk` away.
+ *
+ * Null -- not zero -- when the stop distance is unknown or zero, because a
+ * missing figure and a $0 figure mean different things and the tag omits the
+ * first rather than printing the second. `spread` is charged once here, so
+ * callers pass a distance and get a NET number.
+ */
+export function levelCash(dist, risk, point) {
+  if (!(risk > 0) || !Number.isFinite(dist)) return null;
+  const spread = (point > 0 ? point : 0) * ACCOUNT.spreadPoints;
+  return riskCash() * (Math.abs(dist) - spread) / risk;
+}
+
+/** What the stop costs: the risk itself, plus the spread on the way out. */
+export function stopCash(risk, point) {
+  if (!(risk > 0)) return null;
+  const spread = (point > 0 ? point : 0) * ACCOUNT.spreadPoints;
+  return riskCash() * (risk + spread) / risk;
+}
 const TIME_H = 22;        // bottom time axis
 const PANE_GAP = 6;
 const MIN_SPAN = 12;
@@ -212,6 +262,7 @@ export class Chart {
     this.sdZones = [];
     this.marks = [];
     this.msEvents = [];
+    this.newsMarks = [];
     this.swings = [];
     this.message = 'loading…';
     this.view = { right: 0, span: 160, priceLock: null };
@@ -421,6 +472,10 @@ export class Chart {
   setRuleTargets(t) {
     this.ruleTargets = (t && t.levels && t.levels.length) ? t : null;
   }
+
+  /* Scheduled macro releases, as vertical marks. See js/chart/newsevents.js
+     for where they come from and why some are drawn as uncertain. */
+  setNewsMarks(ev) { this.newsMarks = ev || []; }
 
   setMsEvents(ev) { this.msEvents = ev || []; }
   setSwings(sw) { this.swings = sw || []; }
@@ -733,6 +788,7 @@ export class Chart {
         this._elliott(pane);
         this._trail(pane);
         this._marks(pane);
+        this._newsMarks(pane);
         this._asOfMark(pane);
         this._ruleZone(pane);
         this._ruleTargets(pane);
@@ -1205,14 +1261,33 @@ export class Chart {
       ctx.fillText(text, x1 - 10, by + h - 5);
       ctx.textAlign = 'left';
     };
-    /* Pips, like the target tags directly beneath these. Two units in one
-       stack of labels is a reader doing arithmetic to compare two lines. */
-    const away = (v) => (Number.isFinite(last) ? `  ${this._pips(v - last)}` : '');
-    tag(yE, `ENTRY ${z.entry.toFixed(this.digits)}${away(z.entry)}`,
-        COL.pos || '#e8eef6');
+    /* THE FILL, AND NOTHING ELSE. The pips came off by request, and there is no
+       money figure to replace them with: a fill is not a gain or a loss, it is
+       where the trade started. The two tags below it carry the numbers. */
+    tag(yE, `ENTRY ${z.entry.toFixed(this.digits)}`, COL.pos || '#e8eef6');
     if (z.stop > 0) {
+      /* THE STOP IN MONEY, and it is the one number here that is not a
+         distance: what this trade loses if the stop fills, on `ACCOUNT`. It
+         reads against the TP tags below it, which now carry money too -- so the
+         plan's whole right-hand column is in one unit and a reader can compare
+         the risk with what it is being risked for.
+       *
+         Measured entry-to-stop, never from the last close: the risk is fixed
+         when the trade opens and must not drift with price, which is exactly
+         what `away()` does for the entry line above. */
+      /* NEGATIVE, because it is what the trade LOSES. Every other money figure
+         on this chart is something gained if price gets there; this one is the
+         only one that is spent, and printing it unsigned beside `$462` invited
+         the two to be added rather than weighed.
+
+         It is a touch MORE than the 2% risk, never less: the stop pays the
+         spread on the way out as well. */
+      const spec = this.ruleTargets;
+      const lost = stopCash(Math.abs(z.entry - z.stop),
+                            spec ? spec.tickSize : 0);
+      const cash = lost === null ? '' : `  -$${Math.round(lost)}`;
       tag(this.y(pane, z.stop),
-          `SL ${z.stop.toFixed(this.digits)}${away(z.stop)}`, COL.sl);
+          `SL ${z.stop.toFixed(this.digits)}${cash}`, COL.sl);
     }
     ctx.restore();
   }
@@ -1240,12 +1315,16 @@ export class Chart {
     const x1 = pane.x + pane.w;
     if (x1 <= pane.x) return;
 
-    /* What one unit of price is worth at the broker minimum. `tickValue /
-       tickSize` is a property of the CONTRACT -- no equity, no FX rate -- which
-       is what makes it safe to print without the app sizing a position. Zero
-       when the spec has not arrived, and the tag simply omits the money. */
-    const perPrice = (t.tickSize > 0 && t.tickValue > 0)
-      ? (t.tickValue / t.tickSize) * MIN_LOT : 0;
+    /* THE STOP DISTANCE IS WHAT SIZES EVERY FIGURE HERE, so a trade without a
+       known stop shows prices and no money -- the honest degradation, and the
+       reason this reads `ruleZone` as well as its own payload. The two are set
+       together at both call sites; the fallback is for the order they arrive
+       in, not for a case where one is meaningfully absent. */
+    const zone = this.ruleZone;
+    const risk = Number.isFinite(t.stop) && Number.isFinite(t.entry)
+      ? Math.abs(t.entry - t.stop)
+      : (zone && Number.isFinite(zone.stop) && Number.isFinite(zone.entry)
+         ? Math.abs(zone.entry - zone.stop) : NaN);
 
     ctx.save();
     ctx.font = '9px "Roboto Mono", monospace';
@@ -1305,12 +1384,13 @@ export class Chart {
        */
       const anchor = Number.isFinite(t.entry) ? t.entry : last;
       const bits = [lv.key];
-      if (Number.isFinite(anchor)) {
-        bits.push(this._pips(Math.abs(lv.price - anchor)));
-        if (perPrice > 0) {
-          bits.push(`$${Math.round(Math.abs(lv.price - anchor) * perPrice)}`);
-        }
-      }
+      /* MONEY ONLY ON THE CHART. The pips came off these tags by request; the
+         SIDE PANEL still lists both, so the distance has not been lost, it has
+         been moved to the surface with room for it. What is left is the one
+         figure a reader cannot work out in their head from the price. */
+      const pays = Number.isFinite(anchor)
+        ? levelCash(lv.price - anchor, risk, t.tickSize) : null;
+      if (pays !== null) bits.push(`$${Math.round(pays)}`);
       const text = `${off < 0 ? '▲' : off > 0 ? '▼' : ''}${bits.join('  ')}`;
 
       ctx.globalAlpha = off ? 0.6 : 1;
@@ -1429,6 +1509,17 @@ export class Chart {
       trending_up: COL.up, trending_down: COL.down,
       sideways: COL.textFaint || COL.text, transition: COL.line,
     };
+    /* TWO RIBBONS, STACKED BY `row`.
+     *
+     * This drew one, at a fixed height, which was fine while `segments` meant
+     * one thing. The strategy replay then used the same array for TRADE
+     * ribbons, so on that surface the regime episodes the live chart shows had
+     * nowhere to go -- the two surfaces disagreed because one channel was
+     * carrying two meanings. `row` separates them: 0 is the regime episode
+     * ribbon on both surfaces, 1 is the replay's trades underneath it.
+     * Defaulting to 0 leaves every existing caller drawing exactly where it
+     * did. */
+    const ROW_H = H + 10;
     ctx.save();
     for (const sg of this.segments) {
       const x0 = this.x(this.idxOfTime(sg.t0));
@@ -1436,15 +1527,16 @@ export class Chart {
       if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
       if (x1 < pane.x || x0 > pane.x + pane.w) continue;
       const a = Math.max(pane.x, x0), b = Math.min(pane.x + pane.w, x1);
+      const top = pane.y + 1 + (sg.row || 0) * ROW_H;
       ctx.globalAlpha = sg.closed ? 0.55 : 0.85;
       ctx.fillStyle = COLOR[sg.kind] || COL.line;
-      ctx.fillRect(a, pane.y + 1, Math.max(1, b - a), H);
+      ctx.fillRect(a, top, Math.max(1, b - a), H);
       /* Only label an episode wide enough to hold its own name. A clipped
          "Downtr…" is worse than no label: it reads as a different word. */
-      if (b - a > 62) {
+      if (sg.label && b - a > 62) {
         ctx.font = '8.5px "Roboto Mono", monospace';
         ctx.globalAlpha = 0.7;
-        ctx.fillText(sg.label.toUpperCase(), a + 3, pane.y + H + 9);
+        ctx.fillText(sg.label.toUpperCase(), a + 3, top + H + 8);
       }
     }
     ctx.restore();
@@ -1685,6 +1777,60 @@ export class Chart {
 
   /* The as-of boundary: everything right of this line is what the other lane
      was not allowed to see. */
+  /**
+   * Scheduled releases, one vertical mark each.
+   *
+   * DRAWN UNDER EVERYTHING the rule puts on the chart -- before the as-of mark,
+   * the zone and the tags -- because this is context for a move, not a claim
+   * about one. A news line that sits on top of the stop is a line that gets
+   * mistaken for the stop.
+   *
+   * SOLID MEANS THE MINUTE IS KNOWN, dashed and dimmer means only the day is.
+   * The distinction is not decoration: an approximate mark is generated from a
+   * schedule rule and can be a day out when a holiday shifts a release, so
+   * reading a single candle against a dashed line is a mistake the drawing
+   * should make visible rather than hide. `newsevents.js` sets the flag.
+   *
+   * Labels are drawn only when there is room for them -- below about 3px per
+   * bar a decade of releases becomes a wall of text with no chart behind it,
+   * so the marks stay and the words go.
+   */
+  _newsMarks(pane) {
+    const marks = this.newsMarks;
+    if (!marks || !marks.length || !pane.isMain) return;
+    const ctx = this.ctx;
+    ctx.save();
+    const label = this.barW >= 3;
+    let lastX = -Infinity;
+    for (const m of marks) {
+      const i = this.idxOfTime(m.t);
+      if (!Number.isFinite(i)) continue;
+      const x = this.x(i);
+      if (!Number.isFinite(x) || x < pane.x - 2 || x > pane.x + pane.w + 2) continue;
+      const col = m.approx ? COL.textFaint : COL.pos;
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = m.approx ? 0.35 : 0.6;
+      ctx.setLineDash(m.approx ? [2, 4] : [4, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, pane.y);
+      ctx.lineTo(x, pane.y + pane.h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      /* One label per 34px: releases cluster (ISM services and NFP share a
+         Friday most months) and two words on one pixel column is neither. */
+      if (label && x - lastX >= 34) {
+        ctx.globalAlpha = m.approx ? 0.55 : 0.9;
+        ctx.fillStyle = col;
+        ctx.font = '600 8.5px "Roboto Condensed", Helvetica, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(m.label || m.kind, x + 3, pane.y + pane.h - 4);
+        lastX = x;
+      }
+    }
+    ctx.restore();
+  }
+
   _asOfMark(pane) {
     if (!Number.isFinite(this.asOfMark)) return;
     const x = this.x(this.asOfMark);
@@ -2712,28 +2858,38 @@ export class Chart {
     }
   }
 
-  /* "Trade like a Pro", set into the bottom-right corner of the chart.
+  /* "Trade with a Plan, Strategy Today, Freedom Tomorrow" -- set into the
+   * bottom-right corner of the chart as plain text -- no glow, no box,
+   * just ink, coloured by which way price last moved.
    *
-   * Anchored to the PLOT, not to a pane: it sits just inside the price axis and
-   * just above the time axis, so it keeps the same corner whether the chart is
-   * showing three study panes or none. Drawn last, after every pane and the
-   * crosshair, so nothing paints over it.
+   * BOTTOM-LEFT OF THE PLOT, ALWAYS, AND IT DOES NOT MOVE. Anchored to the
+   * plot rather than to a pane, so adding or removing an oscillator does not
+   * shift it: the corner is the corner whether the chart is showing three
+   * study panes or none, and a mark that relocates when you add an RSI is not
+   * a mark, it is a moving part.
    *
-   * Tinted by the CURRENT move -- green while the bar is up on the one before
-   * it, pink while it is down -- which makes it a direction read from the
-   * corner of the eye as well as a mark. It follows the crosshair when one is
-   * up, for the same reason the legend does: hovering a bar should describe
-   * THAT bar, not silently keep showing the last one.
+   * It started bottom-RIGHT, which was wrong. That end is the busiest strip on
+   * the chart -- the last-price tag, the rule's ENTRY, SL, exit and TP tags,
+   * and the capture stamp on an export all claim it -- and while the 16-
+   * character mark this replaced ducked under them, 51 characters do not: on a
+   * 129px pane it lay straight across the whole tag stack. The left edge
+   * carries only the occasional zone label.
    *
-   * It IS included in exports -- that was the point of asking for it. The
-   * capture stamp claims the bottom-right corner of a snapshot, so on export
-   * this lifts a line clear of it rather than the two painting over each other:
-   * both are right-aligned at the same baseline and would otherwise collide
-   * exactly.
+   * THE KNOWN COST, accepted deliberately: on a short chart with a study pane
+   * open, the plot's bottom IS the oscillator's bottom, so the line sits over
+   * its trace and its `overbought 80` label. A fixed corner was worth more than
+   * avoiding that -- see the note above about moving parts.
+   *
+   * It IS included in exports -- that was the point of asking for it -- and
+   * moving it left also retires the export lift, since the capture stamp is
+   * right-aligned and no longer shares a corner with it.
    */
   _watermark() {
     const bars = this.plotBars;
     if (!bars || bars.length < 2) return;
+    /* Follows the crosshair when one is up, for the same reason the legend
+       does: hovering a bar should describe THAT bar, not silently keep
+       showing the last one. */
     const i = clamp(this.cross ? this.cross.i : this.lastI, 0, this.lastI);
     const b = bars[i];
     if (!b) return;
@@ -2742,39 +2898,59 @@ export class Chart {
     const chg = prev ? b.c - prev.c : b.c - b.o;
 
     const ctx = this.ctx;
+    const text = 'Trade with a Plan, Strategy Today, Freedom Tomorrow';
     ctx.save();
     /* the export is rasterised at 2x and lands on white, so it carries a
        slightly larger mark than the on-screen one */
     const exporting = !!this._exporting;
-    ctx.font = (exporting ? '600 15px' : '600 13px') + ' "Roboto Mono", monospace';
-    ctx.textAlign = 'right';
+    /* Roboto Condensed, not the mono face the rest of the chart uses. Mono is
+       for NUMBERS -- it buys column alignment on prices and pays for it in
+       width, and this line is prose that has to fit a corner. The condensed
+       sans is both the right voice for a phrase and about a fifth narrower,
+       so it reads at full size where the mono had to shrink. */
+    const size = exporting ? 19 : 17;
+    const face = (px) => '500 ' + px + 'px "Roboto Condensed", Helvetica, Arial, sans-serif';
+    ctx.font = face(size);
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    /* NEAR FULL STRENGTH on screen. It was 0.5, which on the dark ground put
-       it close enough to the grid to be missed -- and a direction read that
-       has to be looked for is not a direction read. The glow underneath is
-       what lets the alpha go up without the mark competing with the candles:
-       it separates the text from whatever it happens to sit over, so the
-       brightness buys legibility rather than noise.
+    /* The line is long enough to matter: at full size it wants ~390px, which
+       is most of a narrow chart. Measure it and step the size down until it
+       claims no more than half the plot, so on a split screen it stays a mark
+       in the corner rather than a banner across the candles. */
+    const room = this.plot.w * 0.5;
+    for (let px = size; px > 8 && ctx.measureText(text).width > room; px--) {
+      ctx.font = face(px);
+    }
+    const x = this.plot.l + 10, y = this.plot.b - 10;
 
-       The corner it sits in is empty by construction -- the plot's own
-       right-hand gutter, below the last price tag -- so there is nothing here
-       for a bright mark to obscure. */
-    const colour = chg >= 0 ? COL.up : COL.down;
-    ctx.globalAlpha = exporting ? 0.85 : 0.92;
-    ctx.shadowColor = colour;
-    ctx.shadowBlur = exporting ? 6 : 10;
-    ctx.fillStyle = colour;
-    /* _stampBrand puts the capture time on the bottom line at (r - 8, b - 10);
-       clear it by a full line so neither is read through the other */
-    const lift = exporting ? 20 : 0;
-    const x = this.plot.r - 10, y = this.plot.b - 10 - lift;
-    /* Painted twice: the first pass lays the glow down, the second puts solid
-       ink on top of it. One pass with a shadow gives a soft, slightly hazy
-       letterform -- the halo bleeds through the glyph's own edges -- and the
-       point of raising the alpha was to make it read crisply. */
-    ctx.fillText('Trade like a Pro', x, y);
-    ctx.shadowBlur = 0;
-    ctx.fillText('Trade like a Pro', x, y);
+    if (exporting) {
+      /* IN A SNAPSHOT the three clauses carry three colours, one each.
+         On screen the line has a job -- it is tinted by the current move, so
+         direction reads from the corner of the eye -- and that job only exists
+         while price is moving. A still image has no current move, so the tint
+         would be a frozen accident of whichever bar happened to be last. The
+         export spends the colour on the phrase's own structure instead.
+         Each clause needs its own fillStyle, so the run is walked rather than
+         painted in one call. Colours come from the export palette, which is
+         already darkened for the white backdrop, plus the logo's navy. */
+      const parts = [
+        ['Trade with a Plan,', '#171C8F'],
+        ['Strategy Today,', COL.up],
+        ['Freedom Tomorrow', COL.down],
+      ];
+      const gap = ctx.measureText(' ').width;
+      let cx = x;
+      for (const [part, colour] of parts) {
+        ctx.fillStyle = colour;
+        ctx.fillText(part, cx, y);
+        cx += ctx.measureText(part).width + gap;
+      }
+    } else {
+      /* Tinted by the CURRENT move -- lime while the bar is up on the one
+         before it, magenta while it is down. */
+      ctx.fillStyle = chg >= 0 ? COL.up : COL.down;
+      ctx.fillText(text, x, y);
+    }
     ctx.restore();
   }
 

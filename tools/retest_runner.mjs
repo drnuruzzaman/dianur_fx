@@ -130,10 +130,23 @@ process.stderr.write(`  ${cfg.cell} ${cfg.rule}: rate ${(100 * rate).toFixed(3)}
   + `${randEntry.trades.length})
 `);
 
+/* A TRAILED ROW NEEDS A TRAILED CONTROL, and the first version of this study
+ * did not have one.
+ *
+ * `ruleTrail` adds an EXIT to the rule. Scoring it against `randEntry`, which
+ * has no trail, compares entry+trail against random-entry-no-trail and charges
+ * the whole difference to the entry -- which is how the S/R candidate came back
+ * "BEATS THE COIN FLIP IN BOTH ERAS" on the hold-out while its untrailed twin,
+ * the row that actually tests the entry, was not demonstrated. `randEntryTrail`
+ * is the same coin flip carrying the same trail, so the trailed comparison
+ * varies the entry and nothing else. */
+const trail = () => makeTrail('structure', { tf, cell: cfg.cell });
 const runs = {
   rule: real,
-  ruleTrail: runRule(bars, cached, { tf, exitTrail: makeTrail('structure', { tf, cell: cfg.cell }) }),
+  ruleTrail: runRule(bars, cached, { tf, exitTrail: trail() }),
   randEntry,
+  randEntryTrail: runRule(bars, controlRule(seed, false, useRate),
+                          { tf, exitTrail: trail() }),
   randSide: runRule(bars, controlRule(seed ^ 0x9e3779b9, true, useRate), { tf }),
   donchian: runRule(bars, donchianRule, { tf }),
 };
@@ -141,7 +154,13 @@ const runs = {
 const out = { bars: bars.length, tf, cell: cfg.cell, rule: cfg.rule,
               riskAtr, matchedRate: useRate, rawRate: rate, opportunityBars: usable,
               ruleTrades: target, controlTrades: randEntry.trades.length,
-              order: ['rule', 'ruleTrail', 'randEntry', 'randSide', 'donchian'],
+              order: ['rule', 'ruleTrail', 'randEntry', 'randEntryTrail',
+                      'randSide', 'donchian'],
+              /* Which control each row is measured against. The eval reads
+                 this rather than assuming one baseline for the whole table. */
+              baselineFor: { rule: 'randEntry', ruleTrail: 'randEntryTrail',
+                             randEntry: 'randEntry', randEntryTrail: 'randEntry',
+                             randSide: 'randEntry', donchian: 'randEntry' },
               runs: {} };
 for (const [name, r] of Object.entries(runs)) {
   out.runs[name] = r.trades.map((t) => ({

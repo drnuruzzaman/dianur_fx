@@ -39,6 +39,8 @@ import { toast } from './menu.js';
 import { openAudio, pickMime } from './recaudio.js';
 import { api } from '../api.js';
 import { Chart } from '../chart/engine.js';
+import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
+         upTo as newsUpTo, within as newsWithin } from '../chart/newsevents.js';
 import { calibration, countAsOf, scoreBelief, scoreProjection, stability }
   from '../chart/elliott.js';
 import { cones, coverage, reachRate, stateSeries } from '../chart/cone.js';
@@ -280,11 +282,17 @@ export class ElliottReplay {
                                      months);
       this.full = payload.bars || [];
       this.digits = payload.digits;
+      this._news = null;              // rebuilt for the new window on next apply
       this.beliefs = new Map();
       this.revealed = false;
-      /* Start 60% in: far enough back to have something to reveal, near enough
-         that the counter has bars to work with. */
-      this.i = Math.max(120, Math.floor(this.full.length * 0.6));
+      /* OPEN ON THE CURRENT BAR, by request -- the same change as
+         js/ui/strategyreplay.js and for the same reason. This was 60% in, so
+         the panel opened on a date months old and the count it showed was a
+         historical one. Stepping BACK from the live edge reaches everything the
+         old default did; what is gone is the future left to reveal, which at
+         the last bar does not exist. 120 is the counter's own floor: below that
+         there are not enough bars to place a wave at all. */
+      this.i = Math.max(Math.min(120, this.full.length - 1), this.full.length - 1);
       /* A range fetch happens BECAUSE a date was asked for, so honour it rather
          than leaving the cursor at 60% of a window whose size just changed. */
       if (seekTo != null && this.full.length) {
@@ -510,6 +518,25 @@ export class ElliottReplay {
        trust the state of. */
     this.chart.symbol = this.symbol;
     this.chart.tf = this.tf;
+    /* NFP marks, up to the cursor. The chart holds the whole series here, so
+       the cut has to be explicit: without it the replay would show a print the
+       walk has not reached, which is the one thing this surface exists to
+       prevent. See js/chart/newsevents.js for why the mark is dashed. */
+    try {
+      if (!this._news) {
+        /* Derived immediately so the marks appear on this paint; the sourced
+           file upgrades them when it lands. `_apply` runs on every step, so the
+           second paint costs nothing extra. */
+        this._news = mergeNews(
+          derivedNews(this.full[0].t, this.full[this.full.length - 1].t), []);
+        loadNews().then((file) => {
+          const a = this.full[0].t, b = this.full[this.full.length - 1].t;
+          this._news = mergeNews(derivedNews(a, b), newsWithin(file, a, b));
+          if (this.chart) this._apply({ keepPeek: true });
+        }).catch(() => {});
+      }
+      this.chart.setNewsMarks(newsUpTo(this._news, slice[slice.length - 1].t));
+    } catch { this.chart.setNewsMarks([]); }
     /* THE CHART HOLDS THE WHOLE SERIES; the BELIEF is computed from `slice`.
        That is the entire separation, and it is one line apart on purpose so it
        cannot drift: whatever the chart is showing, `countAsOf` is handed bars
@@ -1084,7 +1111,7 @@ export class ElliottReplay {
     this.endBtn = btn('▶▶|', 'Run to the end',
                       () => { this.stop(); this.step(this.full.length); });
     for (const b of [this.stepBackBtn, this.backBtn, this.playBtn,
-                     this.stepFwdBtn, this.endBtn]) b.classList.add('rp-tp');
+                     this.stepFwdBtn, this.endBtn]) b.classList.add('rp-trans');
     /* A DATE, not a bar number: a bar index moves every time the window is
        refetched, and a date is what you remember about the move you want to
        look at again. It doubles as a readout of where the cursor is. */

@@ -36,6 +36,42 @@
  * SIMPLER than what the chart draws and that is a real limitation -- a
  * negative result here is a result about these constructions, not about every
  * possible trendline. It is stated that way in the verdict.
+ *
+ * WHAT THE MEASUREMENT SAID. tools/retest_eval.py, four symbols, 5m and 15m,
+ * both eras, controls calibrated to each rule's own trade count
+ * (logs/retest_tl.txt, logs/retest_sr.txt). Pooled net R against the matched
+ * coin flip:
+ *
+ *     TRENDLINE   15m   -461.5 R [-985.0,+61.8]    -360.2 R [-1005.9,+356.2]
+ *                 5m   +1122.5 R [ -72.7,+2397.6]  +410.7 R [ -756.2,+1559.9]
+ *     S/R         15m     +45.4 R [-931.7,+1047.4] -582.0 R [-1598.8,+419.7]
+ *                 5m    +243.9 R [-1435.1,+2008.3] +1797.5 R [-65.4,+3748.6]
+ *
+ * NEITHER IS DEMONSTRATED, on either frame. And the absolute numbers are worse
+ * than the comparisons look: the trendline rule returned -1380.8 and -633.9 net
+ * R on 15m and -1846.8 and -2489.6 on 5m. Where it "beats" its control on 5m it
+ * is beating a row that lost 2,900 R. Both are gross, before a spread that
+ * costs 0.061-0.122 R on every one of several thousand trades.
+ *
+ * THE ONE NEAR-MISS, and it is recorded here so nobody re-finds it and believes
+ * it: S/R with the structural trail is the only configuration in the study with
+ * positive absolute net R in both eras on 5m (+173.1, +1975.3), beating its
+ * control by +638.1 and +2845.6 with the recent era's interval clear of zero.
+ * That is the same shape the 0.5x horizon lean had before it died on hold-out
+ * symbols; logs/retest_sr_holdout.txt is that test.
+ *
+ * AND THE FINDING THAT KEEPS REPEATING ACROSS ALL THREE CANDIDATES: the
+ * fully-random control -- random side AND random bar -- beats the control that
+ * follows the STRUCTURAL BIAS with random timing. +980.7 R on trendline 15m and
+ * +306.9 R on the supply/demand rule at 15m, both intervals clear of zero.
+ * Taking the side BOS/CHoCH points at was, on these frames, worse than a coin
+ * flip on direction. Three independent candidates, same direction.
+ *
+ * MEANWHILE the Donchian rule on the identical bars -- dormant-looking, a
+ * fraction of the trades -- is the only row in the whole study with a verdict:
+ * BEATS THE COIN FLIP IN BOTH ERAS on 5m, +3523.8 and +3040.8 R.
+ *
+ * NEITHER RULE IS REGISTERED IN js/chart/strategies.js AND NOTHING RUNS THEM.
  */
 
 import { atrSeries } from './tlengine.js';

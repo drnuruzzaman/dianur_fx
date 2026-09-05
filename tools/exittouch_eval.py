@@ -1,59 +1,43 @@
 #!/usr/bin/env python
 """
-Does a structure retest pick entries better than chance, on the frames the
-Donchian rule sits out?
+Why wait for the bar to close, if price already hit the exit?
 
-    python tools/smc_eval.py
-    python tools/smc_eval.py --tfs 5m --symbols XAUUSD.a
+    python tools/exittouch_eval.py
 
-THE IDEA UNDER TEST, defined in js/chart/smcretest.js: while market structure is
-bullish, buy the first bar that trades into the newest live demand base and
-closes back above it, stop under the base; short the mirror; exit on an opposite
-CHoCH or the stop. It is assembled from detectors the charts already draw --
-BOS/CHoCH, supply and demand -- because a shorter Donchian channel is measured
-to lose on these frames (-3,616 R on 5m, -1,230 R on 15m, both eras,
-logs/horizon_5m_eval.txt and logs/horizon_holdout.txt).
+THE QUESTION, and the first half of the answer is that most of it already does
+not wait. The STOP is checked on the bar's RANGE in js/chart/rules.js -- a
+touch fills at the stop, a gap fills at the open, no close is involved. What
+waits is the CHANNEL exit and the structural trail: both fire on a close
+through the level, and both then fill at the next open.
 
-WHAT IS COMPARED.
+WHY IT WAITS TODAY. The 10-bar exit channel sits at the edge of recent range by
+construction, so price wicks through it constantly without the trend being
+over. On XAUUSD the low pierces it 13.89% of 4h bars but the close finishes
+through it only 6.49% -- 2.1x, and the same 2.1x on 1h and 15m. Requiring the
+close is the filter that separates "the move ended" from "one bar poked at it",
+and it is worth roughly half the exits.
 
-  smc          the rule.
-  smcTrail     the rule with the structural trailing exit added.
-  randEntry    THE CONTROL. Identical in every respect except WHICH bar it
-               enters on: same bias, same opportunity set (a live zone on the
-               correct side), same stop width in ATR, same exits. It fires at
-               random with the probability that reproduces the rule's own trade
-               count. If the rule cannot beat this, the zone is not picking
-               entries -- it is only deciding how often to trade.
-  randSide     the same, with the SIDE randomised too. If randEntry matches the
-               rule but randSide does not, then structure's direction carries
-               the result and the zone carries none of it.
-  donchian     the shipped rule on the same bars, for scale.
+WHAT IS COMPARED, same entries and the same trail throughout:
 
-WHY THE CONTROL IS THE ROW THAT DECIDES. Eleven entry gates died in
-tools/entry_filter_eval.py against exactly this construction, and the structural
-trail came out "not demonstrated" against a matched ATR trail in
-tools/exit_trail_eval.py. Beating the Donchian rule on a 5m chart proves
-nothing: the Donchian rule is deliberately dormant there. Beating a coin flip
-that trades at the same rate, at the same stop distance, in the same direction,
-on the same bars, is the whole claim.
+  closeExit    the shipped configuration -- close through the level, fill at
+               the next open. BASELINE.
+  touchExit    the same level, checked on the bar's range and filled at the
+               level. Note this gets BOTH halves of the wait back: it acts
+               intrabar and it skips the next-open fill.
+  randExit     THE CONTROL. Closes at random, at the rate `touchExit` closed
+               above and beyond the baseline, with the same trail and the same
+               re-entry. "Leave sooner" and "leave when price touches the
+               channel" are different claims; without this row they cannot be
+               told apart.
 
-MATCHED BEFORE ANYTHING IS SCORED. The rule runs first; its trade count sets the
-control's firing rate and its MEDIAN stop-in-ATR sets the control's stop. Both
-are read off the rule's geometry, never off its returns.
+WHERE THE CODE LIVES. `p.exitTouch` is a flag on the SHARED walker, off in
+everything that ships. A private walker inside this script was the obvious
+alternative and is precisely how the ATR divergence got in -- three copies of
+the lifecycle, each subtly its own.
 
-HOW ELSE THIS IS KEPT HONEST -- the design the other studies use.
-
-  TWO ERAS, AND IT MUST SURVIVE BOTH. 2016-2020 and 2021-2026.
-
-  NET R OVER THE SAME CALENDAR, paired on calendar blocks, bootstrap over
-  blocks. The rows do not take the same trades, so avg R per trade is not
-  comparable across them.
-
-  GROSS. No spread, slippage or swap. On XAUUSD 5m the spread alone is 0.122 R
-  per trade in 2016-2020 and 0.061 R in 2021-2026 -- so a row taking 2,000
-  trades owes roughly 180 R that nothing below pays. Both the rule and its
-  controls trade at the SAME rate, so the comparison between them is unaffected;
-  the comparison with `donchian`, which trades far less, is not.
+GROSS. `touchExit` closes and re-opens more often than the baseline, so it owes
+more spread than anything here charges it, and its numbers are the friendly
+version.
 """
 
 import argparse
@@ -70,15 +54,19 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NODE = shutil.which('node')
-RUNNER = os.path.join(ROOT, 'tools', 'retest_runner.mjs')
+RUNNER = os.path.join(ROOT, 'tools', 'exittouch_runner.mjs')
 
-DEFAULT_SYMBOLS = ['XAUUSD.a', 'EURUSD.a', 'USDJPY.a', 'GBPUSD.a']
-DEFAULT_TFS = ['5m', '15m']
-BASELINE = 'randEntry'          # the control, not the rule
+DEFAULT_SYMBOLS = ['XAUUSD.a', 'USDJPY.a']
+DEFAULT_TFS = ['4h', '1h', '30m', '15m', '5m']
+BASELINE = 'closeExit'          # what ships today
 
 ERAS = [('2016-2020', 2016, 2020), ('2021-2026', 2021, 2026)]
 N_BLOCKS = 20
-MIN_BARS = 20000
+#: Enough history for 20 calendar blocks to mean something. Per timeframe,
+#: because the retest studies' flat 20,000 was a 5m number and it silently
+#: skipped every 4h and 1h cell -- the frames this rule actually trades.
+MIN_BARS = {'5m': 20000, '15m': 20000, '30m': 10000,
+            '1h': 5000, '4h': 2000, '1d': 800, '1w': 300}
 
 
 def load_bars(symbol, tf, year_from):
@@ -143,9 +131,9 @@ def summarise(trades):
             'bars': sum(t['bars'] for t in trades) / len(trades)}
 
 
-def run_cell(symbol, tf, year_from, heap, rule):
+def run_cell(symbol, tf, year_from, heap):
     bars = load_bars(symbol, tf, year_from)
-    if len(bars) < MIN_BARS:
+    if len(bars) < MIN_BARS.get(tf, 5000):
         print('  ! %s %s: only %d bars, skipped' % (symbol, tf, len(bars)), file=sys.stderr)
         return None
     tmp = tempfile.mkdtemp(prefix='smc_')
@@ -155,7 +143,7 @@ def run_cell(symbol, tf, year_from, heap, rule):
             json.dump(bars, fh)
         cp = os.path.join(tmp, 'cfg.json')
         with open(cp, 'w') as fh:
-            json.dump({'barsPath': bp, 'tf': tf, 'rule': rule,
+            json.dump({'barsPath': bp, 'tf': tf,
                        'cell': symbol + '|' + tf}, fh)
         out = subprocess.run([NODE, '--max-old-space-size=%d' % heap, RUNNER, cp],
                              cwd=ROOT, capture_output=True, text=True, timeout=43200)
@@ -176,9 +164,6 @@ def main():
     ap.add_argument('--tfs', nargs='+', default=DEFAULT_TFS)
     ap.add_argument('--from-year', type=int, default=2016)
     ap.add_argument('--heap', type=int, default=6144)
-    ap.add_argument('--rule', default='tl', choices=['smc', 'tl', 'sr'],
-                    help='which candidate to test (js/chart/retests.js, '
-                         'js/chart/smcretest.js)')
     ap.add_argument('--json')
     args = ap.parse_args()
 
@@ -188,9 +173,9 @@ def main():
 
     everything = {}
     print('')
-    print('%s vs A MATCHED COIN FLIP. Every row is compared with' % args.rule.upper())
-    print('`randEntry`: same bias, same opportunity bars, same stop width, same')
-    print('exits, entering at random at the rule\'s own trade rate. GROSS.')
+    print('INTRABAR EXIT vs WAITING FOR THE CLOSE. Same rule, same level, same')
+    print('trail -- only the moment of acting on it changes. `randExit` is the')
+    print('control: the same extra churn at no level at all. GROSS.')
     print('')
 
     for tf in args.tfs:
@@ -201,16 +186,16 @@ def main():
         print('=' * 78)
         any_cell = False
         for symbol in args.symbols:
-            res = run_cell(symbol, tf, args.from_year, args.heap, args.rule)
+            res = run_cell(symbol, tf, args.from_year, args.heap)
             if not res:
                 continue
             any_cell = True
             last_ok = res
-            everything[res['cell'] + '|' + args.rule] = res
-            print('%s   (%d bars; control fires on %.2f%% of %d opportunity bars, '
-                  'stop %.2f ATR)'
+            everything[res['cell']] = res
+            print('%s   (%d bars; touching out added %.2f extra exits per 100 '
+                  'bars held)'
                   % (res['cell'].replace('|', ' '), res['bars'],
-                     100 * res['matchedRate'], res['opportunityBars'], res['riskAtr']))
+                     100 * res['touchRate']))
             print('  %-15s%7s%6s%6s   ' % ('run', 'n', 'win%', 'held')
                   + '   '.join('%-30s' % e[0] for e in ERAS))
 
@@ -298,9 +283,9 @@ def main():
         print('')
 
     print('=' * 78)
-    print('A structure entry worth having beats `randEntry` in BOTH eras. Losing')
-    print('to it means the zone chose nothing: the trades came from the bias and')
-    print('the trade rate, both of which a coin flip had too.')
+    print('Not waiting for the close is worth doing if `touchExit` beats BOTH')
+    print('`closeExit` -- leaving intrabar helped at all -- and `randExit` --')
+    print('the LEVEL mattered, not the shorter hold. In both eras.')
 
     if args.json:
         with open(args.json, 'w') as fh:

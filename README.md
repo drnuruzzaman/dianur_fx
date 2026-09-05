@@ -392,6 +392,47 @@ Rendered at 2x by multiplying the backing store; layout is driven by
 `this.w/this.h`, which do not change, so nothing reflows and text is simply
 rasterised finer.
 
+**The tagline in the corner is not the same object on screen and in an export.**
+`_watermark` sets *Trade with a Plan, Strategy Today, Freedom Tomorrow* in the
+plot's bottom-left, ALWAYS, and it does not move. It is anchored to the PLOT
+rather than to a pane, so `plot.b` is the same 787 whether the chart is showing
+an oscillator or not: adding an indicator cannot shift it, and a mark that
+relocates when you add an RSI is not a mark, it is a moving part. It started
+bottom-RIGHT, which was wrong -- that end is the busiest strip there is, with
+the last-price tag, the rule's ENTRY, SL, exit and TP tags and the capture stamp
+all claiming it, and on a 129px pane the line lay straight across the whole
+stack. The known cost of the fixed corner, accepted deliberately: on a short
+chart with a study pane open, the plot's bottom IS the oscillator's bottom, so
+the line sits over its trace.
+
+On screen it is one colour, tinted by the current move -- lime while the bar is
+up on the one before it, magenta while it is down -- and it follows the
+crosshair, because hovering a bar should describe THAT bar. In an export it
+splits into three: navy, dark green and magenta, one clause each, walked left to
+right because each needs its own `fillStyle`. A still image has no current move,
+so the tint there would be a frozen accident of whichever bar happened to be
+last; the export spends the colour on the phrase's own structure instead.
+
+The corner is invariant, and the reason is worth stating because it means the
+check generalises past what was checked. The mark is anchored to `plot.l`, and
+the price axis is on the RIGHT: digit count widens or narrows that axis, so it
+moves `plot.r` and never `plot.l`. `plot.b` is set by chart height and the time
+axis, not by pane count. So neither the symbol, nor the timeframe, nor an added
+oscillator can shift it -- only resizing the window, and that only triggers the
+fit-shrink below. Verified on the live chart across 1m/5m/15m/30m/1h/4h/1d/1w and
+across XAUUSD, USDJPY, EURUSD, AUDJPY, NAS100 and BTCUSD -- 1, 2, 3 and 5 digit
+instruments -- and in the strategy replay across 1m/5m/15m/1h/4h/1d and three
+symbols: `plotL 0` and an unchanged `plotB` in every one (787 live, 555 replay),
+with the line measuring 359px against a 617px cap.
+
+It is set in Roboto Condensed, not the mono face the rest of the chart uses.
+Mono is for NUMBERS -- it buys column alignment on prices and pays for it in
+width -- and this is prose that has to fit a corner. The line measures itself
+and steps its size down until it claims no more than half the plot, so a split
+screen shrinks it rather than letting it run across the candles. Moving it left
+also retired the export lift it used to need: the capture stamp is
+right-aligned, so the two no longer share a corner.
+
 ### The side rails collapse
 
 Both rails fold to a zero-width grid track -- `\` for Watchlist + Session,
@@ -1090,7 +1131,7 @@ standing summary -- "gross 0.05-0.17 R against friction 0.07-0.24 R" -- was
 charging this instrument twice what it costs, and every conclusion about gold
 that leaned on the gap was leaning on the wrong number.
 
-### Sessions: an hour effect that survives every test I could put to it
+### Sessions: an hour effect that survived four tests, then failed the fifth
 
 The reason for the re-run was a cost argument: gold's spread barely moves across
 the day while its bar range varies 3.7x, so the same trade costs 5.3x more per
@@ -1139,6 +1180,31 @@ not a result. It needs either more instruments -- which is the axis this
 instrument-specific scoping deliberately gave up -- or a mechanism that explains
 why the hour before the New York close should behave differently, and no such
 mechanism has been found here.
+
+**THE OBSERVATIONS ARRIVED, AND THE EFFECT DID NOT.** The paragraph above asked
+for more sample and named the axis it had given up. There was a second axis it
+did not name: the same rule on faster frames, where the same 3.3-day channel
+takes 2306 trades on 5m and 1537 on 15m against 687 here. `tools/scalp_eval.py`
+ran hour 21 through both.
+
+    frame    n in hour 21    R/trade
+    4h                 29     +1.019
+    5m                 82     +0.180
+    15m                61     +0.027
+
+Neither frame's own best hour clears a best-bucket permutation null either --
+5m picks hour 22 at p = 0.953, 15m picks hour 03 at p = 0.552 -- and the 15m case
+is the cleanest demonstration of why that null is the one that counts. Hour 03
+returns +0.543 R/trade and beats a RANDOM gate keeping the same 52 trades at
+p = 0.042, which reads as a finding. Correct for having chosen the best of twenty
+buckets and the same number is p = 0.552. Same data, opposite conclusion, and the
+only difference is the multiplicity correction.
+
+So the hour effect joins the list. It is kept in this README rather than deleted
+because the four checks it passed were real checks, honestly applied, and it
+still turned out to be noise -- which is the most useful thing in the section.
+A lead that survives every test you can think of is not a result; it is a lead
+you have not yet found the right test for.
 
 ### Cone-based trade screening: it does not rescue the edge
 
@@ -3455,6 +3521,215 @@ made it more sensible as a stop made it harder to distinguish from a dumb one.
 Nothing on screen says this: the verdict chip is earned on the channel exit, and
 `js/chart/trailmode.js` is the only place that records the difference.
 
+### "It already hit the exit -- why wait for the close?"
+
+Most of it does not wait. **The stop is checked on the bar's RANGE**
+(`js/chart/rules.js`): a touch fills at the stop, a gap fills at the open, and no
+close is involved. Risk was never held hostage to a candle finishing. What waits
+is the channel exit and the trail, which fire on a close through the level and
+then fill at the next open.
+
+That wait is a filter, and its size is measurable. The 10-bar exit channel sits
+at the edge of recent range by construction, so price wicks through it far more
+often than it finishes through it -- on XAUUSD the low pierces it on 13.89% of
+4h bars against 6.49% of closes, and the ratio is **2.1x on 4h, 1h and 15m
+alike**. Requiring the close is what separates "the move ended" from "one bar
+poked at it", and it is worth about half the exits.
+
+Measured directly (`tools/exittouch_eval.py`, `logs/exittouch_eval.txt`) across
+XAUUSD and USDJPY on all five horizon frames, both eras:
+
+| TF | closeExit | touchExit | randExit |
+|---|---|---|---|
+| 4h | +55.3 / +37.4 | +45.9 / +17.7 | +54.4 / +16.9 |
+| 1h | +94.7 / +95.0 | +52.6 / +57.0 | +78.5 / +85.4 |
+| 30m | +124.5 / +152.9 | +93.5 / +111.0 | +137.8 / +160.8 |
+| 15m | +200.3 / +203.2 | +147.4 / +181.0 | +197.7 / +190.1 |
+| 5m | +210.6 / +344.8 | +205.6 / +258.2 | +226.2 / +360.1 |
+
+Checking the same level on the range instead of the close was negative in **18
+of 20 cell-eras** and in all ten pooled timeframe-eras; on 1h it is worse in both
+eras with intervals excluding zero. And the level contributed nothing of its own:
+against `randExit` -- closing at random at the same extra rate, same trail, same
+re-entry -- random churn won **9 of 10** pooled comparisons. The loss is not
+leaving in the wrong place, it is leaving at all, and touching the channel picked
+no better moment than a coin flip.
+
+The mechanism is the wick ratio showing up as trades. Average hold fell from 15
+bars to 10 on 4h and from 24 to 19 on 15m, and every cell gained 100-200 exits.
+The test was also generous to the change: `touchExit` fills AT the level rather
+than at the next open, so it recovers both halves of the wait, and it is gross,
+so it owes ~10% more spread than it was charged. It still lost.
+
+`p.exitTouch` lives on the shared walker as an opt-in flag, off in everything
+that ships. It is there so the study could use the SAME lifecycle -- a private
+walker inside a research script is exactly how the ATR divergence got in.
+
+### "Once it is pulling back, clear the signal and take a new one"
+
+The walker already re-enters on the next channel break, so that proposal is
+purely an EXIT rule -- which makes it small enough to measure. Using the panel's
+own wording made numeric (the last three closes giving back k ATR), at both the
+value on screen and a less twitchy one, against `trailOnly` and against a random
+exit matched to the rate it fired (`tools/pullback_eval.py`,
+`logs/pullback_eval.txt`):
+
+| TF | trailOnly | pullback 0.3 | pullback 0.6 | randExit |
+|---|---|---|---|---|
+| 5m | +210.6 / +344.8 | -112.5 / -178.6 | -122.0 / -154.5 | -29.2 / -240.6 |
+| 15m | +200.3 / +203.2 | -163.4 / -82.4 | -161.3 / -69.5 | -147.3 / -56.9 |
+| 30m | +124.5 / +152.9 | -101.5 / -72.6 | -83.7 / -38.6 | -70.7 / -78.7 |
+| 1h | +94.7 / +95.0 | -82.4 / +6.1 | -39.7 / +18.8 | -75.4 / -2.5 |
+| 4h | +55.3 / +37.4 | -8.8 / +1.2 | -14.0 / +13.1 | -6.9 / +18.9 |
+
+Negative against the baseline in every early era and on 15m, 30m and 1h with
+intervals excluding zero -- and indistinguishable from `randExit` throughout, so
+the pullback DETECTION added nothing over exiting more often. A pullback stays
+something the panel reads out; it is not a reason for the app to close a trade.
+
+### The 5m and 15m signal, net of its own spread
+
+The rule on these frames is the shipped one -- the 3.3-day channel, 950 bars on
+5m and 317 on 15m, with the structural trail. Nothing was added, because
+everything tried has lost. What was measured is the COST it needs, charged per
+trade as `spread / risk` rather than as a cell average: a tight-stop trade pays a
+larger fraction of its own risk than a wide one, and averaging hides exactly the
+trades a fast frame takes most of.
+
+    spread                 5m net/trade   15m net/trade
+    24 pts (this broker)        -0.0080         +0.0447
+    18 pts                      +0.0157         +0.0587
+    12 pts (raw)                +0.0394         +0.0727
+    8 pts (best case)           +0.0552         +0.0820
+
+**5m is negative at this broker's spread** and turns positive below roughly 20
+points; 24 -> 12 moves the decade from -18.4 R to +90.9 R, so on that frame the
+spread is not a detail of the strategy, it IS the strategy. **15m is positive at
+every rung**, +68.7 R even at 24 points, and improves 63% on a raw account
+without depending on one.
+
+Against matched controls at 12 points the rule leads in both eras on both frames,
+and one comparison finally clears: 5m 2016-2020 against `randEntry` is
+-119.6 R [-229.7, -14.4], an interval excluding zero. The other three cross it.
+That is one demonstrated era out of four -- better than anything else measured
+here, and still short of the both-eras bar.
+
+Neither frame supports an hour filter; see the session section above for why the
+best bucket on each is noise, and what the multiplicity correction does to it.
+`tools/scalp_eval.py` holds the harness, `logs/scalp_eval.txt` the run.
+
+**WHAT THAT IS IN MONEY, AND WHY THE DRAWDOWN COLUMN DECIDES IT.**
+`tools/scalp_account.py` sizes every trade at a fixed fraction of the running
+balance -- what an account actually does, and what R was built to express -- and
+walks the real trade sequence. A $5,000 account at 1% risk, compounded over
+10.4 years:
+
+    frame   trades   /year   @24 pts   @12 pts   max DD   worst run
+    15m       1537     148    $7,656   $11,764    55-60%     18
+    5m        2306     224    $2,740    $8,176    79-87%     17
+
+Three things the headline hides. **The drawdown disqualifies 1% risk on a small
+account**: 60% on 15m means $5,000 was $2,000 on the way to $7,656, and 18
+consecutive losers is the normal case for a rule winning 34% of its trades, not
+a tail. At 2% the 5m path ends at $690 through a 98.9% drawdown -- position size
+doing more harm than the signal does good. **The 90% band contains a loss on
+every rung**: 15m at 1% and 12 points is $11,764 with a band of
+[$3,846, $37,010], from a bootstrap that resamples whole MONTHS rather than
+trades. **And it is gross of swap**, which every one of these positions pays.
+
+The defensible configuration is 15m at 0.5% risk on a raw-spread account:
+about $8,200 over the decade, 4.8%/yr, 32% worst drawdown. A real but modest
+edge whose argument is that it is uncorrelated, not that it is large. 5m at
+24 points loses money and should not be traded until the spread changes.
+
+### The regime engine, on three axes instead of one label
+
+`js/chart/regime.js` already classified every bar as trending up, trending down,
+sideways or transition, from three causal readings: EMA(21) vs EMA(50) in ATR
+units, position in the 40-bar range, and ATR now against its 56-bar mean. That
+label put **48.5% of 15m bars in `transition`** -- a bucket too broad to say
+anything, and one honest explanation for why it failed as a gate.
+
+`dimensions()` reports the same three readings on independent axes, because a
+bull trend IS simultaneously in a pullback, at some volatility, and forcing one
+label discards two of the three:
+
+    direction    bull 35.8%   neutral 34.8%   bear 29.4%
+    phase        correction 35.1%  pullback 21.7%  range 18.3%
+                 transitional 16.5%   impulse 8.5%
+    volatility   normal 60.7%  low 19.6%  high 18.8%  extreme 1.0%
+
+Phase is give-back from a running extreme in ATR -- how far price has come off
+the highest high of the last 40 bars in a bull -- so under 0.5 is an impulse,
+under 1.5 a pullback, beyond that a correction. 32 of 60 possible cells are
+populated on 15m. Every threshold sits in `DIMS_CONFIG` and none is claimed to
+be optimal. The four-state API is untouched: five surfaces read it, and
+redefining `sideways` silently would move the chart with nothing saying so.
+
+**As a gate it still fails.** Keeping only the best regime returns p = 0.087 on
+15m and p = 0.049 on 5m against a random gate of the same size -- and p = 0.334
+and p = 0.254 against a best-bucket null that accounts for having chosen the
+best of four. The structural reason is that the regime is nearly collinear with
+the signal: of 1,977 trades on 5m in a trending regime, **1,975 went with the
+trend**. A filter cannot add information it does not have.
+
+### Conditional TP curves: the search runs out of data before it runs out of ideas
+
+The proposal was to condition the TP curve progressively -- P(2R | BULL), then
++ PULLBACK, then + SWEEP, then + volatility -- and read off where the edge
+lives. `tools/phase14_runner.mjs` builds the dataset (causal state at the signal
+bar, TP labels after the fill, ties inside a bar to the stop) and
+`tools/phase14_eval.py` walks the ladder with a null that GROWS as the search
+widens.
+
+On 15m every cell's lift sits inside its own noise at every depth, and the
+p-values get worse with depth -- 0.620, 0.780, 0.776, 0.976 -- because the null's
+bar rises (39.2% to 51.1%) while the best observed cell barely moves. **Finer
+buckets do not rescue a finding; they raise the bar it has to clear.**
+
+5m produced the one near-miss: `bull+pullback` at 44.5% against a 35.3% base,
++9.2pp with a +/-6.2pp interval, and it leads in BOTH eras (43% then 46%). It
+still does not clear the null (p = 0.302), and 15m shows no trace of it.
+
+The wall is arithmetic. With 2,306 trades and SD 1.94 R, a bucket of 200 resolves
++/-0.27 R and a bucket of 20 resolves +/-0.85 R, against an effect worth ~0.05-0.3 R:
+
+    direction x phase x volatility      27 cells ->  85 trades each
+    + event                            162 cells ->  14 trades each
+    + session                          648 cells -> 3.6 trades each
+
+The ladder stops being measurable at its third step. That is a constraint on
+conditioning, not a verdict against it -- the fix is a wider instrument universe,
+not deeper buckets, which is also the axis that has actually replicated here.
+
+### Liquidity levels, built and unmeasured
+
+`js/chart/liquidity.js` is the one primitive the system specification named that
+had nothing behind it. It emits previous-day and previous-session extremes,
+confirmed swings and equal highs/lows, each stamped with the bar it became
+KNOWABLE at, plus levels re-indexed from higher timeframes -- on 15m gold, 68% of
+the time the nearest level came from a higher frame, so detecting on the base
+series alone was missing the level price was actually interacting with two times
+in three.
+
+A sweep is a ROUND TRIP resolved BACKWARD: the pierce sits in the recent past and
+the reclaim is this bar's own close. The first version scanned forward from a
+pierce, which reports at bar i something not known until bar i+k -- the same leak
+`zones.detect` shipped once.
+
+Two defects were caught by measuring the event rate rather than by reading the
+code. Levels never died, so 3,227 were live at a median bar and a "sweep" fired
+on **97.5% of bars**: with enough levels on the board every bar closes back inside
+one of them, which is the unfalsifiable definition the file's own header warns
+about. Levels now die when a close goes decisively beyond them, near-duplicates
+merge, and the sweep is asked only of the nearest live level each side.
+
+`tools/liquidity_audit.mjs` rebuilds every field from a truncated prefix and
+compares -- 0 mismatches on 4h, 15m, and on the multi-timeframe path with the
+higher frames cut to the same wall-clock instant. **Nothing imports it and no
+chart draws it**, because it has no verdict yet, and eleven gates, three retest
+rules and a regime gate are the reason not to draw a detector before it has one.
+
 ### Entry filters: eleven gates, none of them real
 
 Eleven entry gates were measured across eight cells and two eras -- headroom to
@@ -3626,10 +3901,37 @@ pip is $0.10, which makes routine moves print five-figure pip counts. Both are
 naming rather than arithmetic -- `_pips` is one line in `js/chart/engine.js` and
 one in `js/ui/rulepanel.js`, and the two agree.
 
-Money beside a level is quoted at the broker minimum, 0.01 lots, from
-`tick_value / tick_size` -- a property of the CONTRACT, needing no equity and no
-FX rate, which is why it is a safe fallback where inventing a position size would
-not be.
+### Money on a level answers "paid for what risk"
+
+Every dollar figure on the rule's plan -- the ENTRY/SL/TP tags and the panel rows
+that quote the same levels -- is now sized from an ACCOUNT rather than a lot.
+`ACCOUNT` in `js/chart/engine.js` is **$10,000 risking 2% a trade, paying 8
+points of spread**, by request, and the position is sized to lose that 2% if the
+stop fills.
+
+That makes the arithmetic collapse to R: money is `riskCash * distance /
+stopDistance`, so the stop always reads `-$200` and a 1.5R level always reads
+`$300` -- on gold, on the yen, on any timeframe. It replaced a fixed 0.05 lots,
+and the difference is not cosmetic. The old figure answered "what is this move
+worth at a stated size", which made a tight stop and a wide one look equally
+valuable and let a reader compare two charts only in the sense that a barrel and
+a bushel are both containers. The stop distance is what a plan is read against,
+and now it is what the plan is priced in.
+
+What survives from the old convention is that the equity is a STATED $10,000,
+not the live balance -- so the numbers do not move when the account does, and
+two charts a week apart still say the same thing. Spread is charged once, entry
+and exit together; it is about $3 on a gold 15m stop, and it is in there because
+`tools/scalp_eval.py` measured that the same number decides whether 5m is worth
+trading at all.
+
+`levelCash` and `stopCash` are exported and imported rather than reimplemented.
+`js/ui/rulepanel.js` used to carry its own copy of the constant with a comment
+asking that the two be kept in step by hand; the chart tag and the panel row
+quote the same level, so a second copy of the arithmetic was a guarantee that
+they would disagree one day with nothing on screen saying which was stale. Where
+the stop distance is unknown the money is omitted, not zeroed -- a missing figure
+and a $0 figure mean different things.
 
 ### The strategy replay draws the same object
 
@@ -3648,6 +3950,86 @@ surface still used -- three numbers computed from the stop alone, the same shape
 on every symbol, blind to what was actually in front of the trade. That file and
 its parity test are gone. `sim/targets.py` stays, because `/signal` still quotes
 reference R multiples in text, where they are labelled as such.
+
+### What else the replay draws, and why it matched the live chart only after five fixes
+
+The replay now carries the whole structural picture the live chart does --
+trendlines, S/R zones, supply/demand bands, channels, BOS/CHoCH, swing points,
+the regime episode ribbon and macro release marks -- all computed on the slice up
+to the cursor, from the SAME modules the live chart calls. No detector is
+reimplemented here; a second copy is how two pictures of one market end up
+disagreeing with nothing on screen saying which to believe.
+
+Getting them to actually agree took five separate fixes, and each was a real
+divergence rather than a tolerance:
+
+  1. **One source of settings.** Both surfaces now call `resolveAuto` in
+     js/util.js -- global default, then per-instrument, then per-timeframe. The
+     replay had a fixed constant, so the moment anyone touched the AUTO TL menu
+     the two drew different lines.
+  2. **The same source list.** The replay walked its own frame only, so a 5m
+     replay showed none of the 1h/4h/1d lines the chart beside it drew.
+  3. **The same history per source.** `BAR_COUNT` moved to js/util.js: a line
+     fitted on 1200 daily bars is not the line a 1000-bar fetch finds.
+  4. **The distance filter.** js/main.js drops lines beyond 5 chart-ATR of price
+     and dedupes within 0.35 ATR. Without it the replay ranked 4h and 1d lines
+     at score 92 straight to the top -- lines the chart had already discarded as
+     unreachable, because a daily line can sit fifty chart-ATRs away and still
+     pass its own proximity test.
+  5. **The same window.** The last and the only one that was a trade-off. The
+     replay loaded 3000 own-frame bars against the chart's `BAR_COUNT`, and
+     trendline fitting is not local: change how far back the walk starts and you
+     change which anchors win. With 3000 bars it found 5m lines a 2500-bar chart
+     does not, and those deduped away the 15m lines the chart was drawing.
+     Matching the window costs a shorter walk on the fast frames -- 4h went from
+     3000 bars to 1200 -- and is what finally made the two identical.
+
+Verified by comparing the drawn objects, not by eye: same lines, same sources,
+same statuses, same scores.
+
+**The ribbon needed a second row.** `segments` meant regime episodes on the live
+chart and TRADE ribbons in the replay -- one array carrying two meanings, so the
+replay's trades silently replaced the episodes. Segments now take a `row`: 0 is
+the episode strip on both surfaces, 1 is the replay's trades underneath it.
+Defaulting to 0 leaves every existing caller drawing where it did.
+
+### Macro release marks
+
+`js/chart/newsevents.js` marks scheduled releases as vertical lines on all three
+chart surfaces. Both replays clip to the cursor -- marking a print the walk has
+not reached is the same violation as drawing tomorrow's swing -- and all three
+clip to the drawn window, which was a real bug: a nine-month 4h replay was
+carrying 682 marks, the whole decade-long file, and relying on the renderer's
+off-screen test to hide them. They never drew, so nothing looked wrong, but every
+repaint walked hundreds of events that could not appear.
+
+**Two sources, drawn differently.** Solid means the minute is known; dashed means
+only the day is, from a schedule rule.
+
+    tools/fetch_fred_calendar.py   CPI, PPI, NFP, unemployment, GDP -- FRED's own
+                                   release-date history, back to 2016
+    tools/fetch_macro_calendar.py  FOMC, ECB, BOE, BOJ -- a public iCal feed,
+                                   forward-looking, so a few months back at most
+
+FRED publishes DATA releases, not meeting calendars, which is why the split
+exists: US data marks are real across a whole replay, central bank marks only
+near its right edge. Two other routes were tried and closed -- the
+always-free-macro-calendar repository has no dataset (it is a Google Apps Script
+writing into a calendar), and Finnhub's `/calendar/economic` returns 403 on a
+free key while `/quote` returns 200, so the economic calendar is not in the free
+tier.
+
+**What the real dates proved about the derived ones.** NFP had been generated as
+the first Friday of the month. The FRED import shows only 125 of 134 releases
+landed on a Friday at all, and in January 2016 the first Friday was the 1st while
+the release was the 8th. So a sourced month now replaces the derived mark for
+that month ENTIRELY rather than only within an hour of it -- otherwise the chart
+drew a dashed guess a week early beside the solid truth, which reads as two
+events rather than one mistake.
+
+Keys live in `configs/secrets.env`, gitignored, with `configs/secrets.env.example`
+as the committed template; `tools/_secrets.py` loads them and never prints a
+value. An exported variable wins over the file, and `--key` wins over both.
 
 ## Strategies and the confluence question
 

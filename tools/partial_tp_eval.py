@@ -1,59 +1,45 @@
 #!/usr/bin/env python
 """
-Does a structure retest pick entries better than chance, on the frames the
-Donchian rule sits out?
+Does taking half off at the first structural level beat letting it all ride?
 
-    python tools/smc_eval.py
-    python tools/smc_eval.py --tfs 5m --symbols XAUUSD.a
+    python tools/partial_tp_eval.py
+    python tools/partial_tp_eval.py --tfs 4h --symbols XAUUSD.a
 
-THE IDEA UNDER TEST, defined in js/chart/smcretest.js: while market structure is
-bullish, buy the first bar that trades into the newest live demand base and
-closes back above it, stop under the base; short the mirror; exit on an opposite
-CHoCH or the stop. It is assembled from detectors the charts already draw --
-BOS/CHoCH, supply and demand -- because a shorter Donchian channel is measured
-to lose on these frames (-3,616 R on 5m, -1,230 R on 15m, both eras,
-logs/horizon_5m_eval.txt and logs/horizon_holdout.txt).
+THE QUESTION. The rule has no take-profit and two measurements say it should not
+(tools/tp_sweep.py: a 1R cap turned +43.7 net R into -2.1; logs/tp_struct_eval.txt:
+twelve cells, every target variant below the plain trailing exit). Both tested
+capping the WHOLE position. This tests the version that survives that argument on
+its face -- take half at the first level, let the rest run on the trail -- which
+keeps the tail the rule is paid from while banking something at the price the
+panel already draws.
 
-WHAT IS COMPARED.
+WHAT IS COMPARED. Every row is the SAME trade list, taken from the shipped
+configuration (validated rule + structural trail). Only the exit of the first
+half changes:
 
-  smc          the rule.
-  smcTrail     the rule with the structural trailing exit added.
-  randEntry    THE CONTROL. Identical in every respect except WHICH bar it
-               enters on: same bias, same opportunity set (a live zone on the
-               correct side), same stop width in ATR, same exits. It fires at
-               random with the probability that reproduces the rule's own trade
-               count. If the rule cannot beat this, the zone is not picking
-               entries -- it is only deciding how often to trade.
-  randSide     the same, with the SIDE randomised too. If randEntry matches the
-               rule but randSide does not, then structure's direction carries
-               the result and the zone carries none of it.
-  donchian     the shipped rule on the same bars, for scale.
+  trailOnly     the shipped configuration -- nothing taken early. THE BASELINE.
+  halfTp1       half out at TP1, the first structural level ahead, chosen at the
+                signal bar exactly as js/ui/rulepanel.js chooses it.
+  halfMatched   THE CONTROL. Half out at the same DISTANCE as TP1 sat -- the
+                median, in ATR, over this cell's own trades -- but at no
+                particular level. If halfTp1 cannot beat this, the structure
+                chose nothing and the result is just "take half off early".
+  halfOneR      half out at 1R, for scale. This is the shape tp_sweep measured
+                on the whole position.
 
-WHY THE CONTROL IS THE ROW THAT DECIDES. Eleven entry gates died in
-tools/entry_filter_eval.py against exactly this construction, and the structural
-trail came out "not demonstrated" against a matched ATR trail in
-tools/exit_trail_eval.py. Beating the Donchian rule on a 5m chart proves
-nothing: the Donchian rule is deliberately dormant there. Beating a coin flip
-that trades at the same rate, at the same stop distance, in the same direction,
-on the same bars, is the whole claim.
+HOW THE SPLIT IS COMPUTED. Two halves closed independently are arithmetically
+two positions with the same entry and stop, so half B IS the shipped trade and
+only half A is reconstructed -- see tools/partial_tp_runner.mjs. No target
+machinery was put back into js/chart/rules.js, and ties within a bar are given
+to the stop.
 
-MATCHED BEFORE ANYTHING IS SCORED. The rule runs first; its trade count sets the
-control's firing rate and its MEDIAN stop-in-ATR sets the control's stop. Both
-are read off the rule's geometry, never off its returns.
+WHAT IT DOES NOT MODEL: moving the stop to break-even after the first half. That
+is a different rule and needs its own measurement.
 
-HOW ELSE THIS IS KEPT HONEST -- the design the other studies use.
-
-  TWO ERAS, AND IT MUST SURVIVE BOTH. 2016-2020 and 2021-2026.
-
-  NET R OVER THE SAME CALENDAR, paired on calendar blocks, bootstrap over
-  blocks. The rows do not take the same trades, so avg R per trade is not
-  comparable across them.
-
-  GROSS. No spread, slippage or swap. On XAUUSD 5m the spread alone is 0.122 R
-  per trade in 2016-2020 and 0.061 R in 2021-2026 -- so a row taking 2,000
-  trades owes roughly 180 R that nothing below pays. Both the rule and its
-  controls trade at the SAME rate, so the comparison between them is unaffected;
-  the comparison with `donchian`, which trades far less, is not.
+HOW THIS IS KEPT HONEST -- the design the other studies use. Two eras and it must
+survive both. Net R over the same calendar, paired on calendar blocks, bootstrap
+over blocks. GROSS: the split rows close twice as many positions as the baseline,
+so they owe more spread than anything below charges them.
 """
 
 import argparse
@@ -70,15 +56,19 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NODE = shutil.which('node')
-RUNNER = os.path.join(ROOT, 'tools', 'retest_runner.mjs')
+RUNNER = os.path.join(ROOT, 'tools', 'partial_tp_runner.mjs')
 
 DEFAULT_SYMBOLS = ['XAUUSD.a', 'EURUSD.a', 'USDJPY.a', 'GBPUSD.a']
-DEFAULT_TFS = ['5m', '15m']
-BASELINE = 'randEntry'          # the control, not the rule
+DEFAULT_TFS = ['4h', '1h', '15m', '5m']
+BASELINE = 'trailOnly'          # what ships today
 
 ERAS = [('2016-2020', 2016, 2020), ('2021-2026', 2021, 2026)]
 N_BLOCKS = 20
-MIN_BARS = 20000
+#: Enough history for 20 calendar blocks to mean something. Per timeframe,
+#: because the retest studies' flat 20,000 was a 5m number and it silently
+#: skipped every 4h and 1h cell -- the frames this rule actually trades.
+MIN_BARS = {'5m': 20000, '15m': 20000, '30m': 10000,
+            '1h': 5000, '4h': 2000, '1d': 800, '1w': 300}
 
 
 def load_bars(symbol, tf, year_from):
@@ -143,9 +133,9 @@ def summarise(trades):
             'bars': sum(t['bars'] for t in trades) / len(trades)}
 
 
-def run_cell(symbol, tf, year_from, heap, rule):
+def run_cell(symbol, tf, year_from, heap):
     bars = load_bars(symbol, tf, year_from)
-    if len(bars) < MIN_BARS:
+    if len(bars) < MIN_BARS.get(tf, 5000):
         print('  ! %s %s: only %d bars, skipped' % (symbol, tf, len(bars)), file=sys.stderr)
         return None
     tmp = tempfile.mkdtemp(prefix='smc_')
@@ -155,7 +145,7 @@ def run_cell(symbol, tf, year_from, heap, rule):
             json.dump(bars, fh)
         cp = os.path.join(tmp, 'cfg.json')
         with open(cp, 'w') as fh:
-            json.dump({'barsPath': bp, 'tf': tf, 'rule': rule,
+            json.dump({'barsPath': bp, 'tf': tf,
                        'cell': symbol + '|' + tf}, fh)
         out = subprocess.run([NODE, '--max-old-space-size=%d' % heap, RUNNER, cp],
                              cwd=ROOT, capture_output=True, text=True, timeout=43200)
@@ -176,9 +166,6 @@ def main():
     ap.add_argument('--tfs', nargs='+', default=DEFAULT_TFS)
     ap.add_argument('--from-year', type=int, default=2016)
     ap.add_argument('--heap', type=int, default=6144)
-    ap.add_argument('--rule', default='tl', choices=['smc', 'tl', 'sr'],
-                    help='which candidate to test (js/chart/retests.js, '
-                         'js/chart/smcretest.js)')
     ap.add_argument('--json')
     args = ap.parse_args()
 
@@ -188,9 +175,9 @@ def main():
 
     everything = {}
     print('')
-    print('%s vs A MATCHED COIN FLIP. Every row is compared with' % args.rule.upper())
-    print('`randEntry`: same bias, same opportunity bars, same stop width, same')
-    print('exits, entering at random at the rule\'s own trade rate. GROSS.')
+    print('HALF OFF AT A LEVEL vs LETTING IT RIDE. Same trades throughout --')
+    print('only the exit of the first half changes. `halfMatched` is the')
+    print('control: half off at the same distance, at no level. GROSS.')
     print('')
 
     for tf in args.tfs:
@@ -201,16 +188,16 @@ def main():
         print('=' * 78)
         any_cell = False
         for symbol in args.symbols:
-            res = run_cell(symbol, tf, args.from_year, args.heap, args.rule)
+            res = run_cell(symbol, tf, args.from_year, args.heap)
             if not res:
                 continue
             any_cell = True
             last_ok = res
-            everything[res['cell'] + '|' + args.rule] = res
-            print('%s   (%d bars; control fires on %.2f%% of %d opportunity bars, '
-                  'stop %.2f ATR)'
+            everything[res['cell']] = res
+            print('%s   (%d bars; TP1 known for %d trades, reached on %d; '
+                  'median TP1 %.2f ATR out)'
                   % (res['cell'].replace('|', ' '), res['bars'],
-                     100 * res['matchedRate'], res['opportunityBars'], res['riskAtr']))
+                     res['tradesWithTp1'], res['tp1Hits'], res['medDistAtr']))
             print('  %-15s%7s%6s%6s   ' % ('run', 'n', 'win%', 'held')
                   + '   '.join('%-30s' % e[0] for e in ERAS))
 
@@ -298,9 +285,9 @@ def main():
         print('')
 
     print('=' * 78)
-    print('A structure entry worth having beats `randEntry` in BOTH eras. Losing')
-    print('to it means the zone chose nothing: the trades came from the bias and')
-    print('the trade rate, both of which a coin flip had too.')
+    print('A partial target worth taking beats BOTH rows above it: `trailOnly`,')
+    print('which says banking early helped at all, and `halfMatched`, which says')
+    print('the LEVEL mattered rather than the distance. In both eras.')
 
     if args.json:
         with open(args.json, 'w') as fh:
