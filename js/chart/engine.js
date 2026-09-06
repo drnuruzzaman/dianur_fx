@@ -13,6 +13,7 @@
  */
 
 import { INDICATORS, runStudy, studyTitle, heikinAshi } from './indicators.js';
+import { sentimentOf } from './newsevents.js';
 import { TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp, withZone, zoneLabel } from '../util.js';
 
 /* Right-hand price axis. Sized from the widest label it must actually hold,
@@ -120,8 +121,16 @@ export function resetSpan(tf) {            // eslint-disable-line no-unused-vars
 
 const COL = {
   bg: '#02101f',
-  grid: 'rgba(13,58,107,.55)',
-  gridStrong: 'rgba(13,58,107,.9)',
+  /* DIM, because the grid is a ruler and not content. It sits under
+     everything the chart is actually saying, so it only has to be findable
+     when you look for it -- at .55 and .9 the day separators read as marks on
+     the chart rather than as background, which is why they were mistaken for
+     something meaningful. `axisLine` keeps the old strength: the borders round
+     the price and time axes are structure, and a divider you cannot see makes
+     the chart look broken rather than clean. */
+  grid: 'rgba(13,58,107,.30)',
+  gridStrong: 'rgba(13,58,107,.45)',
+  axisLine: 'rgba(13,58,107,.55)',
   text: '#8fa6c0',
   textFaint: '#5d7794',
   up: '#93C90F',
@@ -264,6 +273,18 @@ export class Chart {
     this.msEvents = [];
     this.newsMarks = [];
     this.swings = [];
+    this.zigzag = [];
+    /* OFF UNLESS ASKED FOR, so a surface has to opt in rather than remember to
+       opt out. The replay and the Elliott sandbox never do: they are dense with
+       structure already, and a mesh behind zones, channels and swing marks is
+       one more set of lines to read past. */
+    this.showGrid = opts.showGrid === true;
+    /* THE OPPOSITE DEFAULT TO THE GRID, and deliberately so. The grid is a
+       ruler, off until asked for; a release mark is CONTENT -- a fact about
+       why a candle did what it did -- so every surface shows it unless
+       someone turns it off. `!== false` rather than `=== true`: a caller that
+       says nothing gets the marks. */
+    this.showNews = opts.showNews !== false;
     this.message = 'loading…';
     this.view = { right: 0, span: 160, priceLock: null };
     this.cross = null;
@@ -479,6 +500,10 @@ export class Chart {
 
   setMsEvents(ev) { this.msEvents = ev || []; }
   setSwings(sw) { this.swings = sw || []; }
+
+  /* The ZigZag's leg structure, as a LINE rather than more marks.
+     See _zigzag() for why the form matters as much as the data. */
+  setZigzag(pts) { this.zigzag = pts || []; }
 
   setAutoLines(lines) {
     this.autoLines = lines || [];
@@ -784,6 +809,9 @@ export class Chart {
         this._price(pane); this._foreignPlots(pane);
         this._channels(pane); this._autoLines(pane);
         this._msEvents(pane);
+        /* UNDER the swing marks: the line is context for them, and a stroke
+           through a dot would hide the thing the dot is pointing at. */
+        this._zigzag(pane);
         this._swings(pane);
         this._elliott(pane);
         this._trail(pane);
@@ -810,17 +838,26 @@ export class Chart {
 
   _recalcIfNeeded() { if (!this.runs || this.runs.length !== this.studies.length) this._recalc(); }
 
+  /* THE GRID IS OPTIONAL; ITS ARITHMETIC IS NOT.
+   *
+   * `_gridY` decides `pane.step`, which the price axis labels at, and `_gridX`
+   * builds `xTicks`, which the time axis and the crosshair both read. So the
+   * switch gates the STROKE and never the loop -- skipping the call to save the
+   * work would take the axis labels and the crosshair's time readout with it,
+   * which is not what "hide the grid" means to anyone. */
   _gridY(pane) {
     const ctx = this.ctx;
     const step = niceStep((pane.max - pane.min) / Math.max(2, Math.floor(pane.h / 46)));
-    ctx.strokeStyle = COL.grid;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let v = Math.ceil(pane.min / step) * step; v <= pane.max; v += step) {
-      const y = Math.round(this.y(pane, v)) + 0.5;
-      ctx.moveTo(this.plot.l, y); ctx.lineTo(this.plot.r, y);
+    if (this.showGrid) {
+      ctx.strokeStyle = COL.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let v = Math.ceil(pane.min / step) * step; v <= pane.max; v += step) {
+        const y = Math.round(this.y(pane, v)) + 0.5;
+        ctx.moveTo(this.plot.l, y); ctx.lineTo(this.plot.r, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
     pane.step = step;
   }
 
@@ -834,13 +871,17 @@ export class Chart {
     for (let i = Math.ceil(this.i0 / step) * step; i <= this.i1; i += step) {
       const x = Math.round(this.x(i)) + 0.5;
       if (x < this.plot.l || x > this.plot.r) continue;
-      ctx.moveTo(x, this.plot.t); ctx.lineTo(x, this.plot.b);
+      if (this.showGrid) { ctx.moveTo(x, this.plot.t); ctx.lineTo(x, this.plot.b); }
       this.xTicks.push({ i, x });
     }
     ctx.stroke();
 
-    // day separators for intraday timeframes
-    if (TF_MS[this.tf] < 864e5) {
+    /* DAY SEPARATORS COUNT AS GRID, and they were the loud part of it.
+       They are the full-height verticals standing next to the date labels on
+       an intraday chart -- brighter than the mesh itself, so hiding the mesh
+       and keeping these left the chart looking barely changed. The date
+       labels stay either way: they are the axis, not a line on the chart. */
+    if (this.showGrid && TF_MS[this.tf] < 864e5) {
       ctx.strokeStyle = COL.gridStrong;
       ctx.beginPath();
       for (let i = Math.max(1, this.i0); i <= Math.min(this.bars.length - 1, this.i1); i++) {
@@ -1621,10 +1662,9 @@ export class Chart {
    * by high-vs-low instead would make every chart half green and half red and
    * say nothing.
    *
-   * Density is handled by dropping labels, never dots. At strength 3 on M15
-   * there are thousands of pivots; when they crowd, the shape of the sequence
-   * is still readable from the dots alone, whereas overlapping text is not
-   * readable at all.
+   * Density is handled by dropping labels, never dots. When marks crowd, the
+   * shape of the sequence is still readable from the dots alone, whereas
+   * overlapping text is not readable at all.
    */
   /**
    * The wave count for the bar at the right edge.
@@ -1795,12 +1835,31 @@ export class Chart {
    * bar a decade of releases becomes a wall of text with no chart behind it,
    * so the marks stay and the words go.
    */
+  /* Releases, as a rule down the chart and a word at its foot.
+   *
+   * THE SWITCH TAKES THE RULE, NOT THE WORD -- the same split the grid makes
+   * with its time labels. "NFP" at the bottom of the chart tells you a payrolls
+   * print landed in that column; the full-height line through the candles is
+   * what makes it hard to read the candles. Turning the marks off and losing
+   * the names with them would cost the information to save the clutter, when
+   * only the clutter was the complaint. */
   _newsMarks(pane) {
     const marks = this.newsMarks;
     if (!marks || !marks.length || !pane.isMain) return;
     const ctx = this.ctx;
     ctx.save();
-    const label = this.barW >= 3;
+    /* SPACING DECIDES WHETHER A LABEL FITS, NOT BAR WIDTH.
+     *
+     * This was `barW >= 3`, and bar width has nothing to do with whether a
+     * word fits: the labels are already rationed to one per 34px below, which
+     * is the test that actually keeps them from overlapping. What the old gate
+     * did instead was tie the text to the ZOOM -- at a 350-bar span barW is
+     * 2.63 and every name vanished, at 300 it is 3.07 and they all came back.
+     * Switching timeframe keeps the span, so the names disappeared on the
+     * switch and returned on `Reset scale`, which happens to set 300.
+     *
+     * A release name is the kind of thing you look for when zoomed OUT, which
+     * is exactly when the old gate hid it. */
     let lastX = -Infinity;
     for (const m of marks) {
       const i = this.idxOfTime(m.t);
@@ -1808,18 +1867,20 @@ export class Chart {
       const x = this.x(i);
       if (!Number.isFinite(x) || x < pane.x - 2 || x > pane.x + pane.w + 2) continue;
       const col = m.approx ? COL.textFaint : COL.pos;
-      ctx.strokeStyle = col;
-      ctx.globalAlpha = m.approx ? 0.35 : 0.6;
-      ctx.setLineDash(m.approx ? [2, 4] : [4, 3]);
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x, pane.y);
-      ctx.lineTo(x, pane.y + pane.h);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      if (this.showNews) {
+        ctx.strokeStyle = col;
+        ctx.globalAlpha = m.approx ? 0.35 : 0.6;
+        ctx.setLineDash(m.approx ? [2, 4] : [4, 3]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, pane.y);
+        ctx.lineTo(x, pane.y + pane.h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       /* One label per 34px: releases cluster (ISM services and NFP share a
          Friday most months) and two words on one pixel column is neither. */
-      if (label && x - lastX >= 34) {
+      if (x - lastX >= 34) {
         ctx.globalAlpha = m.approx ? 0.55 : 0.9;
         ctx.fillStyle = col;
         ctx.font = '600 8.5px "Roboto Condensed", Helvetica, sans-serif';
@@ -1934,6 +1995,53 @@ export class Chart {
     ctx.restore();
   }
 
+  /* The ZigZag's legs, as a line.
+   *
+   * A LINE RATHER THAN MORE MARKS, and the form is the design. The chart
+   * already carries a mark per swing; adding a second set of dots for a second
+   * detector would double the marks and leave the reader matching them up. A
+   * polyline says the one thing the dots cannot -- which turns belong to the
+   * same leg -- and it says it without competing for the same pixels.
+   *
+   * IT IS NOT WHAT ANY ENGINE HERE READS. On the strategy replay the dots and
+   * rings come from the fractal the detectors actually use; this line is the
+   * ZigZag beside them, so the two definitions can be compared on one chart
+   * instead of one being asserted over the other. The panel says as much.
+   *
+   * Only CONFIRMED turns are joined. The final leg runs to a turn that has not
+   * been proved yet, so drawing it would put a line on screen that moves when
+   * the next bar prints -- the same repaint the swing marks refuse.
+   */
+  _zigzag(pane) {
+    const pts = this.zigzag;
+    if (!pts || pts.length < 2) return;
+    const ctx = this.ctx;
+    const i0 = Math.floor(this.i0) - 2, i1 = Math.ceil(this.i1) + 2;
+
+    ctx.save();
+    ctx.strokeStyle = COL.textFaint;
+    ctx.lineWidth = 1.1;
+    ctx.globalAlpha = 0.72;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    let drawing = false;
+    for (let k = 0; k < pts.length; k++) {
+      const p = pts[k], q = pts[k + 1];
+      /* A SEGMENT IS KEPT WHEN EITHER END IS ON SCREEN. Clipping on the point
+         alone drops the leg that spans the whole viewport, which is exactly the
+         leg worth seeing. */
+      if (!q) break;
+      if (q.i < i0 || p.i > i1) { drawing = false; continue; }
+      const x1 = this.x(p.i), y1 = this.y(pane, p.price);
+      const x2 = this.x(q.i), y2 = this.y(pane, q.price);
+      if (![x1, y1, x2, y2].every(Number.isFinite)) { drawing = false; continue; }
+      if (!drawing) { ctx.moveTo(x1, y1); drawing = true; }
+      ctx.lineTo(x2, y2);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   _swings(pane) {
     if (!this.swings || !this.swings.length) return;
     const ctx = this.ctx;
@@ -1964,11 +2072,42 @@ export class Chart {
       const col = s.label ? (bull ? COL.up : COL.down) : COL.textFaint;
       const major = s.major === true;
 
-      ctx.fillStyle = col;
-      ctx.globalAlpha = major ? 1 : 0.45;
+      /* THREE TIERS, TWO OF THEM SOLID. `rank` is a property of the market --
+         0 a turn inside a leg, 1 a turn that ended one, 2 a turn that shaped
+         the range -- and the sensitivity menu only moves which rank gets the
+         ring. So a swing circled at `normal` is still drawn at `major`, as a
+         bigger solid dot, rather than dropping to the size of a minor turn:
+         nothing the chart was saying about it stopped being true.
+
+         All of them draw at full opacity. The minor dot was 1.8px at 45%
+         alpha, from when it was a fractal pivot and half of them were noise --
+         fading it was a way of not quite believing it. Every dot is now a turn
+         price actually made. */
+      /* THREE MARKS, ONE PER RANK, told apart by SHAPE rather than by size or
+         opacity alone -- size is hard to judge against a candle wick and a
+         faded dot reads as uncertainty, which is the wrong thing to say about
+         a turn price definitely made.
+
+           rank 0   small hollow circle        -- a turn inside a leg
+           rank 1   solid disc                 -- a turn that ended a leg
+           rank 2   solid disc in a wide ring  -- a turn that shaped the range
+
+         Hollow, not faded. Opacity was the first thing tried and it reads as
+         uncertainty, which is the wrong thing to say about a turn price
+         definitely made; an outline at full colour says "smaller", not "less
+         sure", and the direction still reads at a glance. */
+      const minor = !major && (s.rank ?? 0) < 1;
+      ctx.globalAlpha = 1;
       ctx.beginPath();
-      ctx.arc(x, y, major ? 3.4 : 1.8, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(x, y, minor ? 2.6 : 3.4, 0, Math.PI * 2);
+      if (minor) {
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = col;
+        ctx.fill();
+      }
       /* A ring, not just a bigger dot: size alone is hard to judge against a
          candle wick, and the hollow centre survives being drawn over one. */
       if (major) {
@@ -2558,7 +2697,7 @@ export class Chart {
     const ctx = this.ctx;
     ctx.fillStyle = this._exporting ? 'transparent' : COL.axisBg;
     ctx.fillRect(this.plot.r, pane.y, AXIS_W, pane.h);
-    ctx.strokeStyle = COL.grid;
+    ctx.strokeStyle = COL.axisLine;
     ctx.beginPath();
     ctx.moveTo(this.plot.r + 0.5, pane.y); ctx.lineTo(this.plot.r + 0.5, pane.y + pane.h);
     ctx.stroke();
@@ -2764,9 +2903,106 @@ export class Chart {
       + (note ? `<small> ${note}</small>` : '') + `</span>`;
   }
 
+  /* "in 2h 35m" / "3d ago", counted from the bar the chart is AS OF.
+   *
+   * Not from the wall clock. On the strategy replay the cursor is the present,
+   * and a replay parked on a 2019 bar that says a release is "in 4 minutes"
+   * because the machine's clock happens to be near one would be nonsense. */
+  _newsWhen(t) {
+    const asOf = Number.isFinite(this.asOfMark) && this.bars[this.asOfMark]
+      ? this.bars[this.asOfMark].t
+      : (this.bars.length ? this.bars[this.bars.length - 1].t : Date.now());
+    const d = t - asOf;
+    const mins = Math.round(Math.abs(d) / 60000);
+    let s;
+    if (mins < 1) s = 'now';
+    else if (mins < 60) s = `${mins}m`;
+    else if (mins < 2880) s = `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    else s = `${Math.round(mins / 1440)}d`;
+    if (mins < 1) return s;
+    return d > 0 ? `in ${s}` : `${s} ago`;
+  }
+
+  /**
+   * The release under the cursor, or null.
+   *
+   * WHAT IS NOT IN HERE, AND WHY. There is no sentiment row. No feed wired
+   * into this project carries a direction for a release: the calendar sources
+   * have an empty forecast column, so no surprise can be computed, and the one
+   * vendor that sells a sentiment score answers 402 on this plan. The tooltip
+   * shows ACTUAL against PREVIOUS instead and lets the reader draw the
+   * conclusion -- a green "positive" badge derived from nothing would read as
+   * a measurement, which is the one thing it would not be.
+   *
+   * `impact` is the vendor's own high/medium/low, and it is absent on the rows
+   * that came from FRED, so the row is omitted rather than guessed at.
+   */
+  _newsTip(p) {
+    const marks = this.newsMarks;
+    if (!marks || !marks.length) return null;
+    let best = null, bestDx = 7;              // px; a vertical rule is thin
+    for (const m of marks) {
+      const i = this.idxOfTime(m.t);
+      if (!Number.isFinite(i)) continue;
+      const dx = Math.abs(this.x(i) - p.x);
+      if (dx < bestDx) { bestDx = dx; best = m; }
+    }
+    if (!best) return null;
+
+    const IMP = { high: 'HIGH', medium: 'MEDIUM', low: 'LOW' };
+    const num = (v) => {
+      const f = parseFloat(v);
+      return Number.isFinite(f) ? String(+f.toFixed(2)) : String(v);
+    };
+    let html = `<b>${best.label || best.kind}</b>`
+      + this._row('When', this._newsWhen(best.t));
+    if (best.impact) html += this._row('Impact', IMP[best.impact] || best.impact);
+
+    /* SENTIMENT AGAINST LAST MONTH, not against a consensus -- there is no
+       consensus in any feed reachable from here, and sentimentOf() carries the
+       whole argument. The word is coloured, because a direction that is not
+       obvious at a glance is not worth a row; the caveat under it is what
+       stops the colour being read as a forecast. */
+    const sent = sentimentOf(best);
+    if (sent) {
+      const cls = sent.dir > 0 ? 'up' : (sent.dir < 0 ? 'down' : '');
+      /* `vs previous` is now the ONLY thing distinguishing this from a
+         consensus surprise, the long caveat under the tooltip having been
+         removed as noise. It is two words and it has to stay: a bare
+         "NEGATIVE" would be read as "missed expectations", which is a
+         different and unavailable claim. The full argument lives in
+         sentimentOf() and in the README. */
+      html += this._row('Sentiment',
+        `<b class="tip-${cls || 'flat'}">${sent.word.toUpperCase()}</b>`,
+        'vs previous');
+      html += this._row('Actual', num(best.actual), `prev ${num(best.previous)}`);
+    } else if (best.actual !== undefined) {
+      html += this._row('Actual', num(best.actual),
+        best.previous !== undefined ? `prev ${num(best.previous)}` : '');
+    } else if (best.t > (this.bars.length ? this.bars[this.bars.length - 1].t : 0)) {
+      html += this._row('Actual', 'not out yet');
+    }
+
+    return html;
+  }
+
   _zoneTip(p) {
     const pane = this.main;
     if (!pane || p.y < pane.y || p.y > pane.y + pane.h) { this.tip.hidden = true; return; }
+
+    /* NEWS WINS OVER ZONES. A release mark is a thin vertical rule and a zone
+       is a wide band, so the cursor is inside a zone almost everywhere; if the
+       zone answered first the release would be unreachable. */
+    const news = this._newsTip(p);
+    if (news) {
+      this.tip.innerHTML = news;
+      this.tip.hidden = false;
+      const tw = this.tip.offsetWidth || 220;
+      const th = this.tip.offsetHeight || 60;
+      this.tip.style.left = `${Math.max(2, p.x + 14 + tw > this.w ? p.x - 14 - tw : p.x + 14)}px`;
+      this.tip.style.top = `${Math.max(2, p.y + 12 + th > this.h ? p.y - 12 - th : p.y + 12)}px`;
+      return;
+    }
     const price = this.valAt(pane, p.y);
     const last = this.bars.length ? this.bars[this.bars.length - 1].c : NaN;
     const d = this.digits;
@@ -2958,7 +3194,7 @@ export class Chart {
     const ctx = this.ctx;
     ctx.fillStyle = this._exporting ? 'transparent' : COL.axisBg;
     ctx.fillRect(0, this.plot.b, this.w, TIME_H);
-    ctx.strokeStyle = COL.grid;
+    ctx.strokeStyle = COL.axisLine;
     ctx.beginPath();
     ctx.moveTo(0, this.plot.b + 0.5); ctx.lineTo(this.w, this.plot.b + 0.5);
     ctx.stroke();

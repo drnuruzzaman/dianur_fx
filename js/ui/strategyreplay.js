@@ -60,10 +60,11 @@ import {
 import { displayLevels } from '../chart/levels.js';
 import { trailOption } from '../chart/trailmode.js';
 import { structuralTrail } from '../chart/exittrail.js';
-import { detect as detectMS } from '../chart/marketstructure.js';
-import { swingPoints } from '../chart/structure.js';
-import { atrSeries, liveLines } from '../chart/tlengine.js';
-import { liveZones } from '../chart/zones.js';
+import { detect as detectMS, DEFAULT_MS_PARAMS } from '../chart/marketstructure.js';
+import { swingPoints, nestedSwings } from '../chart/structure.js';
+import { swingEngineRows } from './swingreadout.js';
+import { atrSeries, liveLines, DEFAULT_PARAMS as TL_DEFAULTS } from '../chart/tlengine.js';
+import { liveZones, DEFAULT_ZONE_PARAMS } from '../chart/zones.js';
 import { liveSDZones } from '../chart/supplydemand.js';
 import { liveChannels } from '../chart/channels.js';
 import { build as buildSegments } from '../chart/segments.js';
@@ -595,9 +596,12 @@ export class StrategyReplay {
      * fetching more mid-walk would make each step a network call. A line here
      * is therefore always this frame's own.
      *
-     * MAJOR IS THE SAME WORD IT IS EVERYWHERE ELSE: a swing that also survives
-     * strength 6, which is what picking `Major structure` in the live menu
-     * shows. Both passes run on `slice`, so both inherit the as-of cut.
+     * MAJOR NO LONGER MEANS "survives strength 6" FOR SWING POINTS. It means
+     * the turn a ZigZag found -- a leg that travelled SIGNIFICANT_ATR before
+     * it ended -- because strength is a shape test and shape cannot tell a
+     * significant swing from a pause. BOS/CHoCH still use the strength-6 pass
+     * for `external`, so the two words differ on this surface until that is
+     * measured too. Every pass runs on `slice` and inherits the as-of cut.
      */
     this._drawStructure(slice);
 
@@ -1568,7 +1572,26 @@ export class StrategyReplay {
     const auto = resolveAuto(this.symbol, this.tf, AUTO_DEFAULTS);
     this.sens = auto.sens || AUTO_DEFAULTS.sens;
     const sens = SENSITIVITY[this.sens] || SENSITIVITY.normal;
-    const strength = sens.strength;
+
+    /* STRUCTURE ON THIS SURFACE IGNORES THE SENSITIVITY MENU.
+     *
+     * It did not, and that made the panel false. BOS/CHoCH ran at
+     * `sens.strength` and the zones at the same, so a menu on `fine` put this
+     * chart's structure on a +-2 window while the readout reported the module
+     * default of +-3 -- and the swing marks, pinned to that default, disagreed
+     * with the very tags drawn beside them.
+     *
+     * A proving surface cannot have a viewing control changing what it claims.
+     * Structure here is what the modules do by default, which is also what
+     * sim/tl runs; `sens` still drives the TRENDLINES below, which are a
+     * genuinely user-tuned overlay rather than an engine reading. */
+    const strength = DEFAULT_MS_PARAMS.strength;
+    const zoneStrength = DEFAULT_ZONE_PARAMS.strengthPivots;
+    /* Handed to the panel so it reports what was CALLED WITH rather than what
+       the modules default to. The two agree today; the panel should go on
+       being true if they ever stop. */
+    this._usedStrength = strength;
+    this._usedZoneStrength = zoneStrength;
     const minDraw = auto.minDraw ?? AUTO_DEFAULTS.minDraw;
     const maxLines = auto.maxLines ?? AUTO_DEFAULTS.maxLines;
     const sources = auto.htf || AUTO_DEFAULTS.htf;
@@ -1595,17 +1618,63 @@ export class StrategyReplay {
       }
     } catch { this.chart.setMsEvents([]); }
 
+    /* THE SWINGS THIS CHART DRAWS ARE THE SWINGS ITS OWN DETECTORS USE.
+     *
+     * The live chart draws a ranked ZigZag, which is a better picture: it
+     * alternates by construction and every mark is a move price actually made.
+     * It is NOT what any engine here reads. BOS/CHoCH, the S/R zones and the
+     * levels reading on this very chart all find their turns with a fractal
+     * window, and so does sim/tl -- so a ZigZag mark beside a BOS tag was two
+     * detectors disagreeing with nothing on screen saying so.
+     *
+     * This surface exists to show what the code does, so it draws the fractal.
+     * `DEFAULT_MS_PARAMS.strength` rather than a literal 3: the mark and the
+     * detector must move together or this claim quietly stops being true.
+     *
+     * THE RINGS ARE `external`. A swing that also survives the MAJOR window is
+     * exactly what marketstructure keys an external break on, so a ringed mark
+     * here means "a break of this is an external break" -- a fact about the
+     * code, not a claim about significance. That was the original meaning of
+     * the ring, and it is the honest one on this surface.
+     *
+     * Measured before choosing: pointing BOS/CHoCH at the ZigZag changes 80%
+     * of its events and moves its edge by less than its own error (1 cell in 8
+     * better in both eras, 1 worse -- tools/pivot_defn_audit.mjs). There is no
+     * evidence for converting the engine, so the picture follows the engine.
+     */
     try {
       const sw = (auto.swings !== false && slice.length >= 40)
         ? swingPoints(slice, { strength }) : [];
-      if (sw.length && strength < MAJOR) {
-        const major = new Set(swingPoints(slice, { strength: MAJOR }).map((x) => x.i));
-        for (const x of sw) x.major = major.has(x.i);
-      } else {
-        for (const x of sw) x.major = true;
+      if (sw.length) {
+        const ext = new Set(swingPoints(slice, { strength: MAJOR }).map((x) => x.i));
+        for (const x of sw) {
+          x.major = ext.has(x.i);
+          x.rank = x.major ? 1 : 0;
+        }
       }
+      this.swings = sw;
       this.chart.setSwings(sw);
-    } catch { this.chart.setSwings([]); }
+    } catch { this.swings = []; this.chart.setSwings([]); }
+
+    /* THE ZIGZAG BESIDE THE FRACTAL, as a line rather than a second set of
+     * marks. The dots and rings above are what the detectors on this chart
+     * read; this is the other answer to "where did price turn", drawn so the
+     * two can be compared on one chart rather than one being asserted over the
+     * other. It feeds nothing -- see the panel row that says so.
+     *
+     * Rank 1 and above: the inner turns are the fractal's own territory and
+     * joining every one of them would draw a saw, not a leg structure.
+     *
+     * Same `slice`, so it inherits the as-of cut like everything else here;
+     * tools/swing_audit.mjs proves the walk cannot see past it.
+     */
+    try {
+      const zz = (auto.swings !== false && slice.length >= 40)
+        ? nestedSwings(slice, { sens: 'normal' }).filter((s) => (s.rank || 0) >= 1)
+        : [];
+      this.zigzag = zz;
+      this.chart.setZigzag(zz);
+    } catch { this.zigzag = []; this.chart.setZigzag([]); }
 
     /* S/R ZONES, from the chart's own pivots at its own timeframe.
      *
@@ -1624,7 +1693,7 @@ export class StrategyReplay {
      * all of them are given the slice rather than the series. */
     try {
       this.chart.setZones(auto.zones !== false && slice.length >= 40
-        ? liveZones(slice, this.tf, { strengthPivots: strength })
+        ? liveZones(slice, this.tf, { strengthPivots: zoneStrength })
         : []);
     } catch { this.chart.setZones([]); }
 
@@ -1666,6 +1735,12 @@ export class StrategyReplay {
     try {
       const cutoff = slice[slice.length - 1].t;
       const rank = TF.indexOf(this.tf);
+      /* Handed to the panel. No `sensitivity` is passed to liveLines below, so
+         TrendlineEngine falls through to `params.strength` -- the menu preset,
+         not the adaptive module. The panel has to say which, because the two
+         differ by three on 4h and the wrong one was being reported. */
+      this._usedTl = { strength: sens.strength, adaptive: false,
+                       minSwingAtr: TL_DEFAULTS.minSwingAtr };
       const lines = [];
       if (slice.length >= 60) {
         for (const l of liveLines(slice, this.tf, { params: sens, minDraw })) lines.push(l);
@@ -1908,6 +1983,30 @@ export class StrategyReplay {
                 class: 'sr-live' + (note === 'LIVE' ? ' sr-live-on' : ''),
                 text: note,
               }) : null)))));
+
+    /* WHAT THE SWING CODE IS ACTUALLY DOING. Four modules answer "where did
+       price turn" differently on this very chart and the disagreement is
+       invisible in the drawing -- a BOS tag and a swing ring can point at
+       different bars with nothing saying why. Every number is read from the
+       module that uses it; see js/ui/swingreadout.js.
+     *
+       ITS OWN TABLE, WITH THE EXPLANATIONS ON HOVER. Pushed into `rows` above
+       it inherited that table's third-column treatment, which is a bordered
+       chip built for the one-word `LIVE` badge -- eight sentence-length chips
+       made the panel unreadable. `title` also matches how the Elliott panel
+       renders the same rows, so the two surfaces cannot drift. */
+    p.append(el('table', { class: 'sr-kv sr-swing' },
+      ...swingEngineRows(this.swings, { drawnFrom: 'backend', tf: this.tf,
+          used: { ms: this._usedStrength, zones: this._usedZoneStrength,
+                  tl: this._usedTl },
+          zigzag: this.zigzag,
+          /* The threshold in money needs this bar's ATR and price. `atrNow` is
+             already computed above for the estimated fill; reusing it keeps the
+             two rows quoting the same volatility. */
+          atrNow, priceNow: this.full[this.i] ? this.full[this.i].c : NaN,
+          digits: d })
+        .map(([k, v, note]) => el('tr', { title: note || '' },
+          el('td', { text: k }), el('td', { class: 'mono', text: String(v) })))));
 
     /* WHAT IS IN THE WAY -- A RULE, NOT A HEADING, and no names on the rows.
        Both were removed by request on the live panel and the replay follows, so

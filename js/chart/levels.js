@@ -68,6 +68,10 @@ export const DEFAULT_STRUCT_PARAMS = {
      bars ago that price has since traded through twice is not in the way.
      `swingPoints` already drops unconfirmed ones. */
   swingLookback: 250,
+  /* The fractal window this module finds its swings with. It was a literal at
+     the call site, which meant the panel reporting it had to retype the same
+     3 and would have gone on reporting 3 after anyone changed it. */
+  swingStrength: 3,
   /* WHERE A SLOPING LINE IS EVALUATED. A trendline has no single price -- it
      has one per bar -- so a fixed target off a sloping line has to name the bar
      it was read at. The fit horizon, because that is the window everything else
@@ -124,7 +128,7 @@ export function obstaclesAhead(bars, {
   /* 1. SWING EXTREMES. The cheapest and the most literal: price turned here
         before, in living memory, and has not been back through since. */
   try {
-    const swings = swingPoints(view, { strength: 3 });
+    const swings = swingPoints(view, { strength: p.swingStrength });
     const floor = view.length - 1 - p.swingLookback;
     for (const s of swings) {
       if (s.i < floor) continue;

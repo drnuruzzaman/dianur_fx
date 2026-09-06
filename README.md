@@ -143,7 +143,7 @@ sim/tl/swings.py      Layer B: swing detector as a state machine, two clocks
 sim/tl/strategy.py    Layer E: the only layer that decides; every gate recorded
 sim/tl/experiments.py frozen, versioned experiment definitions
 js/chart/tlengine.js  the same engine, ported for the chart (parity-tested)
-js/chart/structure.js HH/HL/LH/LL, ported (parity-tested)
+js/chart/structure.js HH/HL/LH/LL, ported (parity-tested), plus the ranked ZigZag
 js/chart/channels.js  channels, ported (parity-tested)
 js/chart/zones.js     zones, ported (parity-tested)
 js/chart/segments.js  regime episodes, ported (parity-tested)
@@ -324,6 +324,19 @@ THE ONE AMBIGUITY, resolved explicitly. The same symbol can be open in two cells
 on different timeframes, and there is no single right answer for what to
 remember. `persist()` writes every rendered chart but writes the ACTIVE one
 LAST, so the chart you are looking at wins.
+
+THE STRING `"undefined"` IS NOT A VALUE, IT IS A BUG ARRIVING, and `serve.py`
+now refuses it. `localStorage.setItem(k, undefined)` stores the six characters
+`undefined`; the next save forwards them to `/workspace` as though they were
+state; every later read then fails, falls back to defaults, and re-saves the
+corruption. That is how one symbol's entire settings record was destroyed,
+including its per-timeframe AUTO TL overrides, which were not recoverable from
+anywhere. Keys whose incoming value is that string are now dropped and listed in
+the response's `rejected`, so the last good value survives on disk and the client
+recovers on its next load. `configs/workspace.json.prev` keeps one generation as
+well: the write was already atomic, which protects against a half-written file
+and not at all against a well-formed wrong one -- and a wrong one is what
+actually happened.
 
 ### Chart tabs
 
@@ -2944,6 +2957,161 @@ candles, because a band is the region price moved through and covering the wick
 that tested it would hide the evidence; channels and lines above, because they
 are annotations on the bars; break markers last, because an event should be
 findable at a glance.
+
+### Swing points: a shape test, and the two answers now on screen
+
+    strength = "is this bar the highest of 2N+1?"      a question about SHAPE
+    zigzag   = "did price travel k x ATR and turn?"    a question about SIZE
+
+Every swing in this project came from the first question. Swept over 46
+instrument x timeframe cells (`tools/swing_sweep.mjs`), a strength-3 fractal
+returns **13.5 marks per 150-bar screen on every one of them** -- gold on 1m and
+cable on 1w, the same rate, the same median amplitude of 3.3 ATR. Two markets
+that are nothing like each other cannot both be turning every ten bars. Shape
+statistics are scale-free, so the detector was never measuring price at all, and
+no threshold laid over its output can recover what it did not look at.
+
+It shows in the marks. On XAUUSD 15m, **20.8%** of strength-6 swings repeat the
+same kind back to back -- runs of up to eight highs with no low between -- and
+**7.3%** sit within three bars of the one before. A high and a low a few bars
+apart inside one impulse is not a swing sequence.
+
+THE REPLACEMENT IS A ZIGZAG, ranked into three tiers (`js/chart/structure.js`):
+
+    rank 0   2.0 ATR   a turn inside a leg
+    rank 1   3.0 ATR   a turn that ended a leg
+    rank 2   6.0 ATR   a turn that shaped the range
+
+Alternation is structural rather than filtered for: a leg has one extreme, so
+the next turn is necessarily the opposite kind. 0 same-kind runs in all 46 cells.
+
+**The tiers are folded, not detected separately, and that is the whole design.**
+Running the same ZigZag at two thresholds does NOT nest -- measured across
+XAUUSD, EURUSD and USDJPY on 15m/1h/4h, only **95-97%** of 3.0 ATR turns are also
+1.0 ATR turns. One ring in twenty would have sat on a bar carrying no inner swing
+at all, and "this major turn is made of these inner turns" would be false
+wherever a reader bothered to check. `fold()` chooses each tier from the one
+below it, so containment holds by construction.
+
+CAUSALITY, the same contract as everywhere else here: a turn is emitted at the
+bar the retracement COMPLETED, not the bar it occurred, so a prefix of the series
+produces a prefix of the output. `tools/swing_audit.mjs` rebuilds the walk from
+truncated prefixes and demands identical output -- 0 mismatches and 0
+future-confirmed turns across every cell. The cost is 5-12 bars of lag depending
+on frame, and it is the honest price of the question: significance is not
+knowable until price has moved away from the turn.
+
+WHAT THE SENSITIVITY MENU DOES, AND ALL IT DOES. A mark's rank is a property of
+the market, not of the menu -- the same turn is rank 1 at every setting. The menu
+moves only the ring line and the floor:
+
+    fine     draw rank 0+   ring rank 1+
+    normal   draw rank 0+   ring rank 1+
+    major    draw rank 1+   ring rank 2+
+
+So `major` never hides a turn that mattered: what `normal` circled is what
+`major` shows as a solid dot, with the circle moved up to the range-shapers. An
+earlier version scaled both thresholds by sensitivity and it made the views
+incomparable -- `fine` drew 53 dots a screen against `normal`'s 22, so switching
+settings changed WHERE THE SWINGS WERE rather than which of them were emphasised.
+
+Three marks, told apart by SHAPE, since size is hard to judge against a candle
+wick and a faded dot reads as uncertainty -- the wrong thing to say about a turn
+price definitely made:
+
+    rank 0            small hollow circle
+    rank 1 unringed   solid disc
+    ringed            solid disc in a wide hollow ring
+
+### Converting the engines to it: measured, and declined
+
+The obvious next step was to point BOS/CHoCH and the S/R zones at the ZigZag.
+`tools/pivot_defn_audit.mjs` measured it first, against a cheaper alternative
+that needs no new detector at all: `js/chart/sensitivity.js` already widens the
+fractal window per timeframe and per volatility regime, and those two detectors
+ignore it, taking a flat 3 on every instrument and frame.
+
+Three arms, with agreement matched on the BROKEN LEVEL's bar rather than the
+breaking bar, since two definitions can notice the same break a bar apart while
+agreeing entirely about which swing was taken:
+
+    agreement with the shipped fixed +-3      15m    1h     4h
+    adaptive (BASE_STRENGTH + regime)         96%    77%    61%
+    zigzag (rank >= 1)                        25%    19%    17%
+
+The ZigZag keeps roughly one event in five. Then the edge -- hit rate 20 bars
+out against a DIRECTION-MATCHED control, both eras:
+
+    cell           fixed              adaptive           zigzag
+    XAU 15m   -2.6 / -1.0        -2.4 / -0.9        -3.1 / -0.1
+    XAU 1h    +0.4 / +0.6        +1.2 / -0.0        +0.3 / +0.2
+    EUR 4h    +0.3 / +0.1        +0.9 / +0.7        -0.6 / -6.2
+    JPY 1h    +0.5 / +2.2        -0.0 / +2.3        +2.0 / +2.6
+    GBP 1h    +0.0 / -1.6        -0.1 / -2.0        +1.9 / -2.7
+
+Adaptive beats fixed in both eras in **1 cell of 8** and is worse in both in 3.
+The ZigZag also wins 1 of 8, and its wins are era-1-only: EUR 1h goes +1.7 to
+-2.3, GBP 1h +1.9 to -2.7. That is the hour-effect signature -- a lead that
+closes. **So neither conversion was made.** The definition changes 80% of the
+events and moves the edge by less than its own error; spending the change budget
+there buys a different-looking chart and no better information.
+
+THE CONTROL HAD TO BE DIRECTION-MATCHED, and the first version of it was not.
+Scoring bearish events against P(up) penalised every arm by several points for
+free in a rising market -- gold's era-2 P(up) over 20 bars is well above 50. The
+numbers above are after the fix; the ones before it made BOS/CHoCH look far worse
+than it is.
+
+WHAT DID FALL OUT: on 15m, both symbols, both eras and all three arms, a
+structure break is followed by a move AGAINST its direction more often than
+baseline -- XAU -2.6 (z=-3.5) / -1.0, EUR -2.9 (z=-3.8) / -1.4. It survives
+changing the pivot definition entirely, which is the point: the sign does not
+come from where the swings are. On 15m a break looks like a fade. That is a
+20-bar close-to-close hit rate with no costs, no stop and no exit rule, so it is
+not a short signal -- but it is not nothing either.
+
+### The replay draws the engine; the live chart draws the picture
+
+The two surfaces deliberately differ, and each says which it is doing.
+
+**The strategy replay** draws the fractal its own detectors use -- swing marks,
+BOS/CHoCH, zones and levels all from `DEFAULT_MS_PARAMS.strength`, read from the
+module rather than retyped. A ringed mark there means a fact about the code: this
+swing also survives the MAJOR window, so a break of it is an EXTERNAL break.
+Structure on that surface ignores the sensitivity menu entirely -- a proving
+surface cannot have a viewing control changing what it claims -- while the
+trendlines, a genuinely user-tuned overlay, still follow it.
+
+**The live chart and the Elliott replay** draw the ranked ZigZag, which is the
+better picture and which reads no engine.
+
+A READOUT ON BOTH REPLAY PANELS NAMES THE DIFFERENCE (`js/ui/swingreadout.js`),
+because it is invisible in the drawing -- a BOS tag and a swing ring can point at
+different bars with nothing on screen saying why:
+
+    swing marks   fractal +-3        DEFAULT_MS_PARAMS.strength
+    rings         also survive +-6   what `external` keys on
+    drawn         83 . 107           internal . external
+    bos/choch     fractal +-3        module default, menu ignored
+    s/r zones     fractal +-3        module default, menu ignored
+    trendlines    fractal +-2        the menu, and it says so
+
+EVERY NUMBER IS READ FROM THE MODULE THAT USES IT, and the surface reports what
+it CALLED WITH rather than what the module defaults to. That distinction is not
+theoretical: the replay used to hand BOS/CHoCH the menu's number while this row
+went on reporting the default, so with the menu on `fine` structure ran at +-2
+and the panel said +-3. A caller that overrides a default now prints
+`(overridden)`. The trendline row had the same fault in a worse form -- it
+reported `BASE_STRENGTH[tf]` from the adaptive module, which `liveLines` uses
+only when handed a calibration; with none it falls through to the menu preset. On
+4h the row said +-5 while the engine used +-3.
+
+A THING THE PANEL MADE VISIBLE. Roughly half the marks on the replay are ringed,
+which looks heavy until you check why: the +-6 pivot set is a strict subset of
++-3, but doubling the window removes only **~45%** of pivots, consistently on
+every instrument and frame. `external` is not a selective test. That is the same
+scale-free pathology showing up in a second place, and it is now on screen rather
+than hidden behind a nicer-looking detector.
 
 ### Sensitivity: per-instrument thresholds, and what an ablation found
 

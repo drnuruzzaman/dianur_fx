@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  DiaNurFx calendar refresh - weekly Monday 08:00.
+
+  A TEMPLATE, not an export. `schtasks /Query /XML` produces a file carrying the
+  machine's own account SID and absolute interpreter path, which is useless on
+  any other machine and unreadable in a diff. The three __PLACEHOLDER__ tokens
+  below are filled in at install time by tools/refresh_calendar.py, which knows
+  the interpreter it is running under and the repository it lives in.
+
+  Edit THIS file to change the schedule, then re-run the installer. Editing the
+  task in the Windows UI instead leaves this file lying about what is scheduled.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Refreshes data/calendar/history.json from xoomar and FRED so the macro release marks on every DiaNurFx chart stay current.</Description>
+    <URI>\DiaNurFx calendar refresh</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-05T__TIME__</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Monday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>__USER__</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- A laptop is usually on battery at 08:00 on a Monday. The default
+         refuses to start and refuses to continue on battery, which would make
+         this task silently never run. -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <!-- Machines are asleep or off at 08:00 often enough that a missed run has
+         to be recoverable, or the calendar quietly ages by a week. -->
+    <RestartOnFailure>
+      <Interval>PT30M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>__PYTHON__</Command>
+      <Arguments>"__SCRIPT__"</Arguments>
+      <WorkingDirectory>__ROOT__</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

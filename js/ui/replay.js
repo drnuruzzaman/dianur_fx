@@ -44,6 +44,8 @@ import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
 import { calibration, countAsOf, scoreBelief, scoreProjection, stability }
   from '../chart/elliott.js';
 import { cones, coverage, reachRate, stateSeries } from '../chart/cone.js';
+import { nestedSwings } from '../chart/structure.js';
+import { swingEngineRows } from './swingreadout.js';
 
 const TFS = ['5m', '15m', '1h', '4h', '1d'];
 
@@ -605,6 +607,19 @@ export class ElliottReplay {
       });
     }
     this.chart.setElliott(belief);
+
+    /* THE SAME SWING MARKS THE OTHER CHARTS DRAW, on the same causal slice.
+       An Elliott count is a claim about which turns matter, so a surface for
+       judging counts that hid the turns was asking the reader to hold them in
+       their head. `sens: 'normal'` matches the strategy replay: both are
+       proving surfaces, and a menu that moved the marks would make two
+       sessions incomparable. */
+    try {
+      const slice = this.full.slice(0, this.i + 1);
+      this.swings = slice.length >= 40 ? nestedSwings(slice, { sens: 'normal' }) : [];
+      this.chart.setSwings(this.swings);
+    } catch { this.swings = []; this.chart.setSwings([]); }
+
     this.chart.draw();
     this._frame();
     this._paintBar();
@@ -1195,6 +1210,16 @@ export class ElliottReplay {
       return;
     }
     const px = (v) => (Number.isFinite(v) ? v.toFixed(this.digits ?? 2) : '—');
+
+    /* WHAT THE SWING CODE IS ACTUALLY DOING -- the same readout the strategy
+       replay carries, from the same module, so the two cannot disagree about
+       what they are reporting. It matters more here than anywhere: a count is
+       built on turns, and four modules on this chart disagree about where the
+       turns are. */
+    host.append(el('table', { class: 'sr-kv ell-swing' },
+      ...swingEngineRows(this.swings, { sens: 'normal', tf: this.tf, drawnFrom: 'zigzag' })
+        .map(([k, v, note]) => el('tr', { title: note || '' },
+          el('td', { text: k }), el('td', { class: 'mono', text: String(v) })))));
 
     host.append(el('div', { class: 'ell-note' },
       `The % is the target's REACH RATE: how often price actually travelled that `

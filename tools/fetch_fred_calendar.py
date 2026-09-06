@@ -179,13 +179,25 @@ def main():
             except Exception:
                 pass
 
-    seen, out = set(), []
+    # MERGE ON A DUPLICATE, DO NOT DISCARD ONE.
+    #
+    # This step runs after xoomar and reads that file back in, so a release
+    # appears twice: once from FRED with an exact release date, once from
+    # xoomar with `impact`, `actual` and `previous` attached. Keeping only the
+    # first row silently dropped whichever fields the other had -- CPI came out
+    # with no impact even though the vendor plainly published one. Later rows
+    # now fill blanks and never overwrite.
+    bykey, order = {}, []
     for e in sorted(events, key=lambda e: e['t']):
         k = (e['kind'], e['t'] // 60000)
-        if k in seen:
+        if k not in bykey:
+            bykey[k] = dict(e)
+            order.append(k)
             continue
-        seen.add(k)
-        out.append(e)
+        for f, v in e.items():
+            if v not in (None, '') and bykey[k].get(f) in (None, ''):
+                bykey[k][f] = v
+    out = [bykey[k] for k in order]
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:

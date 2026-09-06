@@ -11,6 +11,7 @@
 
 import { findDivergences, rsiSeries } from './divergence.js';
 import { rollingShifted } from './rules.js';
+import { zigzag } from './structure.js';
 
 const C = {
   pink: '#E31C79', navy: '#4959ff', green: '#93C90F', orange: '#FF9E1B',
@@ -167,6 +168,54 @@ export const INDICATORS = {
         { type: 'line', label: `exit ${o.exit} hi`, color: C.grey, data: fin(xu), width: 1, dash: [3, 3] },
         { type: 'line', label: `exit ${o.exit} lo`, color: C.grey, data: fin(xd), width: 1, dash: [3, 3] },
       ];
+    },
+  },
+  zigzag: {
+    label: 'ZigZag line', pane: 'main', inputs: { atr: 3 },
+    /*
+     * The ZigZag's legs, as a STUDY rather than a bespoke overlay.
+     *
+     * A study returns a per-bar series, and a ZigZag is a handful of turns --
+     * so the turns are joined by LINEAR INTERPOLATION and the series is dense.
+     * That is not a trick to fit the contract: the value between two turns IS
+     * the straight line between them, which is what the leg is. It also means
+     * this rides the machinery every other overlay already has -- the
+     * Indicators menu, per-symbol persistence, the renderer -- instead of a
+     * second drawing path that could drift from the replay's.
+     *
+     * `atr` is the reversal threshold in ATR: a leg must travel this far before
+     * it can end. 3.0 is `SIGNIFICANT_ATR`, the same number the ranked marks
+     * call rank 1, so the line joins the turns the rings mark. Raising it draws
+     * a coarser structure; there is no "right" value, which is why it is an
+     * input rather than a constant.
+     *
+     * THE TAIL IS NULL ON PURPOSE. Everything after the last CONFIRMED turn is
+     * left blank, because the leg in progress runs to an extreme that has not
+     * been proved and would move when the next bar prints. A ZigZag that
+     * repaints its last leg is the classic version of this indicator and the
+     * reason it has the reputation it has; this one stops where the evidence
+     * stops, so the line you see is one the walk could have drawn at the time.
+     */
+    calc: (bars, o) => {
+      const mult = Number(o.atr) > 0 ? Number(o.atr) : 3;
+      const turns = zigzag(bars, { atrMult: mult });
+      const out = new Array(bars.length).fill(null);
+      for (let k = 0; k + 1 < turns.length; k++) {
+        const a = turns[k], b = turns[k + 1];
+        const span = b.i - a.i;
+        if (span <= 0) continue;
+        const step = (b.price - a.price) / span;
+        for (let i = a.i; i <= b.i; i++) out[i] = a.price + step * (i - a.i);
+      }
+      /* TRANSLUCENT ON PURPOSE. This is context, not a signal: it says which
+         turns belong to the same leg, and the candles are the subject. Opaque
+         white made it the brightest thing on the chart and pulled the eye off
+         price; .42 receded too far to follow across a busy stretch. .62 is the
+         setting that reads as one continuous path without competing -- grey,
+         so it takes no side, and translucent, so the candles show through it
+         rather than being crossed out. */
+      return [{ type: 'line', label: `zigzag ${mult} ATR`,
+                color: 'rgba(177,179,179,.62)', data: out, width: 1.2 }];
     },
   },
   vwap: {

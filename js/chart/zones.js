@@ -144,7 +144,14 @@ export function detect(bars, i, timeframe, atrArr, params = {}) {
     if (bars[k].l < winLo) winLo = bars[k].l;
   }
   const allow = Math.max(p.maxDistanceAtr * a, p.maxDistanceRange * (winHi - winLo));
-  const { highs, lows } = findPivots(bars, p.strengthPivots);
+  /* AN INJECTION SEAM, and it changes nothing unless a caller uses it.
+     `pivotsFn` defaults to exactly the call that was here, so the shipped
+     behaviour and the parity tests are untouched. It exists because the pivot
+     definition is the one input to this detector that has never been measured
+     -- tools/zone_defn_audit.mjs feeds it a ZigZag instead -- and replicating
+     the clustering inside a measurement tool would test a copy of this file
+     rather than this file. */
+  const { highs, lows } = (p.pivotsFn || findPivots)(bars, p.strengthPivots);
 
   /* findPivots does not carry confirmedI — it is shared with the batch scorer
      and must stay byte-identical for the other parity tests — so the confirming

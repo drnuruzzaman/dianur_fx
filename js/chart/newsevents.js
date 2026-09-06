@@ -162,7 +162,11 @@ export function merge(derivedEvents, sourced) {
 let _sourced = null;
 export function loadSourced(url = SOURCE_URL) {
   if (!_sourced) {
-    _sourced = fetch(url)
+    /* `no-store`, because a weekly job rewrites this file and a cached copy
+       would keep last week's calendar on screen with nothing saying so. It is
+       one small JSON fetched once per page load; there is nothing to save by
+       caching it. */
+    _sourced = fetch(url, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : []))
       .then((v) => (Array.isArray(v) ? v : []))
       .catch(() => []);
@@ -188,4 +192,64 @@ export function within(events, fromMs, toMs) {
 /** Everything at or before `asOfMs` -- the replay may not see tomorrow's print. */
 export function upTo(events, asOfMs) {
   return events.filter((e) => e.t <= asOfMs);
+}
+
+/* ------------------------------------------------------------ sentiment ---
+ *
+ * A DIRECTION FROM `actual` AGAINST `previous`, because there is nothing
+ * better to compare against. Checked on 2026-09-06, every calendar reachable
+ * from this project returns an EMPTY forecast column -- xoomar (both the CSV
+ * and the JSON view), QuantGist (2% coverage, and its sentiment endpoints
+ * answer 402), Finnhub (403, no access), and FRED, which publishes
+ * observations and has no consensus field at all. So "beat expectations"
+ * cannot be computed here. "Beat last month" can.
+ *
+ * THE TWO ARE NOT THE SAME THING and the difference is the whole subject: a
+ * strong print into a market already positioned for a stronger one sells off.
+ * This is the weaker reading, and it is labelled as such wherever it is shown.
+ *
+ * MEASURED, AND IT DID NOT PREDICT. tools/release_surprise_eval.py runs this
+ * exact sign against EURUSD and XAUUSD at 5, 15 and 60 minutes, both eras,
+ * against a 2000-draw permutation null: not one cell clears p=0.05 in both
+ * eras. It is shown because it summarises the print, not because it forecasts
+ * the next hour, and the tooltip says so.
+ */
+
+/* kind -> does a HIGHER number favour the release's own currency?
+   More jobs and faster growth do. A higher jobless rate does not. Hotter
+   inflation is treated as currency-positive on the tightening read, which is
+   an assumption about the regime rather than an arithmetic fact. */
+const HIGHER_IS_STRONG = {
+  [NFP]: true, [GDP]: true, [CPI]: true, [PPI]: true, [PMI]: true,
+  [UNEMPLOYMENT]: false,
+  [FOMC]: true, [ECB]: true, [BOE]: true, [BOJ]: true,
+};
+
+const toNum = (v) => {
+  if (v === null || v === undefined || v === '') return NaN;
+  const f = parseFloat(String(v).replace(/[, ]/g, '').replace('%', ''));
+  return Number.isFinite(f) ? f : NaN;
+};
+
+/**
+ * `{ dir, word, actual, previous, delta }`, or null when it cannot be said.
+ *
+ * `dir` is +1 when the print favours the currency, -1 against it, 0 when the
+ * two are equal. Null -- not zero -- when either number is missing, so a
+ * caller can tell "unchanged" from "unknown"; a release with no actual yet is
+ * upcoming, and calling that neutral would be a claim about a number nobody
+ * has.
+ */
+export function sentimentOf(ev) {
+  if (!ev) return null;
+  const a = toNum(ev.actual), p = toNum(ev.previous);
+  if (!Number.isFinite(a) || !Number.isFinite(p)) return null;
+  const strongUp = HIGHER_IS_STRONG[ev.kind];
+  if (strongUp === undefined) return null;
+  const delta = a - p;
+  const dir = delta === 0 ? 0 : ((delta > 0) === strongUp ? 1 : -1);
+  return {
+    dir, actual: a, previous: p, delta,
+    word: dir === 0 ? 'in line with last' : (dir > 0 ? 'positive' : 'negative'),
+  };
 }

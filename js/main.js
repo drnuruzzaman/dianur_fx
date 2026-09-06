@@ -19,7 +19,8 @@ import { calibrate } from './chart/sensitivity.js';
 import { liveZones } from './chart/zones.js';
 import { liveSDZones } from './chart/supplydemand.js';
 import { detect as detectMS } from './chart/marketstructure.js';
-import { swingPoints } from './chart/structure.js';
+import { nestedSwings } from './chart/structure.js';
+import { SENSITIVITY } from './chart/trendlines.js';
 import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
          within as newsWithin } from './chart/newsevents.js';
 import { build as buildSegments } from './chart/segments.js';
@@ -34,23 +35,35 @@ import { RulePanel } from './ui/rulepanel.js';
 import { structuralTrail } from './chart/exittrail.js';
 import { installTips } from './ui/tips.js';
 import { installChat } from './ui/chat.js';
+import { loadNewsDoc, renderNews } from './ui/newspanel.js';
 
 /* Sensitivity presets, expressed as engine parameters. Pivot strength is the
-   real control: 2 finds minor swings, 6 finds structural ones. */
-/* The strength that defines a MAJOR swing, taken from the menu's own `major`
-   preset so the mark and the setting cannot drift apart. */
-const MAJOR_STRENGTH = 6;
+   real control: 2 finds minor swings, 6 finds structural ones.
 
-const SENS = {
-  fine: { label: 'Fine (minor swings)', strength: 2 },
-  normal: { label: 'Normal', strength: 3 },
-  major: { label: 'Major structure', strength: 6 },
-};
+   ONE TABLE, IN trendlines.js. This file kept its own copy with the same three
+   numbers, and the strategy replay reads the trendlines one -- so the two
+   surfaces agreed only by coincidence, and the replay's panel now REPORTS the
+   major window, which would have made a drift into a false statement on
+   screen rather than a quiet divergence. */
+const SENS = SENSITIVITY;
+
+/* The wider fractal window. It defines `external` for BOS/CHoCH, and it used
+   to define a MAJOR swing too -- see the swing block for why that changed and
+   why this pass was left alone. */
+const MAJOR_STRENGTH = SENS.major.strength;
 
 const LAYOUTS = { 1: 'Single', '2h': 'Two columns', '2v': 'Two rows', 4: 'Grid of four' };
 
 const app = {
   layout: load('layout', '1'),
+  /* Default OFF. Every other chart surface here draws no grid at all, so the
+     unticked box is also the app's own house style rather than an arbitrary
+     starting point. */
+  showGrid: load('showGrid', false) === true,
+  /* Default ON, unlike the grid: a release mark says why a candle did what it
+     did, which is content rather than chrome. It shares the grid's menu and
+     its storage pattern, not its default. */
+  showNews: load('showNews', true) !== false,
   /* OPEN CHARTS, MT5-style. `tabs` is every chart you have open; `slots` says
      which tab each visible cell is showing. The layout decides how many cells
      there are, the tabs decide what goes in them -- so a 4-chart layout shows
@@ -294,6 +307,12 @@ function buildGrid() {
       tf: state.tf || '15m',
       type: state.type || 'candles',
       studies: state.studies,
+      /* The live chart is the one surface that offers the grid at all, and it
+         remembers the answer globally rather than per symbol -- whether you
+         want a mesh behind the candles is a preference about reading charts,
+         not about an instrument. */
+      showGrid: app.showGrid,
+      showNews: app.showNews,
       // per INSTRUMENT, and migrating any legacy per-timeframe keys
       drawings: migrateDrawings(state.symbol),
       onChange: (ch) => { persist(); loadBarsIfNeeded(ch); },
@@ -412,6 +431,17 @@ function setActive(chart) {
   wl.setActive(chart.symbol);
   loadSpec(chart.symbol);
   loadTrendRead(chart);
+  paintNews(chart.symbol);
+}
+
+/* THE NEWS RAIL FOLLOWS THE FOCUSED CHART, because relevance is per
+   instrument: a Middle East cluster belongs on gold and not on cable. The
+   document is fetched once and re-ranked per symbol -- see js/ui/newspanel.js
+   for why nothing here shows a direction. */
+function paintNews(symbol) {
+  const host = $('#newsPanel');
+  if (!host) return;
+  loadNewsDoc().then((doc) => renderNews(host, symbol, doc));
 }
 
 /* ------------------------------------------------------------- data load */
@@ -956,13 +986,30 @@ async function runAuto(chart) {
       /* The sourced file arrives asynchronously and is cached after the first
          call, so this is one fetch for the whole app. The derived marks are
          drawn either way; the file only upgrades those it covers. */
+      /* THE WINDOW REACHES PAST THE LAST BAR, so a release that has not
+         happened yet still gets a mark and the tooltip can say "in 2h 35m".
+         `idxOfTime` extrapolates beyond the series at the timeframe's own
+         step, so a future timestamp already has an x; it was only ever
+         missing from the SET. Ahead by one visible span, floored at a week so
+         a 5m chart still reaches the next payrolls print -- anything further
+         right is clipped by the renderer anyway, so being generous costs a
+         few array entries and nothing on screen.
+
+         THE REPLAY DOES NOT DO THIS, and must not: it clips news to the
+         cursor, because a mark for a release the walk has not reached is the
+         same look-ahead the swing marks refuse. Upcoming news is a live-chart
+         idea. */
+      const ahead = Math.max(7 * 864e5,
+        (TF_MS[chart.tf] || 900e3) * Math.max(60, chart.view.span || 0));
       loadNews().then((file) => {
         if (chart.symbol !== symbol || chart.tf !== tf) return;
         const a = w[0].t, b = w[w.length - 1].t;
-        chart.setNewsMarks(mergeNews(derivedNews(a, b), newsWithin(file, a, b)));
+        chart.setNewsMarks(mergeNews(derivedNews(a, b + ahead),
+                                     newsWithin(file, a, b + ahead)));
         chart.draw();
       }).catch(() => {});
-      chart.setNewsMarks(mergeNews(derivedNews(w[0].t, w[w.length - 1].t), []));
+      chart.setNewsMarks(mergeNews(
+        derivedNews(w[0].t, w[w.length - 1].t + ahead), []));
     }
   } catch { chart.setNewsMarks([]); }
 
@@ -1011,10 +1058,17 @@ async function runAuto(chart) {
        * leg are both printed `BOS`, and the reader is left to guess which one
        * the chart meant.
        *
-       * EXTERNAL is a break of a swing that survives the MAJOR window -- the
-       * same `MAJOR_STRENGTH` that puts rings on swing points, so the two
-       * agree by construction: an external break is a break of a RINGED swing.
-       * INTERNAL is everything else: real structure inside the leg.
+       * EXTERNAL is a break of a swing that survives the MAJOR window --
+       * `MAJOR_STRENGTH`, a wider fractal. INTERNAL is everything else: real
+       * structure inside the leg.
+       *
+       * THIS NO LONGER AGREES WITH THE RINGS. It used to by construction, when
+       * a ringed swing was also "survives strength 6". Rings are now ZigZag
+       * turns, measured on price rather than shape, and this pass has not been
+       * measured the same way -- so an external break is not necessarily a
+       * break of a ringed swing. Left as it was rather than changed on the
+       * assumption it should match: that is a claim about BOS/CHoCH, and it
+       * needs its own evidence.
        *
        * The second pass runs on the same `ownBars`, so it inherits the as-of
        * cut. Matching is by the broken LEVEL's bar (`levelI`) rather than by
@@ -1039,32 +1093,45 @@ async function runAuto(chart) {
      scorer, BOS/CHoCH and the Trend read panel are all working from. Giving
      this its own strength dial would let the picture drift from the engine. */
   try {
-    /* TWO PASSES, ONE VOCABULARY.
+    /* TWO DETECTORS, TWO QUESTIONS.
      *
-     * At `fine` every turn of three bars is a swing, and a few hundred
-     * identical dots say nothing about which of them the market actually
-     * pivoted on. The app already has a word for the difference -- `major`
-     * sensitivity is strength 6 -- so a swing is MAJOR when it also survives
-     * that window. No new parameter, and the mark means exactly what picking
-     * `Major structure` in the menu would show.
+     * The dots are the INNER level: turns of INNER_ATR, the moves price made
+     * inside a major leg, and the rings are the subset that also ended a
+     * SIGNIFICANT_ATR leg. They were a fractal until measurement showed the
+     * fractal never compares prices at all -- two highs three bars apart at
+     * the same price with no low between was a routine output.
      *
-     * The second pass runs on the same `ownBars`, so it inherits the as-of cut
-     * and cannot see past the bar being drawn. It is cheap next to the
-     * trendline walk.
+     * SENSITIVITY MOVES THE RING LINE AND THE FLOOR, never a swing's rank.
+     * `fine` and `normal` draw every turn and ring the ones that ended a leg;
+     * `major` drops the turns inside a leg entirely and rings the ones that
+     * shaped the range, so what `normal` circled is what `major` shows as a
+     * solid dot. A mark that appears at two settings is the same rank at both.
+     * See SWING_TIERS / RING_FROM / SHOW_FROM in js/chart/structure.js.
      *
-     * At `major` itself the two passes coincide and every swing is major --
-     * which is the honest reading of that setting, not a bug.
+     * The RINGS used to be the same detector at strength 6 -- a swing was
+     * major when it also survived a wider window. Strength is a question about
+     * SHAPE, and shape statistics are scale-free: swept over 46 instrument x
+     * timeframe cells (tools/swing_sweep.mjs), that pass returns 13 rings per
+     * 150-bar screen on EVERY one of them, gold on 1m and cable on 1w alike.
+     * Two markets that are nothing like each other cannot both be turning at
+     * the same cadence; the test never looked at price. It also let 20.8% of
+     * rings repeat the same kind back to back, which is how a high and a low a
+     * few bars apart inside one impulse both got ringed.
+     *
+     * A ring is now a ZIGZAG turn -- a leg that travelled SIGNIFICANT_ATR
+     * before it ended -- so alternation is structural and only a leg's own
+     * extreme survives. About 8 per screen, 0 same-kind runs in all 46 cells.
+     * The cost is 2-3 bars of extra lag, which is the honest price: a turn is
+     * not significant until price has moved away from it.
+     *
+     * Both passes run on the same `ownBars` and inherit the as-of cut.
+     * tools/swing_audit.mjs rebuilds the walk from truncated prefixes.
+     *
+     * MAJOR_STRENGTH still defines `external` for BOS/CHoCH above, so the two
+     * words no longer mean the same thing. That pass has not been measured.
      */
     const strength = opts.strength ?? 3;
-    const swings = auto.swings ? swingPoints(ownBars, { strength }) : [];
-    if (swings.length && strength < MAJOR_STRENGTH) {
-      const major = new Set(
-        swingPoints(ownBars, { strength: MAJOR_STRENGTH }).map((x) => x.i));
-      for (const sw of swings) sw.major = major.has(sw.i);
-    } else {
-      for (const sw of swings) sw.major = true;
-    }
-    chart.setSwings(swings);
+    chart.setSwings(auto.swings ? nestedSwings(ownBars, { sens: auto.sens }) : []);
   } catch { chart.setSwings([]); }
 
   /* Supply/demand zones: the base an impulse departed from. A second, unrelated
@@ -1749,7 +1816,7 @@ function wireToolbar() {
     const c = app.active;
     const items = [
       { kind: 'cap', label: 'Overlays' },
-      ...['ema', 'sma', 'bb', 'vwap', 'donchian'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
+      ...['ema', 'sma', 'bb', 'vwap', 'donchian', 'zigzag'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
       { kind: 'cap', label: 'Panes' },
       ...['volume', 'rsidiv', 'macd', 'atr', 'stoch'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
     ];
@@ -1974,7 +2041,23 @@ function wireToolbar() {
     openMenu(e.currentTarget, [
       { kind: 'cap', label: 'Layout' },
       ...Object.entries(LAYOUTS).map(([k, label]) => ({ label, value: k, checked: app.layout === k })),
-    ], (v) => { app.layout = v; buildGrid(); });
+      { kind: 'sep' },
+      { label: 'Show grid', value: '__grid', checked: app.showGrid, keepOpen: true },
+      { label: 'News marks', value: '__news', checked: app.showNews, keepOpen: true },
+    ], (v) => {
+      /* Both flags gate a stroke and nothing else, so the chart is redrawn
+         rather than rebuilt -- and EVERY open chart is, not just the focused
+         one: a four-cell layout with a grid in one cell and none in the other
+         three is not a setting anyone asked for. */
+      const toggle = { __grid: 'showGrid', __news: 'showNews' }[v];
+      if (toggle) {
+        app[toggle] = !app[toggle];
+        save(toggle, app[toggle]);
+        for (const c of app.charts) { c[toggle] = app[toggle]; c.draw(); }
+        return;
+      }
+      app.layout = v; buildGrid();
+    });
   });
 
   $('#healthPill').addEventListener('click', (e) => {

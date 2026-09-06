@@ -1307,3 +1307,65 @@ tr:hover .pv::after{display:none}
 .menu .arrow{margin-left:auto; padding-left:10px; opacity:.55}
 .menu button.open{background:var(--accent-soft)}
 .submenu{position:fixed}
+
+/* The swing-engine readout on the Elliott replay. It borrows `.sr-kv` from the
+   strategy replay rather than growing a parallel set of rules, so the two
+   surfaces cannot drift apart visually; this only supplies the spacing the
+   Elliott panel needs around it. */
+.ell-panel .ell-swing {
+  margin: 0 0 10px;
+  border-bottom: 1px solid var(--line, #16324d);
+  padding-bottom: 8px;
+}
+
+/* The swing-engine readout on the strategy replay. Same rules as the Elliott
+   panel's copy, so the two surfaces report identically. */
+.sr-swing {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+/* ------------------------------------------------------------- news rail ---
+   The news section of the left sidebar. Scrolls on its own rather than pushing
+   the watchlist and sessions off the rail: the watchlist is what the rail is
+   for, and a busy news day should not cost it. */
+.news { overflow-y: auto; max-height: 42vh; padding: 0 8px 8px; }
+.nw-note {
+  font-size: 10px; color: var(--text-faint); line-height: 1.35;
+  padding: 6px 0 8px; border-bottom: 1px solid var(--line);
+}
+.nw-empty { font-size: 11px; color: var(--text-faint); padding: 8px 0; }
+.nw-div {
+  font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-faint); margin: 10px 0 4px;
+  border-top: 1px solid var(--line); padding-top: 6px;
+}
+.nw-item { padding: 7px 0; border-bottom: 1px solid rgba(13,58,107,.35); }
+/* The ones that name this instrument. A left border rather than a background:
+   the rail is narrow and a tint on a block of text costs legibility. */
+.nw-item.nw-on { border-left: 2px solid var(--up); padding-left: 6px; }
+.nw-top { display: flex; gap: 6px; align-items: baseline; font-size: 9.5px; }
+.nw-topic {
+  color: var(--text); text-transform: uppercase; letter-spacing: .05em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+.nw-imp { color: var(--text-faint); font-family: "Roboto Mono", monospace; }
+.nw-age { color: var(--text-faint); }
+.nw-head {
+  font-size: 11.5px; line-height: 1.35; color: var(--text); margin-top: 3px;
+}
+/* Clamped: `why_it_matters` is the best thing in the payload and also the
+   longest, and four of them unclamped fill the rail on their own. */
+.nw-why {
+  font-size: 10px; line-height: 1.35; color: var(--text-faint); margin-top: 3px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The direction word in a release tooltip. Coloured because a direction that
+   is not readable at a glance is not worth a row; the caveat printed under it
+   is what stops the colour reading as a forecast. */
+.zone-tip .tip-up { color: var(--up); }
+.zone-tip .tip-down { color: var(--down); }
+.zone-tip .tip-flat { color: var(--text-faint); }

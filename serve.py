@@ -45,6 +45,7 @@ half-parsed JSON file that would wipe the settings it was saving.
 import io
 import json
 import os
+import shutil
 import sys
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -202,16 +203,41 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
                 # a corrupt file is not a reason to refuse the write that would
                 # replace it, but it is a reason not to merge into garbage
                 data = {}
-            data.update(body.get('set') or {})
+            # THE STRING "undefined" IS NOT A VALUE, IT IS A BUG ARRIVING.
+            #
+            # `localStorage.setItem(k, undefined)` stores the six characters
+            # `undefined`, and the next save forwards them here as though they
+            # were state. That is how a whole symbol's chart settings were
+            # replaced by a string that parses as nothing: every later read
+            # failed, fell back to defaults, and re-saved the corruption.
+            #
+            # A key whose incoming value is that string is dropped rather than
+            # written, so the last good value survives on disk and the client
+            # recovers on its next load.
+            incoming = body.get('set') or {}
+            rejected = [k for k, v in incoming.items()
+                        if isinstance(v, str) and v in ('undefined', 'NaN')]
+            for k in rejected:
+                incoming.pop(k, None)
+            data.update(incoming)
             for k in (body.get('del') or []):
                 data.pop(k, None)
 
             os.makedirs(os.path.dirname(WORKSPACE), exist_ok=True)
+            # ONE GENERATION OF HISTORY, kept before the replace. The write is
+            # atomic, which protects against a half-written file and not at all
+            # against a well-formed wrong one -- and a wrong one is what
+            # actually happened. `.prev` is what makes that recoverable.
+            if os.path.exists(WORKSPACE):
+                try:
+                    shutil.copy2(WORKSPACE, WORKSPACE + '.prev')
+                except Exception:
+                    pass
             tmp = WORKSPACE + '.tmp'
             with io.open(tmp, 'w', encoding='utf-8') as fh:
                 json.dump(data, fh, indent=1, sort_keys=True)
             os.replace(tmp, WORKSPACE)          # atomic on the same volume
-            return self._json(200, {'saved': len(data)})
+            return self._json(200, {'saved': len(data), 'rejected': rejected})
         except Exception as exc:
             return self._json(500, {'error': str(exc)})
 
