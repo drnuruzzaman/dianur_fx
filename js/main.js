@@ -16,10 +16,11 @@ import { INDICATORS } from './chart/indicators.js';
 import { atrSeries, liveLines } from './chart/tlengine.js';
 import { liveChannels } from './chart/channels.js';
 import { calibrate } from './chart/sensitivity.js';
-import { liveZones } from './chart/zones.js';
+import { tieredZones } from './chart/zones.js';
 import { liveSDZones } from './chart/supplydemand.js';
-import { detect as detectMS } from './chart/marketstructure.js';
+import { detect as detectMS, BULL } from './chart/marketstructure.js';
 import { nestedSwings } from './chart/structure.js';
+import { AlertSettings } from './ui/alertsettings.js';
 import { SENSITIVITY } from './chart/trendlines.js';
 import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
          within as newsWithin } from './chart/newsevents.js';
@@ -1016,10 +1017,19 @@ async function runAuto(chart) {
   /* Zones come from the chart's own pivots at its own timeframe. They are
      horizontal by definition, so unlike trendlines there is nothing to project
      from a higher frame -- a 4h zone and a 15m zone at the same price are the
-     same band, and drawing both would double-count one level. */
+     same band, and drawing both would double-count one level.
+
+     THREE WINDOWS ON THOSE OWN BARS, which is not the same thing as a higher
+     frame and does not double-count anything. `tieredZones` runs the detector
+     at 100 / 500 / 1500 bars and keeps two from each, so the six bands on
+     screen mean three distances instead of being the top six of about ten by
+     the retired strength score. tools/zone_lookback_sweep.mjs is why: at the
+     old single lookback of 500 the cap of six BOUND ON 72-80% OF BARS in all
+     six cells tested, so most of the time the four discarded were discarded
+     arbitrarily. Proved in the strategy replay first; brought here on request. */
   try {
     chart.setZones(auto.zones
-      ? liveZones(ownBars, chart.tf, { strengthPivots: opts.strength ?? 3 })
+      ? tieredZones(ownBars, chart.tf, { strengthPivots: opts.strength ?? 3 })
       : []);
   } catch { chart.setZones([]); }
 
@@ -1062,13 +1072,25 @@ async function runAuto(chart) {
        * `MAJOR_STRENGTH`, a wider fractal. INTERNAL is everything else: real
        * structure inside the leg.
        *
-       * THIS NO LONGER AGREES WITH THE RINGS. It used to by construction, when
-       * a ringed swing was also "survives strength 6". Rings are now ZigZag
-       * turns, measured on price rather than shape, and this pass has not been
-       * measured the same way -- so an external break is not necessarily a
-       * break of a ringed swing. Left as it was rather than changed on the
-       * assumption it should match: that is a claim about BOS/CHoCH, and it
-       * needs its own evidence.
+       * IT NO LONGER AGREES WITH THE RINGS, AND IT NO LONGER WEIGHTS ANYTHING.
+       * The two coincided by construction while a ringed swing WAS "survives
+       * strength 6"; rings became ZigZag turns, measured on price rather than
+       * shape, and this pass was left alone pending its own evidence. That
+       * evidence exists now and it went against this pass:
+       *
+       *   tools/external_ring_agree.mjs  the labels are NESTED, not parallel.
+       *     ~80% of ringed breaks are external, ~18% of external breaks are
+       *     ringed, kappa 0.20 in all eight cells. The ring is ~4x stricter.
+       *     Two thirds of breaks take a level the ZigZag never saw as a turn.
+       *   tools/break_arm_eval.mjs  external-but-not-ringed is the WORST of
+       *     three disjoint arms against matched candles at H=20 and H=40.
+       *
+       * `external` is still computed and still on every event -- it is data,
+       * and it is the only column that lets the two be compared again later --
+       * but the WEIGHT is `ringed`, set below. Note also that the `else` branch
+       * makes this axis inert whenever the chart's own strength is already 6,
+       * which is the default sensitivity: every break external, nothing
+       * separated but displacement.
        *
        * The second pass runs on the same `ownBars`, so it inherits the as-of
        * cut. Matching is by the broken LEVEL's bar (`levelI`) rather than by
@@ -1081,6 +1103,42 @@ async function runAuto(chart) {
       } else {
         for (const e of r.events) e.external = true;
       }
+
+      /* THE RING NOW CARRIES THE WEIGHT ON THIS CHART TOO. Proved on the
+         strategy replay first, as everything here is, and brought across on
+         request. `external` is still computed above and still on every event --
+         it is data, and dropping it would lose the only column that lets the
+         two definitions be compared again later.
+
+         WHY THE SWAP. tools/external_ring_agree.mjs: the two labels are NESTED,
+         not parallel -- ~80% of ringed breaks are external, ~18% of external
+         breaks are ringed, kappa 0.20 in all eight cells, so the ring is about
+         4x the stricter test. tools/break_arm_eval.mjs, matched candles over
+         six cells: external-but-not-ringed is the WORST of three disjoint arms
+         at H=20 and H=40 (+1.11 and +0.42 pp), worse than the breaks it was
+         de-weighting (+2.65, +1.43), negative in two cells and sign-flipping
+         across eras. Ringed runs +3.63 / +4.32 / +3.68 at H=10/20/40, positive
+         in every cell and every era-cell, and survives a same-displacement cut
+         in all four bands, so it is not `dispAtr` under another name.
+
+         FIXED AT `normal`, NOT AT `auto.sens`. The ring line moves with the
+         sensitivity menu -- that is what the menu is for -- but a viewing
+         control must not change what the chart CLAIMS about a break. The
+         replay learned this the hard way with its structure readout. Ranks
+         themselves are tier-based and identical at every setting, so this is a
+         second walk only because the drawing pass below needs its own
+         `ringFrom`. */
+      try {
+        const rings = new Set(nestedSwings(ownBars, { sens: 'normal' })
+          .filter((x) => (x.rank || 0) >= 1)
+          .map((x) => x.i + '|' + x.isHigh));
+        /* A bullish break takes a swing HIGH, a bearish one a swing LOW, so the
+           kind is part of the key. Matched on the broken level's bar for the
+           same reason `external` is. */
+        for (const e of r.events) {
+          e.ringed = rings.has(e.levelI + '|' + (e.direction === BULL));
+        }
+      } catch { for (const e of r.events) delete e.ringed; }
       chart.setMsEvents(r.events.slice(-(auto.msMax ?? 12)));
     } else {
       chart.setMsEvents([]);
@@ -1127,8 +1185,10 @@ async function runAuto(chart) {
      * Both passes run on the same `ownBars` and inherit the as-of cut.
      * tools/swing_audit.mjs rebuilds the walk from truncated prefixes.
      *
-     * MAJOR_STRENGTH still defines `external` for BOS/CHoCH above, so the two
-     * words no longer mean the same thing. That pass has not been measured.
+     * MAJOR_STRENGTH still COMPUTES `external` for BOS/CHoCH above, but it no
+     * longer weights anything: that pass has now been measured and it lost.
+     * The ring carries the weight on both charts -- see the block above for the
+     * two tools and their numbers.
      */
     const strength = opts.strength ?? 3;
     chart.setSwings(auto.swings ? nestedSwings(ownBars, { sens: auto.sens }) : []);
@@ -1881,14 +1941,40 @@ function wireToolbar() {
         label: v.label, value: 'sens:' + k, keepOpen: true,
         checked: a.sens === k,
       })),
-      { kind: 'cap', label: 'Lines per side' },
-      ...[2, 3, 4, 6].map((n) => ({ label: String(n), value: 'max:' + n, checked: a.maxLines === n })),
-      { kind: 'cap', label: 'Sources' },
-      { label: `Own timeframe (${TF_LABEL[c.tf]})`, value: 'own', checked: a.own, keepOpen: true },
-      ...higher.map((tf) => ({
-        label: `Project from ${TF_LABEL[tf]}`, value: 'htf:' + tf,
-        checked: a.htf.includes(tf), keepOpen: true,
-      })),
+      /* `keepOpen`, which the four stacked rows this replaced did NOT have --
+         so picking a line count closed the menu, and finding out whether 3 or 4
+         reads better meant reopening it each time. Every other row here already
+         stays open for exactly that reason; this one was the odd one out. */
+      { kind: 'seg', label: 'Lines per side', keepOpen: true,
+        options: [2, 3, 4, 6].map((n) => ({ label: String(n), value: 'max:' + n,
+                                            checked: a.maxLines === n })) },
+      /* SOURCES AS CHIPS, not a stack of ticked rows. This is the multi-select
+         case -- any number of frames may feed the chart -- so it gets chips
+         rather than the segmented strip above, and the two look different on
+         purpose (see js/ui/menu.js).
+
+         What the rows cost was mostly repetition: seven of them, six beginning
+         "Project from", so the frame -- the only part that varied, and the only
+         part being chosen -- sat at the end of an identical prefix and had to
+         be read past six times. As chips the frames line up in a row and the
+         set that is ON can be taken in at a glance, which is the actual
+         question ("what is feeding this chart?"). The prefix moves into the
+         caption, where it is said once.
+
+         The chart's OWN frame keeps its place at the front with a dot, because
+         it is not a projection like the rest; `note` spells that out once
+         underneath rather than in every chip. */
+      { kind: 'chips', label: 'Sources', keepOpen: true,
+        note: higher.length ? `• ${TF_LABEL[c.tf]} is this chart's own frame; the rest project down`
+                            : `• ${TF_LABEL[c.tf]} is this chart's own frame`,
+        options: [
+          { label: TF_LABEL[c.tf], value: 'own', checked: a.own, mark: true,
+            hint: "lines detected on this chart's own timeframe" },
+          ...higher.map((tf) => ({
+            label: TF_LABEL[tf], value: 'htf:' + tf,
+            checked: a.htf.includes(tf), hint: `project ${TF_LABEL[tf]} lines onto this chart`,
+          })),
+        ] },
     ];
     if (!higher.length) items.push({ kind: 'cap', label: 'already the highest timeframe' });
     /* No 'Recompute now'. It matched no branch in the handler below and fell
@@ -1943,17 +2029,22 @@ function wireToolbar() {
     ['#rightbarToggle', '#rightbarStub', '#rightbar',
      'right-collapsed', 'right-peek', 'right.collapsed', '›'],
   ];
+  const railApply = new Map();          // cls -> { apply, key }, for narrow mode
   for (const [bSel, sSel, pSel, cls, peekCls, key, ch] of rails) {
     const btn = $(bSel), stub = $(sSel), panel = $(pSel);
     if (!btn || !stub || !panel) continue;
 
-    const apply = (collapsed) => {
+    /* `remember` is false when the WINDOW collapsed the rail rather than the
+       reader -- see the narrow-mode watcher below. Writing that to storage
+       would turn "your window was small once" into "you asked for this rail to
+       be shut", and it would still be shut on the big monitor tomorrow. */
+    const apply = (collapsed, remember = true) => {
       document.body.classList.toggle(cls, collapsed);
       if (!collapsed) document.body.classList.remove(peekCls);
       btn.textContent = ch;
       btn.setAttribute('aria-expanded', String(!collapsed));
       stub.setAttribute('aria-expanded', String(!collapsed));
-      save(key, collapsed);
+      if (remember) save(key, collapsed);
       /* Only a PIN changes the grid track, so only a pin needs a canvas
          resize. Peeking overlays and leaves the backing store alone -- doing
          this on hover would re-render every chart on every mouse-over. */
@@ -1988,7 +2079,50 @@ function wireToolbar() {
     });
     btn.addEventListener('click', () => apply(!document.body.classList.contains(cls)));
     apply(load(key, false) === true);
+    railApply.set(cls, { apply, key });
   }
+
+  /* NARROW WINDOWS SHUT THE RAILS, and do not remember doing it.
+     The two rails are 478px of fixed furniture. On a full-width monitor that is
+     the right trade; in a half-screen window it is most of the page, and the
+     chart -- the thing you opened -- gets a sliver.
+
+     THIS ADDS THE SAME CLASSES THE TOGGLE DOES rather than a parallel set of
+     narrow-only CSS, which is what the rules deleted from css/app.css tried and
+     got wrong: collapsing a rail is a narrow TRACK *and* an absolutely
+     positioned panel *and* a spine to get it back, and any implementation that
+     does only some of those overflows the grid. Going through the same
+     `apply()` means narrow mode cannot drift from the toggle.
+
+     THE RIGHT RAIL GOES FIRST, at a wider threshold than the left. It is the
+     wider of the two and the most reconstructible -- the trend read and signal
+     engine restate what the chart is already showing, while the watchlist is
+     how you get to another instrument at all.
+
+     A PIN STILL WINS. `matches || saved` is a floor, not an override: the
+     reader can click a spine open at any width and it stays open, because a
+     narrow window is a guess about what they want and a click is not. */
+  const narrow = [
+    ['right-collapsed', window.matchMedia('(max-width: 1280px)')],
+    ['side-collapsed', window.matchMedia('(max-width: 1020px)')],
+  ];
+  const syncNarrow = () => {
+    let moved = false;
+    for (const [cls, mq] of narrow) {
+      const rail = railApply.get(cls);
+      if (!rail) continue;
+      const want = mq.matches || load(rail.key, false) === true;
+      if (document.body.classList.contains(cls) === want) continue;
+      rail.apply(want, false);              // forced, so not written to storage
+      moved = true;
+    }
+    /* One resize for both rails, and only when a TRACK actually changed. The
+       charts each re-render on resize, so calling this per rail on every
+       breakpoint crossing would do the expensive thing twice for one gesture. */
+    if (moved) setTimeout(() => app.charts.forEach((c) => c.resize()), 200);
+  };
+  for (const [, mq] of narrow) mq.addEventListener('change', syncNarrow);
+  syncNarrow();
 
   /* THE EYE COVERS THE ACCOUNT FIGURES, and it now defaults to HIDDEN.
      A balance is nobody else's business and this app is often on a shared or
@@ -2060,14 +2194,27 @@ function wireToolbar() {
     });
   });
 
+  /* Built on first use, not at boot: the modal reads its config over the
+     network and there is no reason to pay for that on a page load that may
+     never open it. */
+  let alertSettings = null;
   $('#healthPill').addEventListener('click', (e) => {
     openMenu(e.currentTarget, [
       { kind: 'cap', label: status.error ? 'Bridge problem' : 'Bridge' },
       { label: `Reconnect (${base().replace('http://', '')})`, value: 'retry' },
       { label: 'Change bridge URL…', value: 'url' },
       { kind: 'sep' },
+      /* The alert settings live here rather than in their own toolbar button:
+         they are about the LIVE connection -- what gets pushed to Telegram
+         about this account and its instruments -- and that is what this pill
+         already stands for. */
+      { label: 'Settings…', value: 'settings' },
       { label: 'Reload all charts', value: 'reload' },
     ], async (v) => {
+      if (v === 'settings') {
+        if (!alertSettings) alertSettings = new AlertSettings(search);
+        alertSettings.open();
+      }
       if (v === 'retry') { await tick.health(); toast(status.error || `bridge ${status.mode}`); }
       if (v === 'url') {
         const next = window.prompt('Bridge URL', base());

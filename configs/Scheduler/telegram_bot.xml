@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>DiaNurFx: answers /status and /profit on Telegram. Long-polls, so replies land in about a second. Starts at logon and restarts itself if it dies.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- Logon only. A BootTrigger needs the task to run whether or not anyone
+         is signed in, which schtasks refuses to register without elevation:
+         it fails with "Access is denied" and no other explanation. Logon is
+         the right scope anyway, because the bridge this bot reads is started
+         by the desktop session too. (XML comments cannot contain a double
+         hyphen, which is why this one reads oddly.) -->
+    <LogonTrigger><Enabled>true</Enabled><UserId>TASK_USER</UserId></LogonTrigger>
+  </Triggers>
+  <!-- WITHOUT THIS BLOCK schtasks answers "Access is denied" and nothing else.
+       A LogonTrigger with no principal means "any user logging on", which is a
+       machine-wide registration and needs elevation. Naming the user and
+       asking for an interactive token keeps it in this account, where the
+       bridge it talks to also lives. -->
+  <Principals>
+    <Principal id="Author">
+      <UserId>TASK_USER</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>PYTHONW_EXE</Command>
+      <Arguments>tools\telegram_bot.py</Arguments>
+      <WorkingDirectory>PROJECT_DIR</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

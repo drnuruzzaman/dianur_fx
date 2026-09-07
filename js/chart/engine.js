@@ -27,60 +27,73 @@ const AXIS_W = 54;
    overprints; anything closer than this gets nudged, never dropped. */
 const LAB_GAP = 13;
 
-/* THE ACCOUNT EVERY MONEY FIGURE ON THE RULE'S LEVELS IS QUOTED AGAINST.
+/* THE POSITION EVERY MONEY FIGURE ON THE RULE'S LEVELS IS QUOTED AGAINST.
  *
- * $10,000 risking 2% a trade, paying 8 points of spread, by request. This
- * REPLACED a fixed 0.05 lots, and the change is not cosmetic: the old figure
- * answered "what is this move worth at a stated size", which made a tight stop
- * and a wide one look equally valuable. This one answers "what does this level
- * pay for the risk I actually took", which is the question a plan is read to
- * settle.
+ * A FIXED 0.05 LOTS, by request. This replaced a $10,000-at-2% risk model that
+ * quoted every level as its R multiple in dollars, so the stop always read
+ * -$200 and a 1.5R level always paid $300 whatever the instrument. That
+ * answered "what does this level pay for the risk I took"; a reader who trades
+ * one size wanted "what is this move worth", and those are different questions.
  *
- * THE ARITHMETIC FALLS OUT AS R. Sizing to lose `riskCash` at the stop makes
- * every level's money `riskCash * distance / stopDistance` -- the level's R
- * multiple in dollars. So the stop is always -$200 and a 1.5R level always
- * pays $300, on gold, on the yen, on any timeframe. That is what makes two
- * charts comparable now; the old fixed lot made them comparable only in the
- * sense that a barrel and a bushel are both containers.
+ * WHAT CHANGES BESIDES THE NUMBERS. Under the R model a level's money depended
+ * on the STOP as well as the level, so two things could drift apart: the tag's
+ * price came from the level and its cash came from a ratio, and a mismatch
+ * between them was invisible. At a fixed size money is strictly proportional
+ * to distance, so TP2 cannot print more than TP3 -- the ordering is now
+ * guaranteed by the arithmetic rather than by the levels being sorted.
  *
- * STILL FIXED, WHICH WAS THE POINT OF THE OLD CONSTANT AND SURVIVES HERE. The
- * equity is a stated $10,000, not the live balance, so the numbers do not move
- * when the account does and two charts a week apart still say the same thing.
+ * THE BROKER'S OWN TICK VALUE DOES THE CONVERSION. `tick_value` in
+ * data/instruments.json is what one tick of one lot is worth IN THE ACCOUNT
+ * CURRENCY (AUD here), so gold at 1.3945 per 0.01 and USDJPY at 0.8772 per
+ * 0.001 both come out right without this file knowing anything about crosses.
+ * Assuming dollars-per-point would be correct on gold and wrong on the yen.
  *
- * SPREAD IS CHARGED ONCE, entry and exit together, at `spreadPoints` of the
- * instrument's own point. It is small on these stops -- about $3 on gold 15m --
- * and it is included because `tools/scalp_eval.py` measured that the same
- * number decides whether 5m is worth trading at all.
+ * SPREAD IS STILL CHARGED ONCE, entry and exit together, at `spreadPoints` of
+ * the instrument's own tick. It is under a dollar at this size, and it is kept
+ * because `tools/scalp_eval.py` measured that the same number decides whether
+ * 5m is worth trading at all -- a cost that small is exactly the kind that
+ * disappears from a plan and then shows up in the account.
  *
- * NOTHING ON SCREEN STATES ANY OF IT: the heading that read "· AUD at 0.01
- * lots" was removed by request, so a reader sees `$300` with no unit and no
+ * NOTHING ON SCREEN STATES THE SIZE: the heading that read "· AUD at 0.01
+ * lots" was removed by request, so a reader sees `$21` with no unit and no
  * size. Changing these constants silently changes every such number.
  * js/ui/rulepanel.js `_cash` uses the same helpers and must not grow its own
  * copy of them. */
-export const ACCOUNT = { equity: 10000, riskPct: 0.02, spreadPoints: 8 };
-
-/** What one trade is allowed to lose. */
-export function riskCash() { return ACCOUNT.equity * ACCOUNT.riskPct; }
+export const ACCOUNT = { lots: 0.05, spreadPoints: 8 };
 
 /**
- * What a level `dist` from the fill pays, when the stop is `risk` away.
+ * What `dist` of price movement is worth on the stated position.
  *
- * Null -- not zero -- when the stop distance is unknown or zero, because a
- * missing figure and a $0 figure mean different things and the tag omits the
- * first rather than printing the second. `spread` is charged once here, so
- * callers pass a distance and get a NET number.
+ * Null -- not zero -- when the contract spec is missing, because a missing
+ * figure and a $0 figure mean different things and the tag omits the first
+ * rather than printing the second.
  */
-export function levelCash(dist, risk, point) {
-  if (!(risk > 0) || !Number.isFinite(dist)) return null;
-  const spread = (point > 0 ? point : 0) * ACCOUNT.spreadPoints;
-  return riskCash() * (Math.abs(dist) - spread) / risk;
+function cashOf(dist, tickSize, tickValue) {
+  if (!(tickSize > 0) || !(tickValue > 0) || !Number.isFinite(dist)) return null;
+  return (dist / tickSize) * tickValue * ACCOUNT.lots;
 }
 
-/** What the stop costs: the risk itself, plus the spread on the way out. */
-export function stopCash(risk, point) {
+/**
+ * What a level `dist` from the fill pays, NET of the spread.
+ *
+ * No longer takes the stop distance: at a fixed size what a level pays does
+ * not depend on where the stop is. Call sites that still had `risk` in hand
+ * were updated rather than allowed to pass it and have it ignored.
+ */
+export function levelCash(dist, tickSize, tickValue) {
+  const gross = cashOf(Math.abs(dist), tickSize, tickValue);
+  if (gross === null) return null;
+  const cost = cashOf(tickSize * ACCOUNT.spreadPoints, tickSize, tickValue) || 0;
+  return gross - cost;
+}
+
+/** What the stop costs: the distance itself, plus the spread on the way out. */
+export function stopCash(risk, tickSize, tickValue) {
   if (!(risk > 0)) return null;
-  const spread = (point > 0 ? point : 0) * ACCOUNT.spreadPoints;
-  return riskCash() * (risk + spread) / risk;
+  const gross = cashOf(risk, tickSize, tickValue);
+  if (gross === null) return null;
+  const cost = cashOf(tickSize * ACCOUNT.spreadPoints, tickSize, tickValue) || 0;
+  return gross + cost;
 }
 const TIME_H = 22;        // bottom time axis
 const PANE_GAP = 6;
@@ -1321,11 +1334,12 @@ export class Chart {
          only one that is spent, and printing it unsigned beside `$462` invited
          the two to be added rather than weighed.
 
-         It is a touch MORE than the 2% risk, never less: the stop pays the
-         spread on the way out as well. */
+         It is a touch MORE than the bare stop distance, never less: the stop
+         pays the spread on the way out as well. */
       const spec = this.ruleTargets;
       const lost = stopCash(Math.abs(z.entry - z.stop),
-                            spec ? spec.tickSize : 0);
+                            spec ? spec.tickSize : 0,
+                            spec ? spec.tickValue : 0);
       const cash = lost === null ? '' : `  -$${Math.round(lost)}`;
       tag(this.y(pane, z.stop),
           `SL ${z.stop.toFixed(this.digits)}${cash}`, COL.sl);
@@ -1362,10 +1376,11 @@ export class Chart {
        together at both call sites; the fallback is for the order they arrive
        in, not for a case where one is meaningfully absent. */
     const zone = this.ruleZone;
-    const risk = Number.isFinite(t.stop) && Number.isFinite(t.entry)
-      ? Math.abs(t.entry - t.stop)
-      : (zone && Number.isFinite(zone.stop) && Number.isFinite(zone.entry)
-         ? Math.abs(zone.entry - zone.stop) : NaN);
+    /* THE STOP DISTANCE IS NO LONGER READ HERE. It sized every money figure
+       under the R model; at a fixed 0.05 lots a level pays what its distance
+       is worth and the stop has nothing to do with it. `ruleZone` is still
+       consulted by the risk block above, so the fallback logic that used to
+       live here has not been lost, only stopped being this method's business. */
 
     ctx.save();
     ctx.font = '9px "Roboto Mono", monospace';
@@ -1430,7 +1445,7 @@ export class Chart {
          been moved to the surface with room for it. What is left is the one
          figure a reader cannot work out in their head from the price. */
       const pays = Number.isFinite(anchor)
-        ? levelCash(lv.price - anchor, risk, t.tickSize) : null;
+        ? levelCash(lv.price - anchor, t.tickSize, t.tickValue) : null;
       if (pays !== null) bits.push(`$${Math.round(pays)}`);
       const text = `${off < 0 ? '▲' : off > 0 ? '▼' : ''}${bits.join('  ')}`;
 
@@ -1609,15 +1624,33 @@ export class Chart {
          truthful, marked by the two boundary strokes. */
       const h = Math.max(3, yLo - yHi);
 
+      /* TIERED BANDS ARE DISTINGUISHED BY LINE STYLE, NOT BY PROMINENCE.
+         A tiered zone (zones.js tieredDetect) carries `tier`; the three
+         windows get three dash patterns -- dotted near, dashed mid, solid far
+         -- at ONE fill and ONE stroke opacity. Brightness was the tempting
+         encoding and it is the wrong one: a brighter band reads as a stronger
+         band, which is the claim `strength` was retired for making. Style says
+         WHICH WINDOW SAW THIS, which is a fact; weight would say WHICH ONE TO
+         TRUST, which nothing in the data supports.
+
+         Untiered zones keep the strength ramp. Nothing ships untiered today --
+         both charts call tieredZones -- but supply/demand bands and any caller
+         handing over a plain detect() result still land here, and they have no
+         tier to draw. */
+      const tiered = z.tier !== undefined;
+      const dash = tiered
+        ? [[1, 3], [2, 3], []][z.tierRank] || [2, 3]
+        : [2, 3];
+
       ctx.save();
-      ctx.globalAlpha = 0.055 + 0.055 * (z.strength / 100);
+      ctx.globalAlpha = tiered ? 0.075 : 0.055 + 0.055 * (z.strength / 100);
       ctx.fillStyle = col;
       ctx.fillRect(pane.x, yHi, pane.w, h);
 
-      ctx.globalAlpha = 0.35 + 0.3 * (z.strength / 100);
+      ctx.globalAlpha = tiered ? 0.5 : 0.35 + 0.3 * (z.strength / 100);
       ctx.strokeStyle = col;
       ctx.lineWidth = 1;
-      ctx.setLineDash([2, 3]);
+      ctx.setLineDash(dash);
       for (const y of [yHi, yLo]) {
         ctx.beginPath(); ctx.moveTo(pane.x, y); ctx.lineTo(pane.x + pane.w, y); ctx.stroke();
       }
@@ -1630,7 +1663,8 @@ export class Chart {
          chart look like it was reporting the same thing twice. The suffix
          disambiguates too: `×N` is a touch count, `●` on an s/d zone means
          fresh. */
-      const label = `${role === 'support' ? 'SUPPORT' : 'RESISTANCE'} ×${z.touches}`;
+      const label = `${role === 'support' ? 'SUPPORT' : 'RESISTANCE'} ×${z.touches}`
+        + (tiered ? `  ${z.tier}` : '');
       ctx.font = '9px "Roboto Mono", monospace';
       ctx.globalAlpha = 0.8;
       ctx.fillStyle = col;
@@ -2170,12 +2204,27 @@ export class Chart {
       const disp = Number.isFinite(e.dispAtr) ? e.dispAtr : 0;
       const strong = disp >= Chart.DISPLACEMENT_ATR;
       /* TWO INDEPENDENT AXES, and they are deliberately not merged into one
-         score. Displacement asks how HARD the level broke; external asks how
-         much the LEVEL was worth. A hard break of an internal pivot and a
+         score. Displacement asks how HARD the level broke; the second axis asks
+         how much the LEVEL was worth. A hard break of a minor pivot and a
          gentle break of a major swing are different events, and a single
-         combined weight would render them identically. */
-      const external = e.external === true;
-      const w8 = (strong ? 1 : 0.45) * (external ? 1 : 0.7);
+         combined weight would render them identically.
+
+         WHICH TEST ANSWERS THE SECOND AXIS IS NOW THE CALLER'S. A surface that
+         sets `ringed` -- the broken swing is a ZigZag turn at ring tier -- is
+         weighted on that; one that sets only `external` keeps the strength-6
+         pass. The strategy replay sets `ringed` and the live chart does not,
+         which is the standing order of things here: measured first on the
+         proving surface.
+
+         WHY THE RING. tools/break_arm_eval.mjs, matched candles over six cells:
+         external-but-not-ringed is the WORST of three disjoint arms at H=20 and
+         H=40 (+1.11 and +0.42 pp) -- worse than the breaks this weight
+         de-emphasises (+2.65, +1.43) -- negative in two cells and sign-flipping
+         across eras. Ringed runs +3.63 / +4.32 / +3.68 at H=10/20/40, positive
+         in every cell and every era-cell, and holds up inside every
+         displacement band, so it is not a proxy for `strong` above. */
+      const level = e.ringed !== undefined ? e.ringed === true : e.external === true;
+      const w8 = (strong ? 1 : 0.45) * (level ? 1 : 0.7);
 
       ctx.save();
       ctx.strokeStyle = col;
@@ -2194,8 +2243,17 @@ export class Chart {
       ctx.globalAlpha = (choch ? 0.95 : 0.7) * w8;
       /* The prefix is the cheapest possible way to carry the distinction, and
          it survives being read in greyscale or by someone who never learns what
-         the weights mean. */
-      const label = (external ? '' : 'i') + (choch ? 'CHoCH' : 'BOS');
+         the weights mean.
+
+         IT MARKS THE NOTABLE CASE, NOT THE LESSER ONE, WHEN THE RING DECIDES.
+         `i` for internal was the right shape while `external` was the test:
+         external is a third of breaks, so flagging the minority made sense.
+         Ringed is 7%, and prefixing the other 93% would put a qualifier on
+         almost every mark on the chart. So a ringed break gets `*` and
+         everything else reads exactly as it always did. */
+      const label = (e.ringed !== undefined
+        ? (e.ringed === true ? '*' : '')
+        : (level ? '' : 'i')) + (choch ? 'CHoCH' : 'BOS');
       const w = ctx.measureText(label).width;
       const lx = clamp(xb - w - 2, pane.x + 2, pane.x + pane.w - w - 2);
       ctx.fillText(label, lx, bull ? y - 3 : y + 9);
@@ -2759,7 +2817,26 @@ export class Chart {
    *   - edges closer than a label's height collapse to one tag. Two numbers
    *     three pixels apart are unreadable, and a tight zone -- the strongest
    *     kind -- is exactly where both edges nearly coincide.
-   *   - strongest first, so when tags do compete the weaker one drops.
+   *   - NEAREST PRICE FIRST, so when tags do compete the further one drops.
+   *
+   * That last rule used to be "strongest first" and it outlived its reason.
+   * `strength` was retired as a forecast -- across 185,227 approaches a high
+   * score holds no better than a low one -- so letting it decide which of two
+   * colliding tags survives was letting a dead number make a live decision.
+   * Distance from the current price is the ordering the reader is already
+   * using: the tag that survives is the level price reaches first.
+   *
+   * IT IS ALSO WHAT MAKES THE TIER LADDER LEGIBLE. `tier` says how far BACK
+   * you look to see a level, not how far AWAY it is, so a `near` band and a
+   * `far` band can sit a few points apart and read as a contradiction. Ordering
+   * the tags by proximity means the column down the axis is in the one order a
+   * price scale can be read in, whatever window found each band.
+   *
+   * NOT SORTED BY RAW PRICE, which is the other reading of "by price" and is
+   * arbitrary: it would hand every collision to whichever tag happened to be
+   * higher on the screen, and a level being near the top is not a reason to
+   * keep it. Ties -- two bands equidistant above and below -- are left to the
+   * array order, because at that point neither is the better answer.
    */
   /** Where the zone tags will sit. Computed separately from drawing them so
    *  the AXIS can consult it and skip its own ticks -- otherwise a round-number
@@ -2772,7 +2849,8 @@ export class Chart {
     const LAB_H = 13;
 
     const wanted = [];
-    for (const z of [...this.zones].sort((a, b) => b.strength - a.strength)) {
+    const near = (z) => Math.min(Math.abs(z.low - last), Math.abs(z.high - last));
+    for (const z of [...this.zones].sort((a, b) => near(a) - near(b))) {
       /* ONE tag per zone, at the edge price meets FIRST -- not the midpoint.
          The mid is an average of pivot prices and nothing ever turned there;
          the edges are the extremes that formed the cluster, and the near edge
@@ -2796,7 +2874,9 @@ export class Chart {
            wrong line is worse than no number. */
         if (y + 6 > lastY - 8 && y - 6 < lastY + 24) continue;
         if (wanted.some((w) => Math.abs(w.y - y) < LAB_H)) continue;
-        wanted.push({ y, price, above: price > last, strength: z.strength });
+        /* `strength` used to ride along here and nothing ever read it. It is
+           dropped rather than left as a field the next reader has to check. */
+        wanted.push({ y, price, above: price > last, tier: z.tier });
       }
     }
     return wanted;
@@ -2837,12 +2917,20 @@ export class Chart {
   /*
    * A tooltip that explains itself.
    *
-   * The numbers a zone is scored on -- ATR width, ATR reaction, a 0-100
-   * strength -- are the detector's vocabulary, not a reader's. "0.64 ATR wide"
-   * is only meaningful to someone who already knows what ATR is on this
-   * instrument; "6.9 pts -- tight" is meaningful to anyone. So every row here
-   * carries a LABEL, a value in the instrument's own units, and a plain-word
-   * reading, with the raw ratio kept in parentheses for anyone who wants it.
+   * The numbers a zone is scored on -- ATR width, ATR reaction -- are the
+   * detector's vocabulary, not a reader's. "0.64 ATR wide" is only meaningful
+   * to someone who already knows what ATR is on this instrument; "6.9 pts --
+   * tight" is meaningful to anyone. So every row here carries a LABEL, a value
+   * in the instrument's own units, and a plain-word reading, with the raw
+   * ratio kept in parentheses for anyone who wants it.
+   *
+   * WHAT THE ROWS DO NOT CLAIM. The zone is CONTEXT -- where price has turned
+   * before, and how far it travelled when it did. Measured over 234,552
+   * approaches it does not predict which side price leaves by, at any horizon,
+   * in any regime or volatility state, out of sample at AUC 0.499. So the
+   * tooltip describes the level and stops; the 0-100 strength that used to sit
+   * at the bottom is gone, along with the sentence that had to explain it was
+   * not a forecast.
    *
    * The opening line is a full sentence about THIS zone rather than a
    * definition of the zone type, because the first question is always "what is
@@ -2884,6 +2972,14 @@ export class Chart {
      is DRAWN -- tight, repeatedly touched, near price. That is a real property
      and it is what decides which six survive the cap; it is not a forecast, and
      "strong" would have said it was. */
+  /* NOT SHOWN ANY MORE. `strength` was printed as "74 / 100 -- clean" with a
+     sentence underneath explaining it was not a forecast, which is a bad sign
+     about a row: a number that needs an apology is a number the reader should
+     not be given. Measured twice since -- flat-to-inverted against a random
+     band control, and 41.1 / 43.2 / 43.8 across its own buckets on 138,869
+     approaches -- so it is now purely internal: it filters at `minStrength`
+     and ranks zones inside a tier of the ladder, and nothing else. The helper
+     stays because the ranking still has to be inspectable from a console. */
   _rating(v) {
     const s = Math.round(v);
     const word = s >= 75 ? 'textbook' : s >= 60 ? 'clean'
@@ -3030,7 +3126,7 @@ export class Chart {
         + this._row('Departure',
           `${this._units(imp * atr)} ${buyers ? 'up' : 'down'} in a few bars`,
           `(${imp.toFixed(1)}&times; a normal bar)`)
-        + this._row('Shape', this._rating(z.strength));
+        ;
       break;
     }
     if (!html) {
@@ -3050,10 +3146,27 @@ export class Chart {
             ? this._row('Typical bounce', `${this._units(react * atr)} away`,
               `(${react.toFixed(1)}&times; a normal bar)`)
             : '')
-          + this._row('Shape', this._rating(z.strength))
-          + `<u>How cleanly the zone is drawn &mdash; not a forecast. Measured `
-          + `over 21,800 approaches, a high score holds no more often than a `
-          + `low one.</u>`;
+          /* HOW FAR BACK YOU HAVE TO LOOK to see this level. Present only on
+             tiered zones. Worded as a window and not as a grade on purpose:
+             `far` is not a better band than `near`, it is a band that needed a
+             longer memory to find. Nothing in 185,227 approaches makes an old
+             level more likely to hold than a fresh one.
+
+             `windowBars` IS WHAT THE DETECTOR ACTUALLY SAW, not what the tier
+             asked for. The two part company whenever the history is shorter
+             than the request -- 4h loads 1200 bars against a 1500-bar far tier,
+             and a replay 150 bars in has 150 for every tier -- and this row was
+             printing the request, which on 4h was a number of bars the chart
+             did not have. When they differ the note says so rather than
+             quietly showing the smaller figure. */
+          + (z.tier !== undefined
+            ? this._row('Seen over',
+              `the last ${z.windowBars ?? z.tierLookback} bars`,
+              z.windowBars !== undefined && z.windowBars < z.tierLookback
+                ? `(${z.tier} — all there is)`
+                : `(${z.tier})`)
+            : '')
+          ;
         break;
       }
     }

@@ -196,6 +196,27 @@ export function levelsAt(levels, i) {
  * one" stays open for measurement instead of being answered here by a constant
  * nobody validated.
  */
+/* WHICH LEVELS ARE WORTH SWEEPING, measured (tools/sweep_break_eval.mjs).
+   Continuation edge after a structure break, by the family of the level swept
+   on the opposite side, 25,623 breaks over six cells against matched candles:
+
+       DAY (PDH/PDL)      +4.18      2,868 sweeps
+       EQUAL (EQH/EQL)    +3.78      3,374
+       SESSION (PSH/PSL)  +3.16     10,677
+       SWING              +2.79     10,621
+       any level at all   +2.84     14,363
+
+   THE ORDERING IS SCARCITY. On 15m over 62k bars there are 661 prev-day highs
+   against 5,169 swing highs, and the scarcer the level the larger the edge. So
+   a feature built on these should prefer PDH/PDL, and asking "was ANY level
+   swept" is close to asking nothing -- it is true before 42-71% of breaks,
+   because an OR across the ~65 levels alive at once is a loose test however
+   strict this function is per level.
+
+   WHAT THE ORDERING IS NOT. Even the DAY arm fails the per-cell bar: it beats
+   its own no-sweep control in three cells of six, and the two largest cells go
+   the other way. Use the ranking to choose a level type; do not use a sweep as
+   a signal. */
 export function sweepAt(bars, atr, level, i, { window = 5 } = {}) {
   const a = atr[i];
   if (!(a > 0) || i <= 0 || i >= bars.length) return null;

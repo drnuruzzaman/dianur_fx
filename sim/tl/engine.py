@@ -77,7 +77,12 @@ class Params:
     max_pivots: int = 26         # most recent N per side (pairs grow as N^2)
     min_span: int = 6            # anchors at least this far apart
     tol_atr: float = 0.32        # touch/break tolerance, in ATR
+    # RAW ATR PROMINENCE, AND IT IS MIS-SCALED BY NATURE -- see _by_percentile()
+    # for the measured distribution. Kept at 0 and kept working, because numbers
+    # were published against it, but 0.5 filters nothing and 1.0 filters under
+    # 2%. Prefer `min_swing_pct`.
     min_swing_atr: float = 0.0   # a pivot must stand out this far to count
+    min_swing_pct: float = 0.0   # ...or drop this % of the least prominent
     max_violations: int = 0      # closes beyond tolerance before BROKEN
     max_live: int = 20           # per role: a holding pool, not the offer list
     max_offered: int = 4         # per role, what strategies actually see
@@ -288,6 +293,11 @@ class TrendlineEngine:
             lb_lb = [self._prom_at(p['i']) for p in pl]
             pl = [p for p, (_, lb) in zip(pl, lb_lb)
                   if lb <= 0 or _prominence(p, high, low, atr, st, False) >= lb]
+            # The percentile form, applied AFTER any ATR bar so the two compose
+            # rather than race. Default 0 -- nothing changes unless asked.
+            if self.p.min_swing_pct > 0:
+                ph = _by_percentile(ph, high, low, atr, st, self.p.min_swing_pct, True)
+                pl = _by_percentile(pl, high, low, atr, st, self.p.min_swing_pct, False)
             buckets[st] = (_bucket(ph, n), _bucket(pl, n))
 
 
@@ -575,18 +585,57 @@ def _significant(pivots, high, low, atr, strength, min_swing_atr, is_high):
     the window, which is the depth of the turn the pivot represents.
     """
     out = []
-    n = len(high)
     for p in pivots:
-        i = p['i']
-        lo = max(0, i - strength)
-        hi = min(n, i + strength + 1)
-        a = atr[i]
-        if not np.isfinite(a) or a <= 0:
-            continue
-        depth = (high[i] - np.min(low[lo:hi])) if is_high else (np.max(high[lo:hi]) - low[i])
-        if depth >= min_swing_atr * a:
+        d = _prominence(p, high, low, atr, strength, is_high)
+        if d >= 0 and d >= min_swing_atr:
             out.append(p)
     return out
+
+
+def _by_percentile(pivots, high, low, atr, strength, pct, is_high):
+    """
+    Keep the most prominent `100 - pct` percent of pivots.
+
+    WHY THIS EXISTS RATHER THAN A FIXED ATR NUMBER. `min_swing_atr` thresholds a
+    prominence measured over a +/-strength window, and that window HAS a
+    prominence by construction. Measured over five instrument x timeframe cells:
+
+        strength 2   median 1.9-2.0 ATR
+        strength 3   median 2.3-2.4 ATR
+        strength 6   median 3.3-3.5 ATR
+
+    So the documented "useful" settings were nothing of the kind: 0.5 ATR
+    filters 0.0% of pivots on every cell tested and 1.0 ATR filters 0.8-1.8%.
+    Anyone turning that knob from 0 to 1 changed nothing and concluded the idea
+    did not work -- which is exactly what the diagnostics sweep did. Worse, the
+    scale MOVES WITH `strength`, so one constant could never be right across the
+    sensitivity menu.
+
+    A PERCENTILE OF THE SERIES' OWN DISTRIBUTION is portable by construction:
+    `pct = 40` means "drop the least prominent 40% of swings on THIS instrument
+    at THIS timeframe and THIS strength". That is the conclusion sensitivity.py
+    already reached for the calibrated path; this brings the raw parameter into
+    line instead of leaving a mis-scaled knob beside a fixed one.
+
+    CAUSALITY. The percentile is a property of the SERIES, the same standing
+    this engine gives its ATR. A walk-forward consumer wanting the threshold
+    recomputed as it goes should pass the calibrated `sens`, which is its job.
+    """
+    if not (pct > 0) or not pivots:
+        return pivots
+    # `_prominence` returns -1.0 where ATR is unusable, which is how the rest of
+    # this module spells "no answer"; those pivots are dropped from the ranking
+    # rather than sorted to the bottom of it.
+    scored = []
+    for p in pivots:
+        d = _prominence(p, high, low, atr, strength, is_high)
+        if d >= 0:
+            scored.append((d, p))
+    if not scored:
+        return pivots
+    ds = sorted(d for d, _ in scored)
+    cut = ds[min(len(ds) - 1, int(len(ds) * min(pct, 100.0) / 100.0))]
+    return [p for d, p in scored if d >= cut]
 
 
 def _bucket(pivots, n):

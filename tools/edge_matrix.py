@@ -29,9 +29,11 @@ beside every stage1 run already in runs/:
     IS    2021-01-01 onward
     OOS   2016-01-01 .. 2020-12-31   -- an earlier, sealed period
 
-XAUUSD intraday does not exist before 2018 (the pre-2018 files hold daily bars
-mislabelled at the requested timeframe -- 4h at 17% density is one bar per day),
-so its OOS window is genuinely shorter and is printed rather than hidden.
+XAUUSD intraday starts late, and it used to start later still: the archive held
+daily bars mislabelled at the requested timeframe (4h at 17% density is one bar
+per day) until that was fixed on 2026-09-07 -- see data/_quarantine/bars. Gold
+now begins 2017-06-12 on 1m/5m/15m/30m and 2016-02 on 1h/4h, so its OOS window
+is genuinely shorter than the other symbols' and is printed rather than hidden.
 """
 import argparse
 import os

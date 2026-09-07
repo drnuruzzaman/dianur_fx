@@ -162,7 +162,12 @@ export function obstaclesAhead(bars, {
       out.push({
         price: edge,
         kind: 'zone',
-        label: `S/R zone (${z.touches ?? '?'} touches, strength ${z.strength})`,
+        label: `S/R zone (${z.touches ?? '?'} touches)`,
+        /* `score` still ranks which levels are listed first and `strength`
+           is still what does the ranking -- but it is no longer quoted at a
+           reader. Measured over 234,552 approaches it does not predict which
+           way price leaves a zone, so a number in a label would be asserting
+           something the data denies. */
         score: z.strength,
         at: z.lastI == null ? null : base + z.lastI,
       });

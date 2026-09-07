@@ -46,7 +46,12 @@ export const DEFAULT_PARAMS = {
   maxPivots: 26,        // most recent N per side (pairs grow as N^2)
   minSpan: 6,           // anchors at least this many bars apart
   tolAtr: 0.32,         // touch / break tolerance, in ATR
+  /* RAW ATR PROMINENCE, AND IT IS MIS-SCALED BY NATURE -- see byPercentile()
+     below for the measured distribution. Kept at 0 and kept working, because
+     numbers were published against it, but 0.5 filters nothing and 1.0 filters
+     under 2%. Prefer `minSwingPct`. */
   minSwingAtr: 0,       // a pivot must stand out this far to count
+  minSwingPct: 0,       // ...or drop this % of the least prominent pivots
   maxViolations: 0,     // closes beyond tolerance before BROKEN
   minTouches: 3,        // distinct touches that confirm a candidate (anchors count)
   breakConfirmBars: 1,  // CONSECUTIVE closes beyond tolerance before a break counts
@@ -309,6 +314,12 @@ export class TrendlineEngine {
     const loBar = this.sens ? this.sens.support.minProminenceAtr : this.p.minSwingAtr;
     if (hiBar > 0) highs = significant(highs, bars, atr, strength, hiBar, true);
     if (loBar > 0) lows = significant(lows, bars, atr, strength, loBar, false);
+    /* The percentile form, and it is applied AFTER any ATR bar so the two
+       compose rather than race. Default 0 -- nothing changes unless asked. */
+    if (this.p.minSwingPct > 0) {
+      highs = byPercentile(highs, bars, atr, strength, this.p.minSwingPct, true);
+      lows = byPercentile(lows, bars, atr, strength, this.p.minSwingPct, false);
+    }
     const highsByConf = bucket(highs, n, strength);
     const lowsByConf = bucket(lows, n, strength);
 
@@ -499,23 +510,72 @@ export class TrendlineEngine {
   }
 }
 
+/** Prominence of a pivot in ATR: the depth of the turn over +/-strength bars. */
+function prominence(bars, atr, strength, i, isHigh) {
+  const a = atr[i];
+  if (!Number.isFinite(a) || a <= 0) return NaN;
+  const lo = Math.max(0, i - strength);
+  const hi = Math.min(bars.length, i + strength + 1);
+  let extreme = isHigh ? Infinity : -Infinity;
+  for (let k = lo; k < hi; k++) {
+    extreme = isHigh ? Math.min(extreme, bars[k].l) : Math.max(extreme, bars[k].h);
+  }
+  return (isHigh ? bars[i].h - extreme : extreme - bars[i].l) / a;
+}
+
 function significant(pivots, bars, atr, strength, minSwingAtr, isHigh) {
   const out = [];
-  const n = bars.length;
   for (const p of pivots) {
-    const i = p.i;
-    const a = atr[i];
-    if (!Number.isFinite(a) || a <= 0) continue;
-    const lo = Math.max(0, i - strength);
-    const hi = Math.min(n, i + strength + 1);
-    let extreme = isHigh ? Infinity : -Infinity;
-    for (let k = lo; k < hi; k++) {
-      extreme = isHigh ? Math.min(extreme, bars[k].l) : Math.max(extreme, bars[k].h);
-    }
-    const depth = isHigh ? bars[i].h - extreme : extreme - bars[i].l;
-    if (depth >= minSwingAtr * a) out.push(p);
+    const d = prominence(bars, atr, strength, p.i, isHigh);
+    if (Number.isFinite(d) && d >= minSwingAtr) out.push(p);
   }
   return out;
+}
+
+/**
+ * Keep the most prominent `100 - pct` percent of pivots.
+ *
+ * WHY THIS EXISTS RATHER THAN A FIXED ATR NUMBER. `minSwingAtr` is a threshold
+ * on prominence measured over a +/-strength window, and that window has a
+ * prominence by construction. Measured over five instrument x timeframe cells:
+ *
+ *     strength 2   median 1.9-2.0 ATR
+ *     strength 3   median 2.3-2.4 ATR
+ *     strength 6   median 3.3-3.5 ATR
+ *
+ * So the documented "useful" settings were nothing of the kind: 0.5 ATR filters
+ * 0.0% of pivots on every cell tested and 1.0 ATR filters 0.8-1.8%. Anyone
+ * turning the knob from 0 to 1 changed nothing and concluded the idea did not
+ * work. Worse, the scale MOVES WITH `strength` -- the same constant is a
+ * different filter at every sensitivity, so one number could never be right
+ * across the menu.
+ *
+ * A PERCENTILE OF THE SERIES' OWN DISTRIBUTION is portable by construction:
+ * `pct = 40` means "drop the least prominent 40% of swings on THIS instrument
+ * at THIS timeframe and THIS strength", which means the same thing on gold and
+ * on yen without re-deriving a constant. That is the conclusion sim/tl/
+ * sensitivity.py already reached for the calibrated path; this brings the raw
+ * parameter into line with it instead of leaving a mis-scaled knob beside a
+ * fixed one.
+ *
+ * CAUSALITY. The percentile is taken over the pivots of the whole series, which
+ * is a property of the SERIES and not of any bar's future -- the same standing
+ * this engine gives `atrSeries`. A walk-forward consumer that wants the
+ * threshold recomputed as it goes should pass the calibrated `sens` instead,
+ * which is what it is for.
+ */
+function byPercentile(pivots, bars, atr, strength, pct, isHigh) {
+  if (!(pct > 0) || !pivots.length) return pivots;
+  const scored = [];
+  for (const p of pivots) {
+    const d = prominence(bars, atr, strength, p.i, isHigh);
+    if (Number.isFinite(d)) scored.push({ p, d });
+  }
+  if (!scored.length) return pivots;
+  const sorted = scored.map((x) => x.d).sort((a, b) => a - b);
+  const cut = sorted[Math.min(sorted.length - 1,
+                              Math.floor(sorted.length * Math.min(pct, 100) / 100))];
+  return scored.filter((x) => x.d >= cut).map((x) => x.p);
 }
 
 function bucket(pivots, n, strength) {

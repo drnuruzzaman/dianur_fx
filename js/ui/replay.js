@@ -44,7 +44,12 @@ import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
 import { calibration, countAsOf, scoreBelief, scoreProjection, stability }
   from '../chart/elliott.js';
 import { cones, coverage, reachRate, stateSeries } from '../chart/cone.js';
-import { nestedSwings } from '../chart/structure.js';
+import { nestedSwings, RING_FROM } from '../chart/structure.js';
+import { tieredZones } from '../chart/zones.js';
+import { liveChannels } from '../chart/channels.js';
+import { detect as detectMS, BULL } from '../chart/marketstructure.js';
+import { atrSeries } from '../chart/tlengine.js';
+import { replayAuto, openReplayAutoMenu } from './replayauto.js';
 import { swingEngineRows } from './swingreadout.js';
 
 const TFS = ['5m', '15m', '1h', '4h', '1d'];
@@ -537,7 +542,8 @@ export class ElliottReplay {
           if (this.chart) this._apply({ keepPeek: true });
         }).catch(() => {});
       }
-      this.chart.setNewsMarks(newsUpTo(this._news, slice[slice.length - 1].t));
+      this.chart.setNewsMarks(replayAuto().news
+        ? newsUpTo(this._news, slice[slice.length - 1].t) : []);
     } catch { this.chart.setNewsMarks([]); }
     /* THE CHART HOLDS THE WHOLE SERIES; the BELIEF is computed from `slice`.
        That is the entire separation, and it is one line apart on purpose so it
@@ -616,9 +622,50 @@ export class ElliottReplay {
        sessions incomparable. */
     try {
       const slice = this.full.slice(0, this.i + 1);
-      this.swings = slice.length >= 40 ? nestedSwings(slice, { sens: 'normal' }) : [];
+      const a = replayAuto();
+      const long = slice.length >= 40;
+      const rings = long ? nestedSwings(slice, { sens: 'normal' }) : [];
+      this.swings = a.on && a.swings ? rings : [];
       this.chart.setSwings(this.swings);
-    } catch { this.swings = []; this.chart.setSwings([]); }
+
+      /* THE REST OF THE STRUCTURE, which this surface never drew.
+         An Elliott count is a claim about which turns matter, and it was being
+         judged against swing dots alone -- so the reader had to hold the S/R
+         bands, the corridor and the structure breaks in their head, or open the
+         other replay and lose the count. Every one of these runs on the SAME
+         causal `slice` as the count itself, so nothing here can see past the
+         cursor. */
+      this.chart.setZigzag(a.on && a.zigzag
+        ? rings.filter((x) => (x.rank || 0) >= RING_FROM.normal) : []);
+      this.chart.setZones(a.on && a.zones && long
+        ? tieredZones(slice, this.tf) : []);
+      this.chart.setChannels(a.on && a.channels && long
+        ? liveChannels(slice, this.tf) : []);
+
+      if (a.on && a.ms && long) {
+        const r = detectMS(slice, {});
+        const atr = atrSeries(slice, 14);
+        const ringKeys = new Set(rings
+          .filter((x) => (x.rank || 0) >= RING_FROM.normal)
+          .map((x) => x.i + '|' + x.isHigh));
+        for (const e of r.events) {
+          const v = atr[e.i];
+          e.dispAtr = (v > 0 && slice[e.i])
+            ? Math.abs(slice[e.i].c - e.level) / v : NaN;
+          /* Weighted on the RING, like both other charts -- see the BOS/CHoCH
+             section in the README for why `external` lost that job. */
+          e.ringed = ringKeys.has(e.levelI + '|' + (e.direction === BULL));
+        }
+        this.chart.setMsEvents(r.events.slice(-12));
+      } else {
+        this.chart.setMsEvents([]);
+      }
+    } catch {
+      this.swings = [];
+      this.chart.setSwings([]); this.chart.setZigzag([]);
+      this.chart.setZones([]); this.chart.setChannels([]);
+      this.chart.setMsEvents([]);
+    }
 
     this.chart.draw();
     this._frame();
@@ -1067,8 +1114,18 @@ export class ElliottReplay {
   /* ------------------------------------------------------------------- UI */
 
   _buildBar() {
-    const btn = (label, title, fn) => {
-      const b = el('button', { class: 'rp-btn', title }, label);
+    /* CLEAR FIRST. This used to assume it was called exactly once, and it was
+       -- until the Auto TL menu needed the bar redrawn so its own button could
+       show the new state. Every menu click then APPENDED a second toolbar, and
+       a few clicks buried the chart under stacked copies of itself.
+       js/ui/strategyreplay.js has always cleared here; this is the same line.
+       A builder that cannot be called twice is a latent bug whether or not
+       anything calls it twice yet. */
+    this.bar.innerHTML = '';
+    /* `cls` matches the strategy replay's helper, so a variant used on one
+       toolbar is available on the other without a second way of doing it. */
+    const btn = (label, title, fn, cls = '') => {
+      const b = el('button', { class: 'rp-btn' + (cls ? ' ' + cls : ''), title }, label);
       b.addEventListener('click', fn);
       return b;
     };
@@ -1149,6 +1206,15 @@ export class ElliottReplay {
       this.symInput,
       sel(TFS, this.tf, (v) => { this.tf = v; this.load(); }),
       this.dateInput,
+      /* Same menu, same storage, same defaults as the strategy replay -- the
+         two are one setting because they are one kind of surface. */
+      (this.autoBtn = btn('⌑ Auto TL', 'Overlays on this replay',
+        /* A getter: `_buildBar` replaces this button, so a captured
+           reference would be detached when the menu re-opens. */
+        () => openReplayAutoMenu(() => this.autoBtn, () => {
+          this._buildBar();
+          this._apply({ keepPeek: true });
+        }))),
       this.stepBackBtn, this.backBtn, this.playBtn, this.stepFwdBtn, this.endBtn,
       sel(SPEEDS.map((x) => x.label), SPEEDS[1].label, (v) => {
         this.speed = (SPEEDS.find((x) => x.label === v) || SPEEDS[1]).ms;
@@ -1158,8 +1224,8 @@ export class ElliottReplay {
       this.peekBtn,
       (this.recBtn = btn('⏺ Rec', 'Record every step; press again to write it '
         + 'to data/replays/', () => this.toggleRecord())),
-      btn('⤓ PNG', 'Save the chart AND this panel as one image',
-        () => this.snapshot()),
+      (this.pngBtn = btn('📷', 'Save the chart AND this panel as one image',
+        () => this.snapshot(), 'rp-icon')),
       el('span', { class: 'rp-sep' }),
       el('span', { class: 'rp-lbl' }, 'horizon'),
       sel(HORIZONS, this.horizon, (v) => { this.horizon = Number(v); }),
@@ -1169,6 +1235,9 @@ export class ElliottReplay {
         () => this._paintScore(this.scoreSweep())),
       this.status,
     );
+    /* An icon with no text beside it has no accessible name of its own; the
+       tooltip is a hover affordance, not a label. */
+    this.pngBtn.setAttribute('aria-label', 'Save the chart and panel as an image');
   }
 
   _paintBar() {

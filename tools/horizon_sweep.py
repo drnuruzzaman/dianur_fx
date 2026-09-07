@@ -61,11 +61,25 @@ OOS_START, OOS_END = '2016-01-01', '2020-12-31'
 #: broker's first day. Blanket-starting gold at 2018 threw away two real years
 #: at 4h and 1h, which dropped 4h N=20 out of sample from 207 trades to 131 and
 #: failed it on the >=200 sample gate. The gate was right; the window was not.
+#: FIRST REAL BAR PER GOLD CELL. These dates existed because the archive held
+#: coarser bars mislabelled at the requested timeframe -- 2016 was 0% true 15m
+#: gaps, 2017 was 83% -- so a blanket 2018-01-01 was the safe cut.
+#:
+#: THE ARCHIVE ITSELF WAS FIXED on 2026-09-07 (see data/_quarantine/bars and
+#: tools/bars_manifest.py): the mislabelled files are quarantined and the coarse
+#: prefixes trimmed, so gold's fast frames now START at their first real bar and
+#: measure 98.9-99.9% true gaps from it. Holding 2018-01-01 would now throw away
+#: the valid second half of 2017 -- the same mistake this map's own comment
+#: records for 4h and 1h, which lost two real years to a blanket cut.
+#:
+#: Kept rather than deleted because the intent is worth stating: a cell should
+#: start where its data is real, and `tools/bars_manifest.py --write` is what
+#: says where that is.
 FIRST_REAL = {
-    ('XAUUSD.a', '30m'): '2018-01-01',    # 2016 is 0% true 30m gaps, 2017 70%
-    ('XAUUSD.a', '15m'): '2018-01-01',    # 2016 0%, 2017 83%
-    ('XAUUSD.a', '5m'): '2018-01-01',     # 2016 0%, 2017 93%
-    ('XAUUSD.a', '1m'): '2018-01-01',
+    ('XAUUSD.a', '30m'): '2017-06-12',
+    ('XAUUSD.a', '15m'): '2017-06-12',
+    ('XAUUSD.a', '5m'): '2017-06-12',
+    ('XAUUSD.a', '1m'): '2017-06-12',
 }
 
 

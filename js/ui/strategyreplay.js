@@ -46,6 +46,7 @@
 import { api } from '../api.js';
 import { Chart } from '../chart/engine.js';
 import { AUTO_DEFAULTS, BAR_COUNT, TF, TF_MS, resolveAuto, el, hhmm, px, seekBar, ymd, ymdToMs } from '../util.js';
+import { replayAuto, openReplayAutoMenu } from './replayauto.js';
 import { toast } from './menu.js';
 import { tip } from './tips.js';
 import { openAudio, pickMime } from './recaudio.js';
@@ -60,11 +61,11 @@ import {
 import { displayLevels } from '../chart/levels.js';
 import { trailOption } from '../chart/trailmode.js';
 import { structuralTrail } from '../chart/exittrail.js';
-import { detect as detectMS, DEFAULT_MS_PARAMS } from '../chart/marketstructure.js';
+import { detect as detectMS, DEFAULT_MS_PARAMS, BULL } from '../chart/marketstructure.js';
 import { swingPoints, nestedSwings } from '../chart/structure.js';
 import { swingEngineRows } from './swingreadout.js';
 import { atrSeries, liveLines, DEFAULT_PARAMS as TL_DEFAULTS } from '../chart/tlengine.js';
-import { liveZones, DEFAULT_ZONE_PARAMS } from '../chart/zones.js';
+import { tieredZones, DEFAULT_ZONE_PARAMS } from '../chart/zones.js';
 import { liveSDZones } from '../chart/supplydemand.js';
 import { liveChannels } from '../chart/channels.js';
 import { build as buildSegments } from '../chart/segments.js';
@@ -608,7 +609,8 @@ export class StrategyReplay {
     /* SCHEDULED RELEASES, up to the cursor and no further. Marking a print the
        walk has not reached yet would put tomorrow's news beside today's signal,
        which is the same violation as drawing tomorrow's swing. */
-    this.chart.setNewsMarks(newsUpTo(this._news, slice[slice.length - 1].t));
+    this.chart.setNewsMarks(replayAuto().news
+      ? newsUpTo(this._news, slice[slice.length - 1].t) : []);
 
     /* Closed trades as ribbons, coloured by outcome and labelled with the R
        they actually returned -- the sequence is the thing a summary hides. */
@@ -722,8 +724,10 @@ export class StrategyReplay {
       levels: this.levels,
       entry: sig.position ? sig.position.entryPrice
         : (sig.pending ? sig.pending.signalPrice : NaN),
-      /* THE STOP SIZES THE MONEY -- see js/chart/engine.js ACCOUNT. Without it
-         the tags fall back to prices only. */
+      /* THE STOP IS THE SL TAG'S OWN DISTANCE, and nothing else's. It sized
+         every money figure on the plan under the old R model; at a fixed 0.05
+         lots -- see js/chart/engine.js ACCOUNT -- a level pays what its
+         distance is worth and the stop prices only itself. */
       stop: sig.position ? sig.position.stop
         : (sig.pending ? sig.pending.stop : NaN),
       tickSize: this.spec ? (this.spec.tick_size || this.spec.point || 0) : 0,
@@ -888,6 +892,19 @@ export class StrategyReplay {
         if (!ok) this.status.textContent = 'symbol picker unavailable';
       }, 'rp-symbtn');
 
+    /* AUTO TL, the replay's own. The live chart's button is in the top toolbar
+       and does not reach this surface; putting one here is what makes the
+       overlays adjustable while reading a walk, which is when the question
+       actually comes up. */
+    this.autoBtn = btn('⌑ Auto TL', 'Overlays on this replay',
+      /* A GETTER, not the click target. `_buildBar` below replaces this very
+         button, so a captured reference is detached by the time the menu
+         re-opens -- see js/ui/replayauto.js. */
+      () => openReplayAutoMenu(() => this.autoBtn, () => {
+        this._buildBar();          // re-render so the button's state is current
+        this._apply({ keepPeek: true });
+      }));
+
     /* TWO PLAY BUTTONS, one per direction, each of which is also its own stop.
        A single toggle could not say WHICH way it was running, and a separate
        stop button is a third thing to aim at for something the running button
@@ -942,9 +959,10 @@ export class StrategyReplay {
       'Record the walk — video of the chart and panel, plus a JSON ledger, '
       + 'written to data/replays/. Press again to stop and save.',
       () => this.toggleRecord());
-    this.pngBtn = btn('⤓ PNG',
+    this.pngBtn = btn('📷',
       'Save the chart AND this panel as one image',
-      () => this.snapshot());
+      () => this.snapshot(), 'rp-icon');
+    this.pngBtn.setAttribute('aria-label', 'Save the chart and panel as an image');
     this.status = el('span', { class: 'rp-status' });
 
     this.bar.append(
@@ -972,6 +990,11 @@ export class StrategyReplay {
          The transport that follows is a different kind of control -- it moves
          within the window these two chose. */
       this.dateInput,
+      /* AUTO TL sits with the two SELECTORS, not with the transport. It
+         changes what you are looking at, like the symbol and timeframe do;
+         the transport moves where you are looking. Mixing the two kinds is
+         what makes a toolbar unreadable. */
+      this.autoBtn,
       /* Mirror-symmetric about the middle: step back, play back, play
          forward, step forward, run to the end. The single-bar steps sit
          OUTSIDE the play pair so the two transports never sit adjacent --
@@ -1569,7 +1592,26 @@ export class StrategyReplay {
        constant: global defaults, then the per-instrument override, then the
        per-timeframe one. Reading the same saved state is the only way the two
        surfaces stay in step once anyone touches the AUTO TL menu. */
-    const auto = resolveAuto(this.symbol, this.tf, AUTO_DEFAULTS);
+    /* THE OVERLAY TOGGLES ARE THE REPLAY'S OWN; the DETECTOR PARAMETERS are
+       still the instrument's. See js/ui/replayauto.js: a proving surface whose
+       overlays follow whatever the live chart was last set to makes two
+       sessions incomparable, but a replay that DETECTED differently would stop
+       proving the thing that ships. So `htf`, `minDraw` and `sens` come from
+       the instrument and what is drawn comes from the replay. */
+    const inst = resolveAuto(this.symbol, this.tf, AUTO_DEFAULTS);
+    const ra = replayAuto();
+    const auto = {
+      ...inst,
+      htf: inst.htf, minDraw: inst.minDraw, sens: inst.sens,
+      maxLines: ra.maxLines,
+      /* `on` off draws none of it, the same as the live chart's own On/Off. */
+      zones: ra.on && ra.zones,
+      channels: ra.on && ra.channels,
+      swings: ra.on && ra.swings,
+      ms: ra.on && ra.ms,
+      zigzag: ra.on && ra.zigzag,
+      sdZones: ra.on && inst.sdZones,
+    };
     this.sens = auto.sens || AUTO_DEFAULTS.sens;
     const sens = SENSITIVITY[this.sens] || SENSITIVITY.normal;
 
@@ -1597,20 +1639,67 @@ export class StrategyReplay {
     const sources = auto.htf || AUTO_DEFAULTS.htf;
     const MAJOR = SENSITIVITY.major.strength;
 
+    /* THE RING TIER, computed once and used twice -- to weight the BOS/CHoCH
+       marks below and to draw the ZigZag further down. Unconditional, because
+       the weighting is a statement about the BREAK and must not change when a
+       reader hides the swing dots. */
+    let ringed = [];
+    try {
+      ringed = slice.length >= 40
+        ? nestedSwings(slice, { sens: 'normal' }).filter((x) => (x.rank || 0) >= 1)
+        : [];
+    } catch { ringed = []; }
+    const ringKeys = new Set(ringed.map((x) => x.i + '|' + x.isHigh));
+
     try {
       const r = (auto.ms !== false && slice.length >= 40)
         ? detectMS(slice, { strength }) : null;
       if (r && r.events && r.events.length) {
-        /* `external` marks a break that the MAJOR pass also saw -- the same
-           second-pass trick main.js uses, matched on the broken level's bar
-           rather than the breaking bar, because the two passes can notice one
-           break a bar apart while agreeing which swing was taken. */
+        /* DISPLACEMENT. Set here for the first time: the live chart computed
+           `dispAtr` and this surface never did, so every mark on the replay was
+           drawn as marginal regardless of how hard it broke. Same formula as
+           js/main.js -- |close - level| in ATR at the breaking bar. */
+        const a = atrSeries(slice, 14);
+        for (const e of r.events) {
+          const v = a[e.i];
+          e.dispAtr = (v > 0 && slice[e.i])
+            ? Math.abs(slice[e.i].c - e.level) / v : NaN;
+        }
+
+        /* THE WEIGHT IS THE RING NOW, NOT `external`, AND THAT IS A MEASURED
+           SWAP. `external` -- the strength-6 pass broke this level too -- is
+           what shipped and what the live chart still uses. Two tools say it is
+           the wrong axis:
+
+             tools/external_ring_agree.mjs   the two labels are NESTED, not
+               parallel: ~80% of ringed breaks are external, ~18% of external
+               breaks are ringed, kappa 0.20 in all eight cells. The ring is
+               about 4x the stricter test.
+             tools/break_arm_eval.mjs        against matched candles, over six
+               cells, EXT-ONLY is the WORST of three disjoint arms at H=20 and
+               H=40 -- worse than the breaks the chart de-weights -- negative in
+               two cells and sign-flipping across eras. RINGED is +3.6 / +4.3 /
+               +3.7 pp at H=10/20/40, positive in all six cells and all twelve
+               era-cells, and survives a same-displacement cut in all four
+               bands, so it is not displacement wearing another name.
+
+           `external` is still computed and still carried: it is what the live
+           chart draws, and dropping it here would make the two surfaces differ
+           in the data rather than in the reading of it. The MAJOR pass also
+           feeds nothing else, so it stays cheap. */
         if (strength < MAJOR) {
           const major = detectMS(slice, { strength: MAJOR });
           const levels = new Set(major.events.map((e) => e.levelI));
           for (const e of r.events) e.external = levels.has(e.levelI);
         } else {
           for (const e of r.events) e.external = true;
+        }
+        /* A bullish break takes a swing HIGH, a bearish one a swing LOW, so the
+           kind is part of the key. Matched on the broken level's bar for the
+           same reason `external` is: two layers can notice one break a bar
+           apart while agreeing entirely about which swing was taken. */
+        for (const e of r.events) {
+          e.ringed = ringKeys.has(e.levelI + '|' + (e.direction === BULL));
         }
         this.chart.setMsEvents(r.events.slice(-12));
       } else {
@@ -1669,9 +1758,14 @@ export class StrategyReplay {
      * tools/swing_audit.mjs proves the walk cannot see past it.
      */
     try {
-      const zz = (auto.swings !== false && slice.length >= 40)
-        ? nestedSwings(slice, { sens: 'normal' }).filter((s) => (s.rank || 0) >= 1)
-        : [];
+      /* `ringed` was computed above, before the BOS/CHoCH block that weights on
+         it. Recomputing it here would be a second nestedSwings walk over the
+         same slice and, worse, a second definition that could drift. */
+      /* ITS OWN TOGGLE NOW. It used to ride on `swings`, so hiding the dots
+         also removed the line joining them -- which is backwards: the line is
+         the more readable of the two and the one worth keeping when the dots
+         get busy. */
+      const zz = auto.zigzag !== false ? ringed : [];
       this.zigzag = zz;
       this.chart.setZigzag(zz);
     } catch { this.zigzag = []; this.chart.setZigzag([]); }
@@ -1691,9 +1785,21 @@ export class StrategyReplay {
      * the cursor, so the "later" it could learn from does not exist yet. The
      * same argument covers every detector on this chart, and it is the reason
      * all of them are given the slice rather than the series. */
+    /* THE TIER LADDER, and it is here rather than on the live chart because
+       that is the rule this surface exists for. `tieredZones` runs the same
+       detector at 100 / 500 / 1500 bars and keeps two bands from each, so the
+       count on screen is the six the chart already drew -- but the six now
+       mean three different distances instead of being the top six of about ten
+       by a score that forecasts nothing. tools/zone_lookback_sweep.mjs is the
+       measurement: at lookback 500 the cap of six BOUND ON 72-80% OF BARS
+       across all six cells tested, so most of the time the discarded four were
+       thrown away arbitrarily.
+
+       The live chart calls the same function now -- it was proved here first,
+       which is what this surface is for, and then brought across on request. */
     try {
       this.chart.setZones(auto.zones !== false && slice.length >= 40
-        ? liveZones(slice, this.tf, { strengthPivots: zoneStrength })
+        ? tieredZones(slice, this.tf, { strengthPivots: zoneStrength })
         : []);
     } catch { this.chart.setZones([]); }
 

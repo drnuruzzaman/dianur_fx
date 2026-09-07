@@ -17,6 +17,17 @@ project folder:
 
     GET  /workspace   ->  configs/workspace.json, or {} when there is none
     PUT  /workspace   <-  {set: {...}, del: [...]}, merged into the file
+    GET  /alerts      ->  configs/alerts.json, or {} when there is none
+    PUT  /alerts      <-  the whole object, REPLACED not merged
+
+WHY ONE MERGES AND THE OTHER DOES NOT. The workspace is a scatter of
+independent keys and a client must never assert what it lacks -- a browser with
+cleared storage would otherwise overwrite the durable copy with its own
+emptiness. `/alerts` is a short LIST the user edits AS a list, where removing a
+row IS the edit, so a merge would make deletion impossible without inventing a
+delete protocol for array elements. Its safety is a shape check instead: a body
+with no `signals.watch` array is refused, and the previous file is kept as
+`.prev` before every replace.
 
 REPLAY RECORDINGS. A browser download would put the file wherever the browser
 puts downloads, which is not the project, and the point of a recorded replay is
@@ -57,6 +68,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # browser storage only. That matters more here than it did under data/,
 # because configs/ is tracked by git and data/ is not.
 WORKSPACE = os.path.join(ROOT, 'configs', 'workspace.json')
+ALERTS = os.path.join(ROOT, 'configs', 'alerts.json')
 REPLAYS = os.path.join(ROOT, 'data', 'replays')
 # Soundtracks a replay recording can be muxed with. Files go in BY HAND -- there
 # is no upload endpoint and there is not going to be one. Whatever sits here
@@ -119,6 +131,14 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
                 # a corrupt file must not look like "no settings": say so, and
                 # let the client keep whatever it already has
                 return self._json(500, {'error': str(exc)})
+        if self.path.split('?')[0] == '/alerts':
+            try:
+                with io.open(ALERTS, encoding='utf-8') as fh:
+                    return self._json(200, json.load(fh))
+            except FileNotFoundError:
+                return self._json(200, {})
+            except Exception as exc:
+                return self._json(500, {'error': str(exc)})
         return SimpleHTTPRequestHandler.do_GET(self)
 
     def do_POST(self):
@@ -175,7 +195,51 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             return self._json(500, {'error': str(exc)})
 
+    def _put_alerts(self):
+        """Replace configs/alerts.json wholesale.
+
+        WHOLESALE, NOT MERGED, WHICH IS THE OPPOSITE OF /workspace. That file is
+        a scatter of independent keys and a client must not assert what it
+        lacks. This one is a SHORT LIST the user is editing as a list: removing
+        a row IS the edit, and a merge would make deletion impossible without
+        inventing a `del` protocol for array elements.
+
+        The safety that matters here is different, so it is enforced instead:
+        the body must contain a `signals.watch` ARRAY, so a half-built or empty
+        request cannot blank the file. And the previous version is kept as
+        `.prev` before the replace, because the UI is the only writer and a bad
+        save would otherwise be unrecoverable -- the same guard `/workspace`
+        earned the hard way.
+        """
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+            if n <= 0 or n > MAX_BODY:
+                return self._json(400, {'error': 'bad length'})
+            body = json.loads(self.rfile.read(n).decode('utf-8'))
+            if not isinstance(body, dict):
+                return self._json(400, {'error': 'expected an object'})
+            watch = (body.get('signals') or {}).get('watch')
+            if not isinstance(watch, list):
+                return self._json(400, {'error': 'signals.watch must be an array'})
+
+            try:
+                if os.path.exists(ALERTS):
+                    shutil.copyfile(ALERTS, ALERTS + '.prev')
+            except OSError:
+                pass                      # a missing backup is not a reason to refuse
+
+            tmp = ALERTS + '.tmp'
+            with io.open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(body, fh, indent=2, sort_keys=False)
+                fh.write(chr(10))
+            os.replace(tmp, ALERTS)
+            return self._json(200, {'ok': True, 'cells': len(watch)})
+        except Exception as exc:
+            return self._json(500, {'error': str(exc)})
+
     def do_PUT(self):
+        if self.path.split('?')[0] == '/alerts':
+            return self._put_alerts()
         if self.path.split('?')[0] != '/workspace':
             return self._json(404, {'error': 'not found'})
         try:

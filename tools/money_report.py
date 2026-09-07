@@ -44,9 +44,15 @@ from sim.strategies.scaleout import WithScaleOut
 
 ERAS = [('OOS 2016-2020', '2016-01-01', '2021-01-01'),
         ('IS  2021-2026', '2021-01-01', None)]
-#: gold intraday is thin before 2018 -- the same rule tools/horizon_sweep.py uses
-FIRST_REAL = {('XAUUSD.a', '30m'): '2018-01-01', ('XAUUSD.a', '15m'): '2018-01-01',
-              ('XAUUSD.a', '5m'): '2018-01-01', ('XAUUSD.a', '1m'): '2018-01-01'}
+#: Gold's fast frames start at their first real bar -- see the note in
+#: tools/horizon_sweep.py. Was 2018-01-01 while the archive held
+#: mislabelled coarse bars; the archive was fixed 2026-09-07.
+FIRST_REAL = {
+    ('XAUUSD.a', '30m'): '2017-06-12',
+    ('XAUUSD.a', '15m'): '2017-06-12',
+    ('XAUUSD.a', '5m'): '2017-06-12',
+    ('XAUUSD.a', '1m'): '2017-06-12',
+}
 VARIANTS = [('baseline', None, None), ('1.5R x 25%', 1.5, 0.25),
             ('2R x 20%', 2.0, 0.20), ('2R x 25%', 2.0, 0.25)]
 BIG = 1_000_000.0

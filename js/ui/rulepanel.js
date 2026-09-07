@@ -238,23 +238,24 @@ export class RulePanel {
   }
 
   /**
-   * What that move pays FOR THE RISK TAKEN, on the stated account.
+   * What that move is worth on the stated position.
    *
    * `levelCash` is imported rather than reimplemented, and that is the whole
    * design of this method: the chart tags and these rows quote the same
    * levels, so a second copy of the arithmetic here is a guarantee that one
    * day they disagree and nothing on screen says which is stale. This once
    * held its own copy of the 0.05-lot constant with a comment asking the two
-   * to be kept in step by hand.
+   * to be kept in step by hand -- the size is back, the second copy is not.
    *
-   * `risk` is the stop distance -- the number that sizes the position and so
-   * every figure derived from it. Empty when it is unknown, which is the
-   * honest degradation: the row still shows the price and the distance.
+   * NO `risk` PARAMETER ANY MORE. Under the R model the stop distance sized
+   * every figure here; at a fixed size it sizes none of them. Empty when the
+   * contract spec is unknown, which is the honest degradation: the row still
+   * shows the price and the distance.
    */
-  _cash(diff, risk) {
+  _cash(diff) {
     const sp = this.spec;
     if (!sp || !Number.isFinite(diff)) return '';
-    const pays = levelCash(diff, risk, sp.tick_size || sp.point || 0);
+    const pays = levelCash(diff, sp.tick_size || sp.point || 0, sp.tick_value || 0);
     return pays === null ? '' : `$${Math.round(pays)}`;
   }
 
@@ -684,12 +685,10 @@ export class RulePanel {
          now, money from entry -- which nothing about the label revealed. */
       const from = sig.position ? sig.position.entryPrice
         : (sig.pending ? sig.pending.signalPrice : NaN);
-      /* The stop distance sizes every money figure below -- see ACCOUNT in
-         js/chart/engine.js. Taken entry-to-stop like the chart's, so the row
-         and the tag can never disagree about what a level pays. */
-      const stop = sig.position ? sig.position.stop
-        : (sig.pending ? sig.pending.stop : NaN);
-      const risk = Math.abs(from - stop);
+      /* `from` is the fill, and every distance and money figure below is
+         measured from it -- entry-to-level, like the chart's tags, so the row
+         and the tag can never disagree about what a level pays. The stop is no
+         longer read: at a fixed 0.05 lots it does not size anything here. */
       for (const lv of this.levels) {
         const row = el('div', { class: 'rp-row' });
         row.appendChild(el('span', { class: 'rp-k' }, lv.key));
@@ -697,7 +696,7 @@ export class RulePanel {
         const bits = [];
         const away = this._pips(lv.price - from);
         if (away) bits.push(away);
-        const cash = this._cash(lv.price - from, risk);
+        const cash = this._cash(lv.price - from);
         if (cash) bits.push(cash);
         /* DISTANCE AND MONEY ONLY. The row used to end with what the level IS
            -- "demand zone, fresh", "LH high" -- and that was removed by

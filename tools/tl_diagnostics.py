@@ -34,7 +34,24 @@ def main():
     ap.add_argument('--tol-atr', type=float, default=None,
                     help='override the engine touch/break tolerance')
     ap.add_argument('--min-swing-atr', type=float, default=None,
-                    help='override the minimum pivot swing magnitude')
+                    help=('raw ATR prominence bar. MIS-SCALED BY NATURE: '
+                          'prominence is measured over a +/-strength window '
+                          'whose median is 1.9-3.5 ATR depending on strength, '
+                          'so 0.5 filters 0%% of pivots and 1.0 filters under '
+                          '2%%. The published sweep of this parameter was '
+                          'therefore a sweep of nothing. Prefer '
+                          '--min-swing-pct.'))
+    ap.add_argument('--min-swing-pct', type=float, default=None,
+                    help=('drop the least prominent N%% of pivots, as a '
+                          'percentile of THIS series own distribution. '
+                          'Portable across instruments and across strength '
+                          'settings, which a fixed ATR number cannot be.'))
+    ap.add_argument('--min-quality', type=float, default=None,
+                    help=('override the quality floor. The shipped default is '
+                          '90, chosen because sub-80 lines were measured to be '
+                          'WORSE than a placebo; the era table in the README '
+                          'may predate it, which is the first thing to check '
+                          'when a baseline here does not reproduce.'))
     ap.add_argument('--move-atr', type=float, default=1.0)
     ap.add_argument('--horizon', type=int, default=48)
     ap.add_argument('--out', default=None)
@@ -45,6 +62,10 @@ def main():
         kw['tol_atr'] = args.tol_atr
     if args.min_swing_atr is not None:
         kw['min_swing_atr'] = args.min_swing_atr
+    if getattr(args, 'min_swing_pct', None) is not None:
+        kw['min_swing_pct'] = args.min_swing_pct
+    if getattr(args, 'min_quality', None) is not None:
+        kw['min_quality'] = args.min_quality
     params = Params(**kw)
     dp = DiagParams(move_atr=args.move_atr, horizon=args.horizon)
 
@@ -59,6 +80,10 @@ def main():
     for symbol in args.symbols.split(','):
         for tf in args.tfs.split(','):
             bars = load(symbol, tf, args.start, args.end)
+            if not len(bars):
+                # e.g. XAUUSD on any era before 2016 -- see data/_quarantine.
+                print('  %-10s %-4s no bars in range' % (symbol, tf))
+                continue
             ev, _ = run(bars, tf, params, dp)
             # approaches only: this gate asks whether a line is a special place
             # to arrive at. What happens after it breaks is a different question

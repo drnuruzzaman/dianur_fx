@@ -6,7 +6,12 @@
 <title>DiaNurFx — Charts</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@300;400;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Roboto Mono carries 700 because the CSS asks for it. Without the face,
+     browsers SYNTHESISE bold by dilating the 400 stems, which at the 11.5px
+     the menu chips and the calendar use looks smeared rather than heavy --
+     reported as "hazy". `document.fonts.check("700 12px Roboto Mono")`
+     returns true either way, so it cannot be used to detect this. -->
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@300;400;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/app.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='13' height='13' fill='%23171C8F'/%3E%3Crect x='17' y='2' width='13' height='13' fill='%23FF9E1B'/%3E%3Crect x='2' y='17' width='13' height='13' fill='%2393C90F'/%3E%3Crect x='17' y='17' width='13' height='13' fill='%23E31C79'/%3E%3C/svg%3E">
 </head>
@@ -36,7 +41,7 @@
     <button class="tb" id="drawBtn" title="Drawing tools">✎ Draw</button>
     <button class="tb" id="autoBtn" title="Algorithmic trendlines (l)">⌑ Auto TL</button>
     <button class="tb" id="layoutBtn" title="Chart layout">▦ Layout</button>
-    <button class="tb" id="snapBtn" title="Snapshot, snapshot with panel info, or share">⤓ Snapshot ▾</button>
+    <button class="tb" id="snapBtn" title="Snapshot, snapshot with panel info, or share">📷 Snapshot ▾</button>
   </div>
 
   <div class="spacer"></div>
@@ -153,6 +158,46 @@
     <input id="searchInput" type="text" placeholder="Search symbol — EURUSD, XAUUSD, US30…" autocomplete="off" spellcheck="false">
     <div class="results" id="searchResults"></div>
     <div class="modal-foot"><kbd>↑</kbd><kbd>↓</kbd> move <kbd>↵</kbd> select <kbd>esc</kbd> close</div>
+  </div>
+</div>
+
+<!-- ALERT SETTINGS. Written to configs/alerts.json, which the two Telegram
+     schedulers read on every poll -- so a change here takes effect on the next
+     minute with nothing restarted. The file is the source of truth; this modal
+     is one way to edit it and a text editor is the other. -->
+<div class="modal" id="alertsModal" hidden>
+  <div class="modal-box alerts-box">
+    <div class="alerts-head">Alert settings</div>
+    <div class="alerts-body">
+      <label class="alerts-row">
+        <input type="checkbox" id="alNews">
+        <span>Macro release alerts</span>
+        <span class="alerts-badge" id="alNewsState"></span>
+      </label>
+      <div class="alerts-sub">
+        <label>warn <input type="number" id="alNewsLead" min="1" max="240" step="1"> min before</label>
+        <label>impact
+          <select id="alNewsImpact">
+            <option value="any">any</option>
+            <option value="high">high only</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="alerts-head2">
+        Signal alerts
+        <span class="alerts-badge" id="alCount"></span>
+      </div>
+      <div class="alerts-hint">Click a timeframe to switch it on or off.</div>
+      <div id="alCells" class="alerts-cells"></div>
+      <button id="alAdd" class="btn alerts-addbtn">+ Add instrument…</button>
+    </div>
+    <div class="modal-foot">
+      <span id="alStatus" class="alerts-status"></span>
+      <span class="alerts-spacer"></span>
+      <button id="alCancel" class="btn">Cancel</button>
+      <button id="alSave" class="btn primary">Save</button>
+    </div>
   </div>
 </div>
 

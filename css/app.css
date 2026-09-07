@@ -630,6 +630,72 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
   text-transform:uppercase; color:var(--text-faint)}
 .menu .swatch{width:9px; height:9px; border-radius:2px; flex:none}
 
+/* SEGMENTED ROW -- one label, its choices on one line. Used for "lines per
+   side" in both Auto TL menus; see the note in js/ui/menu.js for why a small
+   pick-exactly-one set is not a stack of ticks. */
+.menu .seg-row{padding:5px 9px 6px}
+.menu .seg-cap{font-size:9.5px; letter-spacing:2.5px; text-transform:uppercase;
+  color:var(--text-faint); margin-bottom:5px}
+/* The track is the border, the buttons are not. Four separately outlined chips
+   read as four controls; one outlined strip divided into four reads as one
+   control with a current position, which is what it is. */
+.menu .seg{display:flex; gap:1px; background:var(--line-soft);
+  border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.menu .seg-btn{
+  /* width:auto beats the full-width `.menu button` rule above; flex:1 makes
+     every segment the same size, so the strip does not jump when the widths of
+     the labels differ. */
+  width:auto; flex:1 1 0; justify-content:center; padding:5px 0;
+  border-radius:0; background:var(--surface); font-family:var(--mono);
+  font-size:12px; color:var(--text-faint);
+  transition:background .12s ease, color .12s ease;
+}
+.menu .seg-btn:hover{background:var(--surface-2); color:var(--text)}
+/* The selected segment is filled, not ticked. A tick inside a segment would be
+   two ways of saying the same thing and would shift the label off centre.
+
+   THE FILL IS OPAQUE, and that is the fix for text that read as "hazy". The
+   selected label was never short of contrast -- measured at 13:1 against its
+   own background -- but it sat on `--accent-soft`, a 16% pink over whatever is
+   behind it, and translucent colour under small bright text muddies the stems.
+   A flat colour of the same hue costs nothing and renders cleanly. (The other
+   half of that fix is in index.html: Roboto Mono had no 700 face, so `bold`
+   here was SYNTHESISED by dilating the 400 stems, which at 11.5px is exactly
+   what "hazy" looks like.) */
+.menu .seg-btn.on{background:#3d1234; color:#fff; font-weight:700}
+.menu .seg-btn.on:hover{background:#4a1640}
+
+/* CHIP ROW -- the multi-select sibling of .seg. Every chip carries its OWN
+   border and there are gaps between them, because these are several
+   independent controls rather than one control with a position. That is the
+   whole visual distinction from the segmented strip above, and it is doing
+   real work: the two rows sit a few pixels apart in the same menu. */
+.menu .chips{display:flex; flex-wrap:wrap; gap:4px}
+.menu .chip-btn{
+  width:auto; flex:0 0 auto; justify-content:center; padding:4px 9px;
+  background:var(--surface); border:1px solid var(--line); border-radius:3px;
+  font-family:var(--mono); font-size:11.5px; color:var(--text-faint);
+  transition:background .12s ease, color .12s ease, border-color .12s ease;
+}
+.menu .chip-btn:hover{background:var(--surface-2); color:var(--text)}
+/* THE SELECTED CHIP KEEPS THE ORDINARY BORDER. It used to take an accent one,
+   which made the two rows disagree about what "selected" looks like a few
+   pixels apart -- a filled segment above, a filled AND outlined chip below. The
+   fill is the state in both. What still separates the rows is what each border
+   encloses: one track around all four segments, one border per chip. That is
+   the structural difference (pick one vs pick any), and it survives the shared
+   fill; a second signal on top of it only made the pair look unrelated. */
+.menu .chip-btn.on{background:#3d1234; color:#fff; font-weight:700}
+.menu .chip-btn.on:hover{background:#4a1640; color:#fff}
+/* The chart's OWN frame is not a projection like the others, and the dot says
+   so in the space a chip already occupies rather than in a row of its own. */
+.menu .chip-btn.mark::before{
+  content:''; width:4px; height:4px; border-radius:50%; margin-right:5px;
+  background:var(--text-faint); flex:none;
+}
+.menu .chip-btn.mark.on::before{background:var(--pink)}
+.menu .chips-note{margin-top:5px; font-size:10.5px; color:var(--text-faint)}
+
 .toast{
   position:fixed; bottom:calc(var(--bottom-h) + 16px); left:50%; transform:translateX(-50%);
   z-index:80; background:var(--surface-2); border:1px solid var(--line);
@@ -643,8 +709,29 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
 *::-webkit-scrollbar-thumb{background:#0d3a6b; border-radius:9px}
 *::-webkit-scrollbar-thumb:hover{background:#155093}
 
-@media (max-width:1280px){ body:not(.right-collapsed){--right-track:var(--stub-w)} }
-@media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} }
+/* NARROW WINDOWS ARE HANDLED IN JS, NOT HERE, and the two rules that used to
+   live at this spot are why. Both tried to reclaim the rails' 478px with CSS
+   alone and both broke the grid:
+
+     @media (max-width:1280px){ body:not(.right-collapsed){--right-track:var(--stub-w)} }
+
+   shrank the right TRACK to the 26px stub but left `.rightbar` in grid flow at
+   its full --right-w, so a 246px aside was laid into a 26px column and simply
+   overflowed it -- the chart got 212px at a 1150px window while the rail took
+   312. Collapsing a rail is two things, a narrow track AND an absolutely
+   positioned panel, and this did only the first.
+
+     @media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} }
+
+   was worse: `display:none` tears the panel down, which the note at the top of
+   the workspace section says not to do because it loses scroll position and
+   any in-progress render, and it left the spine and the toggle behind pointing
+   at a panel that no longer existed. `1fr` then gave the RIGHT rail no track
+   either, so it overflowed the grid entirely.
+
+   Narrow mode now adds the same `side-collapsed` / `right-collapsed` classes
+   the toggle does (see js/main.js), so it inherits the whole mechanism --
+   track, overlay, spine, peek -- instead of reimplementing a third of it. */
 
 /* ---------------- backtest tab ---------------- */
 body.bottom-expanded{--bottom-h:min(72vh,720px)}
@@ -1106,6 +1193,14 @@ tr:hover .pv::after{display:none}
 /* The transport glyphs are square, and the one that is RUNNING is lit -- the
    bar says what it is doing, not only what it can do. */
 .rp-btn.rp-trans{width:26px; padding:0; text-align:center; font-size:11px}
+/* ICON-ONLY, and bigger than the text it replaced. A 10.5px glyph sized to sit
+   beside a word is too small to read AS a picture once the word is gone, which
+   is the whole point of dropping it -- so the type scale that governs a label
+   stops applying and the icon gets sized as an icon. The button keeps its
+   `title`, and carries an aria-label, because a camera with no text next to it
+   is unreadable to a screen reader. */
+.rp-btn.rp-icon{width:28px; padding:0; text-align:center; font-size:15px;
+  line-height:1; display:inline-flex; align-items:center; justify-content:center}
 .rp-btn.on{background:var(--accent-soft); color:#fff; border-color:transparent}
 .rp-btn:disabled{opacity:.4; cursor:default}
 .rp-btn:disabled:hover{color:var(--text-dim); border-color:var(--line)}
@@ -1369,3 +1464,50 @@ tr:hover .pv::after{display:none}
 .zone-tip .tip-up { color: var(--up); }
 .zone-tip .tip-down { color: var(--down); }
 .zone-tip .tip-flat { color: var(--text-faint); }
+
+/* ---------------------------------------------------------- alert settings
+   The modal behind the live pill's Settings item. Styled off .modal-box so it
+   matches the search and PIN dialogs rather than inventing a third look.
+
+   Z-INDEX 59, ONE BELOW .modal. Adding an instrument BORROWS the symbol picker
+   (search.js `once` mode) rather than shipping a second search, and that picker
+   is a .modal too -- at equal z-index the later element in the document wins,
+   which is this one. Sitting one below lets the picker open on top of it. */
+.alerts-box{width:min(540px,93vw); max-height:84vh; display:flex; flex-direction:column}
+#alertsModal{z-index:59}
+.alerts-head{padding:11px 15px 4px; font-weight:600; letter-spacing:.02em}
+.alerts-head2{padding:14px 15px 2px; font-weight:600; letter-spacing:.02em;
+  border-top:1px solid var(--line); margin-top:10px;
+  display:flex; align-items:center; gap:8px}
+.alerts-badge{font-size:10.5px; font-weight:400; opacity:.6;
+  border:1px solid var(--line); border-radius:9px; padding:1px 7px}
+.alerts-hint{padding:0 15px 8px; font-size:11px; opacity:.62}
+.alerts-body{overflow:auto; padding-bottom:10px}
+.alerts-row{display:flex; align-items:center; gap:8px; padding:6px 15px; cursor:pointer}
+.alerts-sub{display:flex; gap:14px; padding:2px 15px 8px 36px; font-size:11px; opacity:.8}
+.alerts-sub input[type=number]{width:52px}
+
+/* ONE ROW PER INSTRUMENT, timeframes as chips. The first design had one row per
+   (symbol, timeframe) with a dropdown, which made "watch gold on three frames"
+   three rows that each had to be added separately and read as unrelated. */
+.alerts-inst{padding:8px 15px; border-top:1px solid var(--line-soft,rgba(255,255,255,.06))}
+.alerts-inst:first-child{border-top:0}
+.alerts-inst-head{display:flex; align-items:center; gap:8px}
+.alerts-inst .sym{font-family:"Roboto Mono",monospace; font-size:12.5px; font-weight:600}
+.alerts-inst .rm{margin-left:auto; cursor:pointer; opacity:.4; font-size:15px; line-height:1}
+.alerts-inst .rm:hover{opacity:1; color:var(--down)}
+/* armed: the button says what the next click will do, and stops being a glyph */
+.alerts-inst .rm.arm{opacity:1; color:var(--down); font-size:10.5px;
+  font-family:inherit; border:1px solid var(--down); border-radius:9px;
+  padding:1px 7px; line-height:1.4}
+.alerts-chips{display:flex; flex-wrap:wrap; gap:5px; margin-top:6px}
+.tf-chip{font-family:"Roboto Mono",monospace; font-size:11px; padding:2px 9px;
+  border:1px solid var(--line); border-radius:11px; cursor:pointer;
+  opacity:.45; user-select:none; transition:opacity .1s, background .1s}
+.tf-chip:hover{opacity:.8}
+.tf-chip.on{opacity:1; background:var(--up); color:#04201d; border-color:transparent}
+.alerts-note{font-size:10.5px; opacity:.5; margin-top:5px}
+.alerts-addbtn{margin:10px 15px 0; width:calc(100% - 30px)}
+.alerts-empty{padding:10px 15px; font-size:11px; opacity:.6}
+.alerts-status{font-size:11px; opacity:.75}
+.alerts-spacer{flex:1}

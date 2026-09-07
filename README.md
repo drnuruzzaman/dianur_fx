@@ -133,6 +133,15 @@ tools/mt5_download.py bulk history exporter (bars + ticks) for backtesting
 tools/dataset.py      loaders for the exported history
 tools/capture_specs.py instrument spec snapshot -> data/instruments.json
 tools/deals_replay.py  gate 3: reconcile the sim against real broker fills
+tools/_brokerclock.py  UTC -> broker server time, for joining events to bars
+tools/approach_dataset.mjs  the canonical zone-approach table (45 fields)
+tools/approach_phases.py    groupings over it: strength, geometry, liquidity, regime
+tools/approach_model.py     walk-forward logistic model + threshold sweep
+tools/event_impact_eval.py  measured impact per release type
+tools/fetch_fomc_statements.py  99 FOMC statements from federalreserve.gov
+tools/fomc_tone.py     hawkish/dovish score, with three validation checks
+tools/zone_defn_audit.mjs   zone hold rate by pivot definition, vs random bands
+tools/zone_liquidity_overlap.mjs  do the two level detectors overlap?
 sim/core.py           the simulator core: fills, sizing, costs, invariants
 sim/fx.py             point-in-time currency conversion into AUD
 sim/metrics.py        expectancy, drawdown, per-year breakdown, benchmark
@@ -191,11 +200,465 @@ the key in the indicator menu in `js/main.js`.
 ## Bridge endpoints used
 
 `/health` `/account` `/positions` `/orders` `/deals` `/symbols` `/spec`
-`/quotes` `/ticks` `/bars` `/calendar` — all GET, all read-only.
+`/quotes` `/ticks` `/bars` `/calendar` `/signal` — all GET, all read-only.
 
 Polling cadence: quotes 1s, tape 1.2s, account/positions 2s, health 5s,
 history 30s, daily reference closes 60s, calendar 5min. Polling pauses while
 the tab is hidden.
+
+THE DEV SERVER SERVES THREE OF ITS OWN, and they are not the bridge:
+`/workspace` (per-project chart settings, merged), `/alerts` (the Telegram
+config the Settings modal edits, replaced) and `/record` (replay recordings).
+See `serve.py` for why one merges and the other replaces.
+
+---
+
+## Telegram: alerts out, commands in
+
+Two small tools, sharing `configs/secrets.env` and nothing else. A crash in one
+must not stop the other, which is why they are not one process.
+
+    tools/event_alert.py     PUSHES a warning N minutes before a macro release
+    tools/signal_alert.py    PUSHES a rule signal, for the cells you configure
+    tools/telegram_bot.py    PULLS commands: /status, /profit, /news [all]
+
+```bash
+python tools/event_alert.py --dry-run --lead 5000 --local   # preview, sends nothing
+python tools/telegram_bot.py --check                        # preview both replies
+configs\Scheduler\event_alert_install.cmd 10               # register the alerter
+configs\Scheduler\telegram_bot_install.cmd                 # register the bot
+```
+
+### Reliability settings on the scheduled tasks
+
+The two tasks that actually send signals were the two least protected ones, and
+that was backwards. `telegram_bot` and `calendar_refresh` already had
+`StartWhenAvailable`, a `RestartOnFailure` policy and a `Principal` block;
+`signal_alert` and `event_alert` had none of the three, plus the tightest kill
+timer. All four now match:
+
+| | telegram_bot | calendar_refresh | signal_alert | event_alert |
+|---|---|---|---|---|
+| `StartWhenAvailable` | true | true | true | true |
+| `RestartOnFailure` | 999 | 3 | 999 | 999 |
+| `Principal` block | yes | yes | yes | yes |
+| `ExecutionTimeLimit` | PT0S | PT30M | PT10M | PT10M |
+
+**PT2M was killing healthy runs.** `poll()` allows 90s per cell and seven cells
+are enabled, so a slow bridge can legitimately take over ten minutes; the old
+two minute limit terminated the run part way through. It stays finite rather
+than `PT0S` so a wedged poll cannot hold the slot forever, and `IgnoreNew`
+means the next minute is skipped rather than queued.
+
+**A missing `Principal` is what caused the "Access is denied" registrations.**
+With no principal a task registers machine wide instead of for the current user.
+Both installers now substitute `TASK_USER` the way `telegram_bot_install.cmd`
+always did.
+
+One trap worth recording, because it has now been hit twice in this project:
+**an XML comment may not contain `--`**. Task XML is otherwise forgiving and
+this one fails the whole file.
+
+#### The ledger is written after every send, not at the end of the run
+
+`signal_alert.py` used to call `save_state()` once, after every cell had been
+polled. That left a window in which a message had gone out but nothing on disk
+recorded it, so anything ending the process inside that window made the next run
+send it again. The `ExecutionTimeLimit` above was doing exactly that, which
+means duplicate signals arrived precisely when the bridge was struggling and the
+feed was least worth distrusting.
+
+Each successful send now writes its own ledger entry. The cost is one small
+atomic write per SENT message rather than per poll, and `hold` is the answer on
+almost every bar of every cell, so in practice it writes only when something
+happened. A run that sends nothing now says `nothing to send` rather than
+ending in a silence that reads the same as a crash.
+
+### Running them without Task Scheduler
+
+`tools/alerts_daemon.py` runs all four jobs in ONE foreground process:
+
+```bash
+python tools/alerts_daemon.py            # everything; Ctrl-C to stop
+python tools/alerts_daemon.py --list     # the schedule, then exit
+python tools/alerts_daemon.py --once     # one pass of each timed job, no bot
+python tools/alerts_daemon.py --no-bot   # timed jobs only, bot left to something else
+```
+
+THE SCHEDULER WAS DOING TWO DIFFERENT JOBS and only one of them was a schedule,
+which is why replacing it needs both halves:
+
+  - For `signal_alert` and `event_alert` it was a **timer**. Both are one-shot
+    scripts that poll, send and exit; the minute trigger is what ran them.
+  - For `telegram_bot` it was a **supervisor**. That script already loops
+    forever on `getUpdates`, and its task is `IgnoreNew` with no execution time
+    limit -- so the minute trigger never starts a second copy, it only restarts
+    one that died. Firing it as a plain timer is what produced the HTTP 409
+    Conflict during development: two pollers, one token.
+
+The daemon runs each job as a CHILD PROCESS with the exact arguments its
+scheduled task used, rather than importing it. The spawn is worth it: every job
+keeps its own argument parsing, exit code and crash isolation, so nothing in the
+supervisor can change what an alert does. A traceback in `event_alert` kills
+that child and the next tick starts a new one; it cannot take the bot down.
+
+A job still running when its interval comes round is SKIPPED, not killed and not
+doubled. `signal_alert`'s own bridge timeout is 90s against a 60s tick, so this
+is normal rather than exceptional -- and a second copy would duplicate every
+message it is about to send, because the dedupe ledger is written only after a
+successful send. A dead bot is restarted on a widening backoff (5s to 2min), so
+a revoked token cannot become a spin loop.
+
+**What you give up, plainly:** the process has to be running. It does not start
+at logon, does not survive a reboot, and stops when you close its window. The
+loop survives everything below that -- a job that raises, exits non-zero, hangs,
+or dies repeatedly -- but it cannot restart the interpreter it lives in. For
+logon without going back to Task Scheduler, put a shortcut to it in
+`shell:startup`. For something that survives logout you want a real service
+(NSSM or similar), which is a heavier install than the tasks it replaces.
+
+The scheduled tasks and this daemon MUST NOT BOTH RUN. Two `telegram_bot`
+pollers is the 409 again, and two `signal_alert` passes race on the same ledger.
+`configs/Scheduler/uninstall.cmd` removes the tasks; `--no-bot` is the middle
+ground if you want to keep only the bot's task.
+
+Credentials go in `configs/secrets.env` like every other key here:
+
+    TELEGRAM_BOT_TOKEN=...
+    TELEGRAM_CHAT_ID=686269315,-1004443429312
+
+`TELEGRAM_CHAT_ID` IS A LIST. Group ids are negative and the minus sign is part
+of the id. `telegram_bot.py --discover` prints the id of anyone who writes and
+answers nobody, because learning an id and granting access are separate acts.
+
+### Signal alerts, and the cells are configuration you can edit from the chart
+
+`configs/alerts.json` decides what is watched AND whether release alerts go out
+at all. It is read on EVERY poll by both schedulers, so a change takes effect on
+the next minute with nothing restarted and nothing reloaded.
+
+```json
+{
+  "news":    { "enabled": true, "lead_minutes": 10, "impact": "any" },
+  "signals": { "alert_on": ["buy", "sell", "exit"],
+               "watch": [{ "symbol": "XAUUSD.a", "tf": "4h", "enabled": true,
+                           "note": "the only cell ever measured positive net of friction" }] }
+}
+```
+
+`"enabled": false` drops a cell WITHOUT deleting the row, which keeps the note
+saying why it was ever watched -- usually the part that would be lost.
+`--list` prints the lot with its notes; `--dry-run` polls, prints, and sends
+nothing.
+
+#### Edited from the live pill, or from a text editor
+
+**live pill -> Settings...** opens a modal over the same file.
+`js/ui/alertsettings.js`, with `GET`/`PUT /alerts` in `serve.py`.
+
+    Signal alerts                              [5 on]
+    Click a timeframe to switch it on or off.
+
+    XAUUSD.a                                       x
+      1m  5m  15m  30m  1h  4h  1d      lit = announcing
+      the only cell ever measured positive net of friction
+
+    EURUSD.a                                       x
+      1m  5m  15m  30m  1h  4h  1d
+
+                  + Add instrument...
+
+ONE ROW PER INSTRUMENT, TIMEFRAMES AS CHIPS, and the first version was not.
+The stored shape is flat -- `watch` is a list of (symbol, timeframe) cells --
+so the modal began as a row per cell with a timeframe dropdown. That asks two
+questions as one. "Watch gold" and "on which frames" are separate, and putting
+gold on three frames meant three separate adds that then read as three
+unrelated lines. Grouping by symbol makes the second question a click.
+
+A CHIP TURNED OFF DISABLES, IT DOES NOT DELETE. The cell keeps its `note`,
+which is the only surviving record of WHY it was ever watched -- the file is
+machine-written, so a JSON comment would not last a save and the note is data.
+The `x` on the instrument row is the delete, deliberately the larger gesture.
+
+REMOVING TAKES TWO CLICKS, AND THE FIRST ONE CHANGES WHAT THE BUTTON SAYS. It
+did not, at first, and the cost showed up immediately: `EURUSD.a` vanished from
+the config between two sessions and nobody could say who had done it. One stray
+click on an unlabelled `x`, on a row standing for several timeframes, is all it
+takes. The only reason it was noticed at all is that the server keeps a `.prev`.
+
+    x   ->  first click  ->  remove?  ->  second click  ->  gone
+
+It disarms itself after four seconds, and any other click in the panel disarms
+it too: arming is a statement about the NEXT click, so a click that lands
+somewhere else has already answered it. An armed control left sitting on screen
+becomes an ordinary one in the reader's mind, which is the very accident this
+exists to prevent.
+
+AN INLINE ARM RATHER THAN `confirm()`. A native dialog steals focus from a modal
+that is itself mid-edit, and this one has to survive Escape without also closing
+the settings panel underneath it. A button that says what the next click will do
+is clearer than a dialog asking about something the reader can no longer see.
+The removal also stays undoable until Save, and the status line says so.
+
+ADDING BORROWS THE REAL SYMBOL PICKER rather than shipping a second search.
+`js/ui/search.js` already ranks the broker's full symbol list with exact prefix
+first, and it already had a `once` mode built for exactly this -- the replay
+sandboxes use it too. A private text box here would accept a typo silently and
+produce a cell that polls a symbol the broker does not have. The modal sits at
+`z-index 59`, one below `.modal`, so the borrowed picker opens ON TOP of it:
+at equal z-index the later element in the document wins, and that is the
+settings modal.
+
+A NEW INSTRUMENT ARRIVES WITH NO FRAME ON. Picking a symbol says "I am
+interested"; it does not say which frames, and defaulting one on would start
+announcing a cell nobody chose. The status line says `pick a timeframe` and the
+`N on` counter does not move until one is clicked.
+
+CANCEL WRITES NOTHING. The whole edit -- add, toggle, remove -- lives in memory
+until Save. Verified by adding an instrument, toggling a frame, removing it
+again and cancelling: the file came back byte-identical.
+
+THE FILE IS THE SOURCE OF TRUTH, NOT THE PANEL. The modal re-reads on every
+open rather than caching what it last wrote, so if the two ever disagree the
+file wins. A text editor remains an equally valid way to change it.
+
+IT IS JSON BECAUSE THE UI WRITES IT. The config was `signals.yaml` until the
+modal existed; writing YAML from a browser would either need a serialiser on
+the server or destroy every comment in the file on the first save. The per-cell
+`note` survives because it is DATA, not a comment -- the only kind of
+explanation a machine-written file can keep. The old file is parked as
+`configs/signals.yaml.migrated`.
+
+`PUT /alerts` REPLACES WHOLESALE, WHICH IS THE OPPOSITE OF `/workspace`. That
+one merges because it is a scatter of independent keys and a client must not
+assert what it lacks; this one is a LIST being edited as a list, and removing a
+row IS the edit -- a merge would make deletion impossible without inventing a
+delete protocol for array elements. The safety that matters here is different
+and is enforced instead: the server refuses a body with no `signals.watch`
+array, so a half-built request cannot blank the file, and it keeps a `.prev`
+before every replace.
+
+TWO THINGS THE MODAL DELIBERATELY DOES NOT DO. Switching release alerts off
+leaves the Windows task registered and polling -- the tool reads the flag and
+exits quietly. A checkbox in a web page that silently unregisters a system job
+is a surprise nobody wants, and it would need the page to hold rights over the
+task scheduler. And `--test` ignores the off switch, because it exists to answer
+"is this wired up" and a wiring check that goes silent because a preference is
+off tells you nothing.
+
+A save that fails leaves the modal OPEN, holding the edit. Closing would lose
+work that was never written and leave no way to tell which of the two states is
+on disk.
+
+    *XAU/USD 4h*  BUY
+    🟢   Entry   4415.20
+    🔵   TP1     4420.10
+    🔵   TP2     4423.10
+    🔵   TP3     4426.10
+    🔴   SL      4406.10
+    ⚪   Lots    0.05
+    _rule exits on close < 4365.44_
+    _bar Mon 07 Sep 15:00 AEST  (05:00 UTC)_
+
+NOTHING IN IT IS COMPOSED HERE. Entry is the rule's `est_entry`, SL its `stop`,
+Lots its sizing, and TP1/TP2/TP3 its `ref_targets` -- 1R, 2R and 3R off the same
+stop distance the rule sized on. `/signal` is the rule's own statement, computed
+in Python on the code the backtests run; this tool decides WHEN to ask and WHO
+to tell.
+
+#### "TP" is a borrowed label and the last line says so
+
+`sim/signal.py` calls those levels REFERENCE and states outright that quoting
+them as TP1/TP2/TP3 "would be reporting a rule that was never measured". The
+rule has NO take-profit -- it exits on the channel. `tools/tp_sweep.py` measured
+a 1R cap on the validated cell and it turned **+43.7 net R into -2.1**: a trend
+rule is paid from the tail and a cap is a bet against the tail.
+
+The labels are used anyway because the CHART already uses them, captioned "in
+the way -- not targets", and one vocabulary across two surfaces is worth more
+than a second one that is more precise in isolation. The `rule exits on close`
+line is there so nothing has to be inferred: it is the only exit the rule
+actually takes.
+
+#### What the trigger close would have shown, and no longer does
+
+The message carried a `Signal` row -- the close that fired the rule -- above the
+entry. It was removed by request. It existed because the rule decides on a CLOSE
+and fills at the NEXT OPEN, so the two prices differ by modelled spread and
+slippage and `est_entry` is always the worse of them. THE COST HAS NOT GONE
+AWAY, it is only no longer printed; `bar_close` is still in the payload for
+anyone reconciling a fill against what was announced.
+
+#### Signal alerts: keyed on the bar, and why fast cells cost most
+
+Every send is keyed on (symbol, timeframe, BAR TIME, action) in
+`data/signal_alerted.json`. Keying on the bar rather than the clock is what
+makes a per-minute task safe: the bridge reports the same signal on every poll
+until the bar closes, so anything else would either spam or miss the next one. A
+4h cell polled every minute sends one message per signal, not 240.
+
+`hold` is never announced. It is the answer on almost every bar of every cell,
+and a channel that receives it stops being read.
+
+FIVE CELLS POLL IN 3.1 SECONDS, so the cost is not the polling. It is the
+MESSAGES: `tools/friction_map.py` prices gold 1m and 5m as negative before
+costs, and "Spread decides the timeframe" in this file is the measurement --
+15m clears its own spread as-is, 5m needs a raw account, 1m does not clear at
+all. The fast cells generate the most alerts and are the least likely to be
+worth acting on. Watching them is a choice the config makes visible rather than
+one the code makes for you.
+
+### The numbers are the footer's numbers
+
+`/profit` mirrors `paintRealised` in `js/main.js` rather than inventing a second
+definition, and the two were checked against each other on a live account:
+`+100.70` / `+517.37` in the bot, the same in the UI footer, to the cent.
+
+  - REALISED only. The open runner is floating P/L, and adding it would let an
+    unclosed position flatter a day that has not paid out.
+  - THE BROKER'S MIDNIGHT. A trading day is the server's day: it is what rolls
+    the swap and what the statement will agree with. On this +3h server the two
+    disagree for three hours every night, which is exactly when a late New York
+    session is still open.
+  - `buy` AND `sell` DEALS ONLY. A deposit arrives as a deal carrying its full
+    amount in `profit`, so counting every deal would report funding the account
+    as a profitable day.
+  - NET of commission and swap, like the History tab.
+
+If the two ever disagree, the bot is wrong and `js/main.js` is right.
+
+### /news reads BOTH calendars, because neither contains the other
+
+    data/calendar/history.json   what the charts mark and what this project has
+                                 MEASURED. Few events, months of reach.
+    bridge /calendar             the Calendar menu's own ForexFactory feed.
+                                 Every currency, a forecast and a previous.
+                                 About a week of reach.
+
+Reading only the first is thin; only the second is short-sighted. A dead bridge
+costs detail rather than the reply -- the curated file is on disk and answers
+alone.
+
+    USD CPI  in 4d
+       Fri 11 Sep 22:30 AEST  (12:30 UTC)
+       impact HIGH (measured 2.02x)
+       forecast 0.2%  ·  previous 0.2%
+       _US inflation_
+
+DEFAULT IS HIGH AND MEDIUM. The feed is 61 low-impact rows out of 81 and a reply
+listing them all would bury the three that matter. `/news all` lifts it.
+
+IT LOOKS BACKWARD AS WELL AS FORWARD, three hours, because "current" is most of
+the question: a release that landed twenty minutes ago is still moving the tape,
+and a reply listing only the future would be silent during exactly the period it
+is most likely to be asked.
+
+The vocabulary tables are IMPORTED from `event_alert.py`, not copied. A second
+copy would drift the moment one was corrected, and the alert and the `/news`
+reply would then describe the same event differently.
+
+#### Two bugs the merge produced before it was right
+
+A SUBSTRING MATCH LAUNDERS MEASUREMENTS ACROSS CURRENCIES. "CNY CPI y/y"
+contains "CPI", so it was handed the US CPI's measured 2.02x -- a number
+measured on US prints against gold and the majors, which says nothing about a
+Chinese release. "EUR Revised GDP q/q" had the same problem. Every measured kind
+now carries a HOME currency and a title match outside it returns nothing, so the
+event keeps the vendor's own label marked unmeasured. Transferring a measurement
+by string match does not extend it, it launders it.
+
+A DEDUPE THAT DROPS THE LOSER THROWS AWAY REAL INFORMATION. The curated entry
+wins a collision -- same minute, same kind -- and it used to win by discarding
+its twin, so `USD PPI` read UNRATED while the feed rated it high and carried a
+forecast. The winner now INHERITS what it lacks: it keeps its identity, the
+measured kind and the plain-word meaning, and fills its blanks from the twin.
+That is why PPI reads `HIGH (vendor)` with a forecast beside a curated name.
+
+#### Times are Brisbane, with UTC kept beside them
+
+`BNE` is a FIXED +10:00 offset, not a zone lookup. Queensland has not observed
+daylight saving since 1992, so the offset is correct every day of the year and
+needs no tz database -- which matters on Windows, where the IANA data is absent
+unless `tzdata` happens to be installed and `zoneinfo` raises rather than
+falling back. The shortcut is safe here and NOWHERE NEAR Sydney or Melbourne,
+which do shift.
+
+UTC IS PRINTED ALONGSIDE, not replaced. The calendars are UTC and the bar
+archive is broker time; this project has already shipped one bug from conflating
+two clocks -- it put the NFP volatility spike at +180 minutes and made a real
+effect look absent. A local time with no reference is how that happens again.
+
+### The impact level is the measured one, where there is one
+
+The vendor's `impact` field is not just coarse, it is INCONSISTENT WITHIN A
+KIND: in this calendar GDP is tagged `high` once and left unrated four times,
+for the same release. And where it is applied it does not discriminate -- CPI,
+FOMC, GDP and NFP are all `high` to the vendor, while measured expansion across
+them runs 4.05x to 1.58x.
+
+So `/news` bands the MEASURED number and says so:
+
+| | band | reading |
+|---|---|---|
+| FOMC | VERY HIGH | measured 4.05x |
+| NFP | HIGH | measured 2.57x |
+| CPI | HIGH | measured 2.02x |
+| GDP | MEDIUM | measured 1.58x |
+| BOJ | LOW | measured 0.77x |
+| PPI | UNRATED | unmeasured |
+
+GDP reads MEDIUM whether the vendor called it high or left it blank, which is
+the point. The bands are wide deliberately: 667 releases will not separate 2.0x
+from 2.2x, and plainly do separate 4x from 1.5x.
+
+A kind with no measurement falls back to the vendor's word, MARKED as the
+vendor's. An unmeasured `high` still carries information and dropping it would
+be a loss; presenting it as equivalent to a measured one would be a lie.
+
+Times are UTC and labelled as such on every line. The calendar is UTC and the
+bar archive is broker time; this project has already shipped one bug from
+conflating them, so the unit is written rather than assumed.
+
+`/status` does not report "Running" merely because the script is alive -- the
+script is the one part guaranteed to be up, since it is composing the reply. It
+asks the bridge, and answers DOWN, or UP BUT NOT CONNECTED, when that is the
+truth.
+
+### Two properties that took a mistake to get right
+
+ONLY CONFIGURED CHATS ARE ANSWERED. A bot is reachable by anyone who knows its
+@name, so one that replied to whoever asked would hand the account's P/L to a
+stranger who guessed it. Other chats are dropped silently -- not even a refusal,
+because a refusal confirms the bot is live. Adding a GROUP id grants `/profit`
+to everyone in that group, now and to anyone added later; that is a decision
+about who is in the room.
+
+DISCOVER IS READ-ONLY, AND IT WAS NOT AT FIRST. Confirming an update deletes it
+from Telegram's queue permanently. The first discover run consumed the group's
+message, its output went to a log nobody was reading, and the id was gone --
+another message had to be sent. `--discover` now never advances the offset, so
+it is re-runnable and a mistake costs nothing. The general shape: a tool that
+DESTROYS what it reads has to be right the first time, and this one had no
+reason to.
+
+A THIRD THING, ALSO LEARNED THE HARD WAY: two pollers on one token get HTTP 409
+from `getUpdates`, and the loser logs conflicts while the winner silently eats
+the queue. `--discover` is now time-bounded rather than an endless loop, which
+makes a stray instance much less likely.
+
+### Release alerts: idempotence is what makes a per-minute task cheap
+
+`event_alert.py` runs every minute and records each alert in
+`data/calendar/alerted.json`, keyed by the event's timestamp and kind, so a
+release is announced exactly once however often the task fires. The key is
+written only AFTER a successful send, so a network failure retries instead of
+being swallowed. Alerts fan out to every configured chat and one failing
+destination does not silence the rest.
+
+It will not fire on the past: the window is `now <= event <= now + lead`, so a
+laptop that was asleep wakes and sends nothing for releases that already landed.
+A missed alert is missed; a late one reads as a live warning and is worse than
+useless.
 
 ---
 
@@ -486,6 +949,47 @@ depends on which rails happen to be in flow.
 
 State persists per rail.
 
+#### A narrow window shuts them, and does not remember doing it
+
+Below 1280px the right rail folds; below 1020px the left one follows. The right
+goes first because it is the wider of the two and the most reconstructible --
+the trend read and the signal engine restate what the chart already shows,
+while the watchlist is how you reach another instrument at all.
+
+THIS IS THE SAME MECHANISM AS THE TOGGLE, not a narrow-only stylesheet: the
+breakpoint watcher in `js/main.js` adds the very `side-collapsed` /
+`right-collapsed` classes the handle does, so it inherits the track, the
+overlay, the spine and the peek rather than reimplementing part of each.
+
+That distinction is the whole bug it replaced. Two `@media` rules used to try
+this in CSS alone and both broke the grid:
+
+  - `@media (max-width:1280px){ body:not(.right-collapsed){--right-track:var(--stub-w)} }`
+    shrank the right TRACK to the 26px stub but left `.rightbar` in grid flow at
+    its full 246px, so the aside overflowed its own column and ate the chart
+    from the right. Measured at a 1150px window: rail 312px, **chart 212px**.
+    Collapsing is a narrow track AND an absolutely positioned panel; this did
+    only the first.
+  - `@media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} }`
+    did the one thing the section above says never to do -- `display:none` tears
+    the panel down, losing its scroll position and any in-progress render -- and
+    left the spine and handle behind pointing at a panel that no longer existed.
+    `1fr` then gave the right rail no track at all, so it overflowed the grid
+    entirely.
+
+Same 1150px window after the fix: **chart 1103px**, both spines showing, no
+horizontal overflow.
+
+A FORCED COLLAPSE IS NOT WRITTEN TO STORAGE. `apply()` takes a `remember` flag
+that the watcher passes as false, because recording it would turn "your window
+was small once" into "you asked for this rail to be shut", and it would still be
+shut on the big monitor tomorrow. Widening the window restores exactly the pin
+state the reader last chose.
+
+A PIN STILL WINS. The test is `breakpoint matches || saved collapsed` -- a
+floor, not an override. Click a spine open at any width and it stays open: a
+narrow window is a guess about what you want, and a click is not.
+
 ### Margin level
 
 Sits next to Margin free in the footer account row, because it answers a
@@ -679,17 +1183,17 @@ The two-touch level now ranks ABOVE the eight-touch one. Under the old weights
 that ordering was impossible: 8 touches beat 2 by 24 points and nothing else
 could close the gap.
 
-The tooltip reports the figure alongside the touch count, so a zone that scores
-well on reaction and badly on touches can be read as such rather than taken on
-the strength number alone.
+The tooltip used to report the figure alongside the touch count. It no longer
+reports it at all -- the reaction term is still in the ranking, and the ranking
+is no longer shown.
 
-THE TOOLTIP HAD TO BE CORRECTED once the ranking result below came in. It read
-`RATING 74 / 100 - strong`, which is a claim about what the zone will do. The
-row is now `SHAPE`, the words run textbook / clean / rough / marginal rather
-than strong / solid / moderate / weak, and a footnote states the measurement
-outright: a high score holds no more often than a low one. The number describes
-how cleanly the zone is drawn, which is a real property and the wrong one to
-read as confidence.
+THE TOOLTIP WAS CORRECTED TWICE, AND THEN THE ROW WAS REMOVED. It first read
+`RATING 74 / 100 - strong`, which is a claim about what the zone will do. That
+became `SHAPE`, running textbook / clean / rough / marginal, with a footnote
+stating outright that a high score holds no more often than a low one. The row
+is now gone entirely -- see "Retiring the strength score" below. A number that
+needs a footnote explaining it is not a forecast is a number the reader should
+not be handed.
 
 RE-MEASURED, and **the pooled hold rate did not move**: +11.05 pp with the term
 off against +11.25 pp with it on, over 21,900 approaches and three eras, and
@@ -739,7 +1243,7 @@ is informative. Being a *better* zone is not. The detector's SELECTION carries
 the finding; its RANKING carries none of it, and the two were easy to conflate
 because they come out of the same function.
 
-The score still decides which six zones survive `max_zones`, so it is not
+The score still ranks zones within a tier of the ladder, so it is not
 useless -- it is a tidiness criterion doing a tidiness job. It was the word
 "strength" that made it look like more than that.
 
@@ -1327,6 +1831,55 @@ One routing note that keeps the label honest: the tab-click handler used to
 toggle the `active` class inline. It goes through `paintTabs` now, because that
 is also what writes the label -- a second place that repaints the strip is a
 second place that can forget to.
+
+#### `⌑ Auto TL` in both replays, and why it is not the live chart's
+
+Each replay's toolbar carries its own `⌑ Auto TL` menu -- support/resistance,
+channels, swing points, BOS/CHoCH, the ZigZag line and news marks, each its own
+switch, plus lines-per-side at 2 / 3 / 4 / 6. Everything is ON by default at
+three lines a side. `js/ui/replayauto.js` holds it, and BOTH replays share the
+one stored setting.
+
+THEY USED TO READ THE LIVE CHART'S SETTINGS, through the same
+`resolveAuto(symbol, tf, AUTO_DEFAULTS)` the main chart uses, and that coupling
+reads as a feature and is a trap. A replay is a proving surface: you open it to
+judge what a detector did on bars that already happened. Having its overlays
+silently follow whatever the live chart was last set to means two sessions a
+week apart are not comparable, and worse, that switching something off to read
+the live chart quietly changes what the replay showed you.
+
+NOT PER INSTRUMENT AND NOT PER FRAME either, unlike the live chart's -- see
+"The whole Auto TL menu belongs to the instrument AND the frame" above, which is
+right for a working surface where gold and cable want different sensitivities.
+A replay is opened to answer one question, and the overlay set is part of how
+the reader reads it rather than part of the market.
+
+DEFAULT IS EVERYTHING ON, against the live chart's two lines a side, because the
+live chart is dense with state the overlays compete with -- positions, orders,
+the rule's plan -- and a replay has none of it. The useful default there is to
+show what the detectors saw and let the reader switch off what they do not want.
+
+EVERY ROW IS `keepOpen`. Someone switching overlays on and off is comparing
+them, and a menu that closed on each click would make that four gestures instead
+of two.
+
+That last part is where two bugs lived, both of them the same mistake seen from
+different sides: a toggle re-renders the toolbar, and the toolbar is where the
+menu's button lives.
+
+  - **A duplicate toolbar per click.** `_buildBar()` in the Elliott replay
+    appended without clearing, which nothing had noticed because it had only
+    ever been called once. Six clicks, six toolbars. It clears first now.
+  - **The menu jumping to the top-left corner.** Rebuilding the toolbar
+    REPLACES the Auto TL button, so the element the menu was opened on is
+    detached by the time the menu re-opens -- and a detached node's
+    `getBoundingClientRect()` is all zeros, which `openMenu` faithfully
+    positions against. `openReplayAutoMenu` now takes its anchor as a GETTER
+    (`() => this.autoBtn`) and resolves it again on every re-open, and returns
+    without opening rather than placing a menu against something detached. The
+    live chart never hit this because it re-opens with `$('#autoBtn').click()`,
+    which looks the element up by id every time; the getter is the same trick
+    for a button that has no id because the replay builds it.
 
 THE TRANSPORT IS PLAY / BACK / STOP, not a row of nudge buttons. Watching a count
 evolve is what this view is for, and clicking `next bar` two hundred times is not
@@ -2832,11 +3385,11 @@ both are drawn. Where they land on the same region that is two unrelated methods
 agreeing; where they do not, they are answering different questions.
 
 HOVER A BAND and a tooltip explains the zone in words before it quotes any
-numbers. The scoring vocabulary -- `0.64 ATR wide`, `2.0 ATR reaction`,
-`strength 74` -- is the DETECTOR's, not a reader's: it is only meaningful to
-someone who already knows what ATR is worth on this instrument. So each row
-carries a label, a value in the instrument's own units, and a plain-word
-reading, with the raw ratio kept in parentheses:
+numbers. The detector's vocabulary -- `0.64 ATR wide`, `2.0 ATR reaction` -- is
+not a reader's: it is only meaningful to someone who already knows what ATR is
+worth on this instrument. So each row carries a label, a value in the
+instrument's own units, and a plain-word reading, with the raw ratio kept in
+parentheses:
 
     SUPPORT x6
     Price has come back to this level 6 times and turned back up
@@ -2845,7 +3398,9 @@ reading, with the raw ratio kept in parentheses:
     ZONE            4655.43 - 4664.15
     THICKNESS       8.7 pts - normal            (0.82 ATR)
     TYPICAL BOUNCE  20 pts away                 (1.9x a normal bar)
-    RATING          71 / 100 - solid
+
+There is no score on that tooltip any more; see "Retiring the strength score"
+below for what was removed and why.
 
 `pts` becomes `pips` on FX, scaled off the quote's digits. The opening line is a
 sentence about THIS zone rather than a definition of the zone type, because the
@@ -3203,6 +3758,94 @@ rather than snapping the analysis to the live edge -- it simply had no job that
 another control was not already doing. `recomputeAll()` itself stays: the `l`
 shortcut and every toggle call it.
 
+`Lines per side` IS A SEGMENTED ROW, not four ticked rows. `2 | 3 | 4 | 6` sit
+side by side in one outlined strip with the current value filled; `kind: 'seg'`
+in `js/ui/menu.js` renders it, and both Auto TL menus -- the live chart's and
+the replays' -- use the same item.
+
+The saving in height is real (this menu is long enough that lines-per-side used
+to push the source list off the bottom) but it is not the argument. A tick
+column says "these are independent, any number may be on", which is exactly true
+of the overlay switches above it and exactly false of a single number. Four
+checkboxes of which precisely one is always ticked is a radio group drawn as the
+wrong control, and the reader has to notice the pattern to learn it. A segmented
+strip says "pick one" in its shape. The track carries the border and the
+segments do not, for the same reason: four separately outlined chips read as
+four controls, one strip divided into four reads as one control with a current
+position.
+
+`Sources` IS A CHIP ROW for the same reason it is NOT a segmented strip: any
+number of frames may feed one chart, so the frames sit in separately outlined
+boxes with gaps between them rather than in one divided track. The two rows are
+a few pixels apart in the same menu and the difference between them is the
+point -- a strip is one control with a current position, chips are several
+controls that do not affect each other, and a reader should not have to click
+to find out which one they are looking at.
+
+What the seven stacked rows cost was mostly repetition. Six of them began
+`Project from`, so the frame -- the only part that varied, and the only part
+being chosen -- sat at the end of an identical prefix and had to be read past
+six times, while "what is feeding this chart?" needed a scan down a tick column
+to answer. As `M1 M5 M15 M30 H1 H4 D1 W1` the set that is on is one glance. The
+prefix moved into a note under the row, where it is said once.
+
+A SELECTED CHIP KEEPS THE ORDINARY BORDER. It briefly took an accent one, which
+made the two rows disagree about what "selected" looks like a few pixels apart
+-- a filled segment above, a filled AND outlined chip below. The fill is the
+state in both now. What still separates them is what each border ENCLOSES: one
+track around all four segments, one border per chip. That is the structural
+difference, pick-one against pick-any, and it survives a shared fill; a second
+signal layered on top only made the pair look unrelated.
+
+The chart's OWN frame keeps the front position and carries a dot, because it is
+not a projection like the others; the note names it. On the highest frame the
+row is a single chip and the note drops its second clause, with
+`already the highest timeframe` still printed underneath.
+
+#### The selected state, and a font that was never loaded
+
+Selected chips and segments read as "hazy" when they first shipped, and the
+obvious explanation was wrong: measured against its own background the selected
+label sat at **13.1:1**, which is not a contrast problem. Two things were:
+
+  - **Roboto Mono had no 700 face.** `index.html` requested
+    `Roboto+Mono:wght@400;500`, and the `.on` rules asked for bold -- so the
+    browser SYNTHESISED it by dilating the 400 stems, which at 11.5px is
+    smeared rather than heavy. `document.fonts.check('700 12px "Roboto Mono"')`
+    returns `true` either way, counting synthesis as a match, so it cannot be
+    used to detect this. The request now carries `700`. Two older rules
+    (`.cal-in`, and the position readout) had been rendering faux-bold for the
+    same reason and are now real.
+  - **The fill was translucent.** `--accent-soft` is a 16% pink over whatever
+    happens to be behind it, and translucent colour under small bright text
+    muddies the stems. The selected state is a flat colour of the same hue now,
+    which costs nothing and renders cleanly.
+
+Selected labels measure **15.7:1** after the change, against 3.6:1 for the
+unselected ones -- which stay dim on purpose, since the point of the row is
+which values are ON.
+
+It also picked up `keepOpen`, which the stacked rows never had -- so choosing a
+line count closed the menu, and finding out whether 3 or 4 reads better on this
+chart meant reopening it every time. Every other row in the menu already stayed
+open for that exact reason; this one was the odd one out.
+
+The toolbar button is `📷 Snapshot`; the two replays' export buttons are the
+camera ALONE. All three were `⤓`, a download arrow, which said where the file
+goes rather than what it is -- and the replays' button in particular does not
+download a chart, it composes the chart AND its panel into one image. A camera
+names the act, and once it does, "PNG" was only naming the container.
+
+DROPPING THE WORD MEANT SIZING THE ICON UP, from 10.5px to 15px (`.rp-icon`).
+A glyph picked to sit beside a word is scaled to that word; alone it has to be
+read AS a picture, which is the whole point of removing the label, and the type
+scale that governs a label stops applying. The button also carries an
+`aria-label`: an icon with no text has no accessible name of its own, and a
+`title` is a hover affordance rather than a label.
+
+Both replays' `btn()` helpers now take the same optional class argument, so a
+variant used on one toolbar exists on the other rather than being rebuilt.
+
 `window.dnfx` exposes the workspace. The chart's contents were otherwise
 unreachable from a console, which makes "what is actually ON this canvas"
 unanswerable -- and that is the first question whenever the chart looks wrong.
@@ -3378,6 +4021,228 @@ part that does not survive.
 Note also the gap between raw and matched: raw differences are +0.6 to +3.5 pp,
 matched are +3.0 to +5.6. These events fire on big directional candles, so
 without controlling for candle shape you would credit structure for momentum.
+
+#### `external` and the ring are not the same test, and the weaker one is on screen
+
+`external` marks a break the strength-6 pass also broke. The RING on a swing is
+a ZigZag turn -- a 3 ATR leg. They used to coincide because a ringed swing WAS
+"survives strength 6"; the rings became price-based and this pass was left
+alone, deliberately, with a comment saying that making them match would be a
+claim needing evidence. `tools/external_ring_agree.mjs` is that evidence, over
+20,355 breaks in eight cells:
+
+| | XAUUSD 5m | XAUUSD 1h | EURUSD 1h | USDJPY 1h |
+|---|---|---|---|---|
+| external% | 34.1 | 32.2 | 29.5 | 32.7 |
+| ringed% | 7.5 | 7.3 | 7.3 | 7.0 |
+| kappa | 0.202 | 0.200 | 0.203 | 0.198 |
+
+THEY ARE NESTED, NOT PARALLEL. P(external given ringed) is ~80%; P(ringed given
+external) is ~18%. `ringOnly` never exceeds 1.9%. So the ring is roughly the
+strict subset and external the loose superset -- the ring is about 4x the
+stricter test. Kappa sits at 0.20 in every cell, scale-free like everything else
+here. The 70-74% raw agreement is almost all the "neither" cell, which is why
+kappa is the number to read.
+
+TWO THIRDS OF BREAKS TAKE A LEVEL THE ZIGZAG NEVER SAW AS A TURN AT ALL
+(`turn0%` 65-70%). The fractal finds swings the price test does not consider
+swings -- the same scale-free-shape problem measured on the swing marks,
+surfacing again one layer up. And `conf%` is 100.0 everywhere: every ringed
+level was ZigZag-confirmed before the bar that broke it, so gating on rings
+would not be look-ahead. That was checked rather than assumed.
+
+#### Which arm actually continues
+
+`tools/break_arm_eval.mjs`, three DISJOINT arms against matched candles -- every
+bar bucketed by direction and by body/ATR and range/ATR quintile, events and
+their +/-5 neighbourhoods excluded from the control pool, each event scored
+against its own bucket. Continuation, not R: a break has no entry or stop, and
+scoring it as a trade would measure a stop policy this file did not choose.
+
+Pooled over six cells, at three horizons:
+
+| arm | n | H=10 | H=20 | H=40 |
+|---|---|---|---|---|
+| RINGED | 3,612 | **+3.63** | **+4.32** | **+3.68** |
+| EXT-ONLY | 12,190 | +2.72 | +1.11 | +0.42 |
+| NEITHER | 31,774 | +3.11 | +2.65 | +1.43 |
+
+**THE CHART'S WEIGHTING IS INVERTED.** `external` draws at x1.0 and internal at
+x0.7, and EXT-ONLY is the WORST of the three arms at H=20 and H=40 -- worse than
+the breaks the chart de-weights. It is negative in two cells (XAUUSD 15m -0.10,
+EURUSD 15m -1.19) and unstable across eras (+2.22/-0.62, -2.17/+2.03,
++0.65/-2.93). The ring, which carries no weight in this layer at all, is
+positive in all six cells and in all twelve era-cells, and beats EXT-ONLY in
+11 of 12.
+
+IT IS NOT DISPLACEMENT WEARING A DIFFERENT NAME, which was the obvious
+alternative -- a 3 ATR leg should end near a level that then breaks harder, and
+1.0 ATR of displacement is already the threshold behind `DISPLACEMENT_V1`. Median
+dispAtr differs little between arms (0.42 / 0.36 / 0.33), and cutting every arm
+to one displacement band leaves the ring ahead in all four:
+
+| dispAtr band | RINGED | EXT-ONLY | NEITHER |
+|---|---|---|---|
+| 0 - 0.25 | +3.04 | -0.29 | +2.14 |
+| 0.25 - 0.5 | +3.31 | 0.00 | +2.64 |
+| 0.5 - 1.0 | +7.05 | +3.30 | +3.07 |
+| 1.0+ | +4.03 | +3.26 | +3.64 |
+
+WHAT THIS IS AND IS NOT. It is a finding about which mark deserves the ink: at
+49-52% hit rates with no stop and no costs, none of these is a trade. The `z`
+column treats each bucket's control rate as known and is therefore a touch
+optimistic, and the six cells are not independent -- three are the same gold
+series at three frames.
+
+#### The liquidity sweep before a break: it does not survive
+
+`sweep -> rejection -> displacement -> CHoCH` is the sequence usually taught as
+"considerably more meaningful than a random structure break".
+`tools/sweep_break_eval.mjs` tests it. Three of its four parts were already here
+and already measured -- the break has always required a CLOSE beyond the level
+rather than a wick, `dispAtr` grades how hard it broke, and the broken swing is
+graded by ring tier -- so the sweep is the only thing the test adds. The sweep
+definition is `liquidity.js sweepAt`, the STRICT one: a round trip, price
+through the level and CLOSING back on the side it came from. A bar that pierces
+and closes beyond is a break, not a sweep.
+
+25,623 breaks, six cells, matched candles, H=20:
+
+| cut | n | edge |
+|---|---|---|
+| all breaks | 25,623 | +2.59 |
+| no prior sweep | 11,260 | +2.27 |
+| prior opposite-side sweep | 14,363 | +2.84 |
+| **CHoCH, no sweep** | 3,999 | **+3.07** |
+| **CHoCH + sweep** | 9,084 | **+2.76** |
+
+ON THE EXACT CLAIM THE SWEEP MAKES IT WORSE. And it is not a pooling artefact:
+per cell, sweep loses to no-sweep on CHoCH in FOUR of six (XAUUSD 5m 1.90 vs
+2.12, EURUSD 15m 2.82 vs 5.40, EURUSD 1h 3.44 vs 5.14, GBPUSD 1h 1.70 vs 2.17).
+
+DEPTH DOES NOT ORDER IT EITHER, which is the check that would have rescued it.
+A real effect should strengthen with how far past the level price reached, the
+way displacement does:
+
+    no sweep          +2.27
+    depth 0 - 0.25    +1.99
+    depth 0.25 - 0.5  +3.72
+    depth 0.5 - 1.0   +2.93
+    depth 1.0+        +2.55
+
+Non-monotone, peaking in the middle, and the deepest bucket sits barely above no
+sweep at all.
+
+THE SEQUENCE'S HEADLINE NUMBER IS A SMALL SAMPLE. `sweep + disp>=1 + CHoCH`
+reads +3.31 against +0.04 for the same thing without the sweep, which looks
+decisive until the second arm's n is read: 461, z 0.02, against +3.07 for CHoCH
+without a sweep generally. And `sweep + disp>=1` over ALL breaks is +5.19 --
+higher than the CHoCH version. Restricting the sequence to CHoCH makes it worse,
+which is the opposite of what the pattern claims.
+
+THE RING ABSORBS IT ENTIRELY. Ringed + sweep +5.82, ringed without a sweep
++5.52, not-ringed + sweep +2.57. The sweep is worth about a third of a point on
+top of the ring; the ring is worth three points on top of the sweep.
+
+WHY IT CARRIES SO LITTLE, and this is the transferable part: a prior
+opposite-side sweep is present before 42-71% of breaks, 65-71% on the 1h cells.
+The per-level definition is strict, but the QUESTION is an OR across the ~65
+levels alive at once, and an OR over 65 strict tests is a loose test. That is
+the same failure liquidity.js already records for a loose per-level definition
+firing on 97.5% of bars, arriving by a different route.
+
+NARROWING TO ONE LEVEL TYPE WAS THE OBVIOUS RESCUE, AND IT WAS RUN. If the
+problem is an OR across 65 levels, the fix is a scarcer level. `liquidity.js`
+emits four families and they differ by an order of magnitude in how many exist
+-- on 15m over 62k bars, 661 prev-day highs against 5,169 swing highs. Two per
+day is a far more specific event than "something".
+
+Pooled, at a 10-bar window, the ordering is exactly what scarcity predicts:
+
+| family swept (opposite side) | n | edge | vs not swept |
+|---|---|---|---|
+| **DAY (PDH/PDL)** | 2,868 | **+4.18** | +2.39 |
+| EQUAL (EQH/EQL) | 3,374 | +3.78 | -- |
+| SESSION (PSH/PSL) | 10,677 | +3.16 | +2.18 |
+| SWING | 10,621 | +2.79 | -- |
+| any level at all | 14,363 | +2.84 | +2.27 |
+
+A day-level sweep pooled beats an any-level sweep by 1.3 pp, and the scarcer the
+level the bigger the edge. That is the shape a real effect has.
+
+IT STILL DOES NOT CLEAR, AND THE PER-CELL TABLE IS WHY. DAY sweep against no
+DAY sweep, on CHoCH:
+
+| cell | n | with | without |
+|---|---|---|---|
+| XAUUSD 5m | 45 | **-8.38** | +2.21 |
+| XAUUSD 15m | 162 | +7.68 | +0.44 |
+| XAUUSD 1h | 665 | +4.55 | +4.78 |
+| EURUSD 15m | 149 | +2.19 | +3.99 |
+| EURUSD 1h | 687 | +2.44 | +4.36 |
+| GBPUSD 1h | 688 | +4.92 | +0.40 |
+
+Three of six, and the three LARGEST cells split two against one the wrong way --
+the two 1h cells with n near 700 both show the sweep making CHoCH worse. The
+wins are 15m at n=162 and one 1h cell. This project has seen that shape before
+and named it in `displacement_v1`: the best cells are the smallest.
+
+AND THE WINDOW CHECK POINTS THE WRONG WAY. 10 bars is 50 minutes on 5m, so a day
+level swept before a CHoCH plausibly needs longer there. At 30 bars the pooled
+gap SHRINKS -- DAY +3.38 against +2.30, 1.08 pp where it was 1.79 -- and it is
+still 3 cells of 6. More time to find the sweep makes the effect smaller, which
+is what a sampling artefact does and not what a real mechanism does.
+
+The per-cell disagreement is not era-driven either: XAUUSD 5m is negative in
+both eras at both windows, GBPUSD 1h positive in both. It is cell selection, not
+a regime.
+
+VERDICT. The family ordering is real and worth knowing -- scarce levels carry
+more than common ones, and any future liquidity feature should prefer PDH/PDL
+over swing levels. The trading claim does not survive: nothing here beats simply
+weighting the break by its ring.
+
+#### Both charts weight on the ring now
+
+`_msEvents` takes the second axis from whichever test the CALLER supplies. A
+surface that sets `ringed` is weighted on that; one that sets only `external`
+keeps the strength-6 pass. The strategy replay took it first -- the standing
+order here is that a change is proved on the proving surface -- and the live
+chart followed on request. `external` is still computed on both: it is data, and
+dropping it would lose the only column that lets the two definitions be compared
+again later.
+
+THE RING IS FIXED AT THE `normal` TIER ON BOTH, not at `auto.sens`. The ring
+line moves with the sensitivity menu, which is what the menu is for, but a
+VIEWING control must not change what the chart CLAIMS about a break -- the same
+rule the replay's structure readout was built on. Ranks are tier-based and
+identical at every setting, so the fixed walk costs one extra pass and nothing
+else.
+
+IT ALSO FIXES AN AXIS THAT COULD BE INERT. `external` is computed by a second
+detectMS pass at MAJOR_STRENGTH, and the `else` branch sets it TRUE for every
+event when the chart's own strength already equals 6 -- which is the live
+chart's default sensitivity. At `major`, every break was external, the second
+weight axis carried nothing, and only displacement separated the marks. Observed
+on a live 5m chart at `fine`: 12 of 12 events external, so that axis was flat
+there too, while the ring split them 5/12 -- and split them where it matters,
+`ring=false` on breaks displacing 0.07 and 0.09 ATR against `ring=true` on 1.77
+and 6.40.
+
+THE PREFIX MARKS THE NOTABLE CASE NOW, NOT THE LESSER ONE. `i` for internal was
+the right shape while `external` decided: external is a third of all breaks, so
+flagging the minority was the smaller mark. Ringed is 7%, and prefixing the
+other 93% would put a qualifier on nearly every label on the chart. So a ringed
+break reads `*BOS` / `*CHoCH` and everything else reads as it always did.
+Displacement still decides the other axis, unchanged and independent.
+
+A SEPARATE BUG FELL OUT OF THIS, on the replay. It never set `dispAtr` -- only
+js/main.js did -- so every BOS/CHoCH mark on that surface had been drawing at
+the marginal weight of 0.45 regardless of how hard the level broke, while the
+README claimed displacement decided the weight. Same formula as the live chart,
+set from the slice, so it inherits the as-of cut like everything else there.
+Measured on the replay after the fix: 12 events, all twelve carrying `dispAtr`,
+one clearing 1.0 ATR, one ringed.
 
 ### Divergence: regular AND hidden both fail
 
@@ -4069,37 +4934,58 @@ pip is $0.10, which makes routine moves print five-figure pip counts. Both are
 naming rather than arithmetic -- `_pips` is one line in `js/chart/engine.js` and
 one in `js/ui/rulepanel.js`, and the two agree.
 
-### Money on a level answers "paid for what risk"
+### Money on a level answers "what is this move worth"
 
-Every dollar figure on the rule's plan -- the ENTRY/SL/TP tags and the panel rows
-that quote the same levels -- is now sized from an ACCOUNT rather than a lot.
-`ACCOUNT` in `js/chart/engine.js` is **$10,000 risking 2% a trade, paying 8
-points of spread**, by request, and the position is sized to lose that 2% if the
-stop fills.
+Every dollar figure on the rule's plan -- the ENTRY/SL/TP tags and the panel
+rows that quote the same levels -- is sized from a **fixed 0.05 lots**, set in
+`ACCOUNT` in `js/chart/engine.js` along with the 8 points of spread charged once
+per round trip.
 
-That makes the arithmetic collapse to R: money is `riskCash * distance /
-stopDistance`, so the stop always reads `-$200` and a 1.5R level always reads
-`$300` -- on gold, on the yen, on any timeframe. It replaced a fixed 0.05 lots,
-and the difference is not cosmetic. The old figure answered "what is this move
-worth at a stated size", which made a tight stop and a wide one look equally
-valuable and let a reader compare two charts only in the sense that a barrel and
-a bushel are both containers. The stop distance is what a plan is read against,
-and now it is what the plan is priced in.
+THIS HAS BEEN BOTH WAYS AND THE HISTORY MATTERS, because the second version
+looked like an improvement and had a flaw the first did not. It started at a
+fixed 0.05 lots. That was replaced by a $10,000-at-2% account, which made the
+arithmetic collapse to R -- money became `riskCash * distance / stopDistance`,
+so the stop always read `-$200` and a 1.5R level always read `$300`, on gold, on
+the yen, on any timeframe. The argument for it was that a tight stop and a wide
+one should not look equally valuable, and that argument is sound.
 
-What survives from the old convention is that the equity is a STATED $10,000,
-not the live balance -- so the numbers do not move when the account does, and
-two charts a week apart still say the same thing. Spread is charged once, entry
-and exit together; it is about $3 on a gold 15m stop, and it is in there because
-`tools/scalp_eval.py` measured that the same number decides whether 5m is worth
-trading at all.
+What it cost was not obvious until a reader hit it. Under R a level's money
+depends on the STOP as well as the level, so the tag's price and the tag's cash
+came from different arithmetic and a mismatch between them was invisible on
+screen -- a level could print more than a level further away and nothing about
+the display would say so. And -$205 was the answer for every trade regardless of
+whether the stop was three points wide or eighty, which is exactly the
+information a reader sizing a position wants back. It is now 0.05 lots again, by
+request:
+
+    ENTRY 4493.42    SL 4410.60      TP1 4527.53   TP2 4565.05   TP3 4588.98
+    under R          -$205           $142          $201          $267
+    at 0.05 lots     -$575           $236          $496          $662
+
+At a fixed size money is strictly proportional to distance, so TP2 CANNOT print
+more than TP3: the ordering is guaranteed by the arithmetic rather than by the
+levels happening to be sorted.
+
+THE BROKER'S OWN `tick_value` DOES THE CONVERSION -- what one tick of one lot is
+worth in the account currency. Gold at 1.3945 per 0.01 and USDJPY at 0.8772 per
+0.001 both come out right without this file knowing anything about crosses;
+assuming dollars-per-point would have been correct on gold and wrong on the yen.
+The field was already carried on `ruleTargets` and had simply never been read.
+
+Spread is still charged once, entry and exit together. It is under a dollar at
+this size and it is kept because `tools/scalp_eval.py` measured that the same
+number decides whether 5m is worth trading at all -- a cost that small is
+exactly the kind that disappears from a plan and turns up in the account.
 
 `levelCash` and `stopCash` are exported and imported rather than reimplemented.
-`js/ui/rulepanel.js` used to carry its own copy of the constant with a comment
-asking that the two be kept in step by hand; the chart tag and the panel row
-quote the same level, so a second copy of the arithmetic was a guarantee that
-they would disagree one day with nothing on screen saying which was stale. Where
-the stop distance is unknown the money is omitted, not zeroed -- a missing figure
-and a $0 figure mean different things.
+`js/ui/rulepanel.js` used to carry its own copy of the 0.05 constant with a
+comment asking that the two be kept in step by hand; the chart tag and the panel
+row quote the same level, so a second copy of the arithmetic was a guarantee
+that they would disagree one day with nothing on screen saying which was stale.
+The size is back; the second copy is not. `levelCash` LOST its `risk` parameter
+rather than keeping it and ignoring it -- at a fixed size the stop distance
+prices nothing -- and where the contract spec is unknown the money is omitted,
+not zeroed, because a missing figure and a $0 figure mean different things.
 
 ### The strategy replay draws the same object
 
@@ -4220,36 +5106,300 @@ way it went. Current answer on 2021-2026: it helps 2 of 6 combinations and hurts
 rollover so swap never applies — necessary here because swap on these
 instruments is large and only knowable at today's rate.
 
+### Macro: surprise, sentiment and impact are three different things
+
+A release carries three separable quantities, and they are not equally
+available here.
+
+**SURPRISE is blocked, and it was checked rather than assumed.** A surprise is
+`actual - consensus`, and no feed reachable from this project carries a
+consensus: xoomar returns `forecast: null` in both its CSV and JSON views,
+QuantGist reports 2% forecast coverage and answers 402 on `/v1/sentiment/*`,
+Finnhub's economic calendar answers 403, and FRED publishes observations with
+no consensus field at all. What can be computed is `actual - previous` -- the
+print against last month rather than against expectations -- which is a weaker
+and different thing, and everything below labels it as such.
+
+**IMPACT IS MEASURED, NOT ASSIGNED** (`tools/event_impact_eval.py`). 667
+releases against 3.26M one-minute bars:
+
+| kind | n | \|ret\|15m | range60 | ATR after / before | vendor label |
+|---|---|---|---|---|---|
+| FOMC | 44 | 0.132% | 0.722% | **4.05x** | high |
+| NFP | 110 | 0.272% | 0.812% | 2.57x | high |
+| CPI | 115 | 0.198% | 0.680% | 2.02x | high |
+| GDP | 122 | 0.127% | 0.458% | 1.58x | high |
+| BOJ | 6 | 0.033% | 0.233% | 0.77x | -- |
+
+The vendor calls CPI, FOMC, GDP and NFP all "high"; measured expansion spans
+4.05x to 1.58x, and BOJ is an event gold ignores. The file carries `realized_*`
+(labels, known only afterwards) separately from `prior_*` (the same statistic
+over EARLIER events of that kind only) so a feature set cannot take the wrong
+one by accident.
+
+A BUG THIS FOUND, AND IT INVALIDATED AN EARLIER ANSWER. The first run reported
+volatility FALLING after payrolls -- 0.97x, which is impossible. Profiling the
+1-minute range around 2025 releases put the spike at +180 minutes in summer and
++120 in winter: **stored research bars are broker server time (EET/EEST), the
+calendar is UTC.** The project documents this in js/util.js and
+sim/tl/clockguard.py; two measurement tools had joined them raw and were
+reading the hour BEFORE each release. `tools/_brokerclock.py` converts the
+event, never the bars -- the archive is what was recorded. Live bridge bars are
+true UTC, so the charts were never affected.
+
+With the clock fixed, the direction of `actual - previous` predicts the dollar
+strongly POST-2021 and not at all before it -- NFP/EURUSD 67.1% at five minutes
+(p=0.00) against 51.7% pre-2021. One era is not a finding by this project's
+standard, but the mechanism is plausible: 2016-2020 was ZIRP with the Fed on
+hold and prints barely moved rate expectations.
+
+**SENTIMENT is Fed-policy sentiment, and it is scoreable from text.**
+`tools/fetch_fomc_statements.py` pulls 99 statements (2015-2026) from
+federalreserve.gov; `tools/fomc_tone.py` scores hawkish/dovish by TOPIC AND
+DIRECTION inside a sentence -- "inflation" is not hawkish, "inflation remains
+elevated" is and "inflation has eased" is the opposite. Word lists alone get
+this backwards on about half the sentences, because the Fed's vocabulary barely
+changes between meetings; what changes is which verb attaches to which noun.
+
+No classifier, deliberately: the only labels available would be the market
+reaction, which is the thing the score is meant to predict. Training on that is
+circular.
+
+It reads the language correctly, on two independent checks:
+
+    hike statements   median tone  +0.333
+    hold                           -0.236
+    cut                            -0.117
+
+    2018 +0.496   2020 -0.757   2022 +0.538   2023 +0.600   2024 -0.071
+
+That year series is the real policy cycle recovered from text alone, with no
+rate data as input. As a PREDICTOR it shows nothing -- 52.6% against the next
+decision, 45.2% against gold's next hour -- but at n=31-38 those tests could
+not detect anything short of a large effect, and the score is meant to be one
+feature among many rather than a signal. `d_tone` (this statement against the
+previous) is the column to use: statements are written by editing the last one,
+so the level barely moves and most of it is boilerplate already priced.
+Dissents are extracted separately as `dissent_n` / `dissent_dir` -- three
+members preferring a hike is hawkish in a way no adjective is.
+
 ## What the trendline detector is actually worth
 
 This is the part to read before building anything on these lines. Every number
 below is out-of-sample on frozen parameters, and the summary is uncomfortable.
 
-### The bounce hypothesis is closed
+### The bounce hypothesis: closed, then reopened a crack
+
+THE SHORT VERSION, because this section grew long. A confirmed trendline is not
+reliably a better place for price to hold than a parallel line 1.5 ATR away --
+that stands. But two of the numbers that closed the case did not survive audit:
+the era table turned out to mix two different universes, and the parameter sweep
+that appeared to rule out a rescue was sweeping something that filtered under 2%
+of pivots. Fixed and re-run, the placebo edge improves in all three eras. It is
+still inside the friction gap and nothing on the chart changed. The honest state
+is "no edge demonstrated", not "no edge exists".
 
 `sim/tl/diagnostics.py` asks the cleanest available question: when price
 approaches a CONFIRMED line, is what happens next different from what happens at
 the same line shifted 1.5 ATR sideways? Symmetric barriers, so the null is 50/50,
 and the placebo arm carries identical slope and approach dynamics.
 
-Pooled across EURUSD / USDJPY / XAUUSD and 15m / 1h / 4h:
+Pooled across EURUSD / USDJPY / XAUUSD and 15m / 1h / 4h. Both columns are
+shown, because the recorded one no longer reproduces and pretending otherwise
+would lose the more interesting fact:
 
-| era | edge vs placebo | z |
+| era | AS RECORDED | z | RE-MEASURED 2026-09-07 | z |
+|---|---|---|---|---|
+| 2021-2026 (in-sample) | +0.10 pp | 0.35 | **+0.80 pp** | 2.83 |
+| 1999-2010 | +0.40 pp | 0.94 | **+2.10 pp** | 14.85 |
+| 2011-2020 | **-1.40 pp** | **-3.30** | **+0.30 pp** | 2.12 |
+
+The right-hand column is today's archive with the mislabelled gold quarantined
+-- that repair, and the revision record built so it can never silently recur,
+are in **History for backtesting** because they are project-wide rather than a
+trendline matter. It makes 1999-2010 a TWO-symbol era: XAUUSD has no intraday
+history before 2016 and its cells there were daily bars. Approaches are now
+~400k against the recorded ~73k.
+
+THE TWO COLUMNS ARE NOT THE SAME EXPERIMENT, and "Why the baseline moved" below
+settles which is which: the recorded row for 2021-2026 was measured on nine
+cells while the two out-of-sample rows were measured on FOUR -- `se = edge / z`
+identifies each one to two decimals. The recorded numbers were right for
+universes nobody wrote down beside them, and the two out-of-sample rows carry
+four times the exposure to 4h, the weakest frame here, as the in-sample row they
+were compared against.
+
+WHAT DOES NOT CHANGE. Neither column is an edge worth trading: +0.3 to +2.1 pp
+on a symmetric 50/50 barrier sits inside the 1-2.5 pp gap to friction this
+project has never closed, and the strongest single result in this section is
+still a NEGATIVE one -- sub-80 quality lines are respected measurably LESS than
+a random parallel level, in both out-of-sample eras. **A confirmed trendline is
+not reliably a place where price holds more often than a nearby parallel line.**
+The claim that has to be softened is the old flat "it is not", which rested on a
+2011-2020 figure of -1.40 that does not reproduce.
+
+#### Why the baseline moved: the era table was never one experiment
+
+Solved by backing the STANDARD ERROR out of the recorded rows. `se = edge / z`
+is a function of sample size and nothing else, so it identifies the universe a
+row was measured on even when the universe was not written down:
+
+| era | recorded edge / z | implied se | 3 sym x 3 tf | 2 sym x 2 tf |
+|---|---|---|---|---|
+| 2021-2026 | +0.10 / 0.35 | **0.286** | **se 0.28** | se 0.57 |
+| 1999-2010 | +0.40 / 0.94 | **0.426** | se 0.14 | **se 0.42** |
+| 2011-2020 | -1.40 / -3.30 | **0.424** | se 0.14 | **se 0.42** |
+
+**The in-sample row was measured on nine cells and the two out-of-sample rows on
+four.** Every se matches to two decimals. The prose above the table says "pooled
+across EURUSD / USDJPY / XAUUSD and 15m / 1h / 4h"; the reproduction command at
+the bottom of this section says something else entirely, and has all along:
+
+    python tools/tl_diagnostics.py --symbols EURUSD.a,USDJPY.a --tfs 1h,4h ...
+
+Two symbols, no gold. Two timeframes, no 15m. Run today that universe gives
+**+1.10 / -0.40 / +0.90** at n=81,438, against the recorded "~73k paired
+approaches" -- the count and the se both land, so this is the universe the
+out-of-sample rows came from.
+
+AND IT BIASES THE COMPARISON IN A KNOWABLE DIRECTION. 4h is the weak frame in
+every measurement in this file. Dropping 15m and gold does not just shrink the
+sample, it REWEIGHTS it: on 2011-2020, 4h carries **21.4%** of approaches in the
+two-symbol universe against **5.3%** in the full grid. So the out-of-sample rows
+were four times as exposed to the worst frame as the in-sample row they were
+being compared against. Part of the "collapse out of sample" is a change of
+universe wearing the clothes of a change of era.
+
+WHAT IS STILL NOT ACCOUNTED FOR is smaller and honest: within the matched
+universe the edges differ (+0.40 -> +1.10, -1.40 -> -0.40, +0.10 -> +0.90).
+Sample grew ~11% (73k -> 81k), which does not cover a 1.0 pp move on 2011-2020
+at se 0.42. Data revision inside those cells or an engine change since remains
+the residual, and it is a residual rather than the story.
+
+THE LESSON IS THE ONE THIS PROJECT KEEPS RELEARNING. A frozen number needs its
+inputs frozen beside it. Three rows in one table, two of them on a different
+universe from the third, read as a clean era comparison for as long as nobody
+checked -- and the check that cracked it was arithmetic on the z column, not a
+rerun.
+
+#### What the audit ruled out along the way
+
+The era table earlier in this section records +0.40 / -1.40 / +0.10. The same
+harness today, at `pct 0`, gives **+2.00 / +0.40 / +0.80**. Three things are
+established and they do not add up to a full account:
+
+THE SYMBOL SET CHANGES THE SIGN, which is what set the audit going.
+`tl_diagnostics.py` DEFAULTS to `XAUUSD.a,USDJPY.a` while the prose claims
+three symbols: on the default pair 2011-2020 gives **-0.10**, adding EURUSD
+gives **+0.40**. That a documented universe and an actual one could disagree at
+all is what made the se check worth doing.
+
+THE RECORDED RUNS SAW FAR LESS DATA. Their standard errors are 0.42-0.43 against
+0.14-0.28 today, which is 2-9x fewer approaches; the prose says ~73k paired
+approaches where the same three eras now yield ~400k. Combined with the gold
+finding above -- 2016-2019 intraday gold exists now and cannot have existed in a
+run whose gold cells were dailies -- the archive has plainly been backfilled
+since.
+
+THE ARCHIVE FIX DID NOT CLOSE THE GAP EITHER. With the mislabelled gold removed,
+2011-2020 reads +0.30 where the record says -1.40. The bad data was real and is
+gone; it was not what moved the number.
+
+`min_quality` IS RULED OUT. `--min-quality 0` and `--min-quality 90` return
+byte-identical output on 2011-2020, which also says the diagnostics path does
+not gate on quality at all -- worth knowing separately, since the quality
+finding above is what set that default to 90.
+
+VERDICT: THE ERA TABLE'S THREE ROWS ARE NOT COMPARABLE TO EACH OTHER, and the
+out-of-sample rows are the ones on the reduced, 4h-heavy universe. What survives
+untouched is the PAIRED `pct 0` -> `pct 60` comparison -- same run, same data,
+same engine, one parameter different -- and that is the only claim made above.
+
+WHAT SURVIVES THE DOUBT. The `pct 0` -> `pct 60` comparison is PAIRED: same run,
+same data, same engine, one parameter different. That comparison is valid
+whatever the absolute level turns out to be, and it is the one being claimed.
+What is NOT claimed is that trendlines are now tradeable: +1 to +2 pp sits inside
+the 1-2.5 pp gap to friction this project has never closed, `min_swing_pct`
+still defaults to 0, and nothing on the chart changed.
+
+The bounce hypothesis is not revived by this. It died against a 1.5 ATR placebo
+in three eras, and the honest revision is narrower: **the earlier sweep that
+appeared to close the door was sweeping a parameter that did nothing over most
+of its range, so it never tested what it claimed to test.** The door is ajar, on
+one paired comparison, pending a baseline that reproduces.
+
+#### The parameter that filtered nothing
+
+The other thing propping up "the bounce hypothesis is closed" was a sweep.
+Sweeping `min_swing_atr` from 0.0 to 3.0 does not rescue the result (+0.10,
+-0.20, -0.40, +0.00, +0.30, +0.50, +0.60; no |z| above 1.8) -- but that sweep
+was a sweep of nothing over most of its range, because the parameter is
+mis-scaled.
+
+MEASURED, over five instrument x timeframe cells. `_significant()` takes
+prominence over a +/-`strength` window, and that window HAS a prominence by
+construction:
+
+| strength | median prominence | 0.5 ATR filters | 1.0 ATR filters |
+|---|---|---|---|
+| 2 | 1.9 - 2.0 ATR | 0.0% | 0.8 - 7.2% |
+| 3 | 2.3 - 2.4 ATR | 0.0% | 0.0 - 1.8% |
+| 6 | 3.3 - 3.5 ATR | 0.0% | 0.0% |
+
+An earlier note here said a 7-bar range is "~1 ATR by construction" and put the
+filter rates at 0.03% and 1.6%; the measurement says 2.3-2.4 ATR at strength 3
+and 0.0%. `sim/tl/sensitivity.py` had it right at ~2.4 and this section did not.
+The scale also MOVES WITH `strength` -- 1.9 to 3.5 ATR across the sensitivity
+menu -- so no single constant could have been right at every setting.
+
+FIXED, BY ADDING THE FORM THAT IS PORTABLE. `min_swing_pct` / `minSwingPct`
+takes a percentile of the series' OWN prominence distribution: `40` means "drop
+the least prominent 40% of swings on this instrument, at this timeframe, at this
+strength". That is the conclusion `sensitivity.py` already reached for the
+calibrated path, and the raw parameter now matches it rather than sitting beside
+it mis-scaled. Both engines carry it, they agree pivot-for-pivot on the shared
+fixture (285/303 pivots at 0, 171/181 at 40, 29/31 at 90), and the default is 0
+so nothing shipped changes. `min_swing_atr` is kept and still works -- numbers
+were published against it -- with its docstring and `--min-swing-atr` help now
+stating outright that it filters nothing below 1.0.
+
+#### Sweeping the knob once it worked
+
+With `min_swing_pct` the parameter finally varies something -- approaches fall
+by three quarters across 0 to 80 -- so the sweep was re-run properly. These
+numbers are from the CLEANED archive; the gold cells before 2016 no longer
+exist, so 1999-2010 is a two-symbol era now and says so.
+
+The tool's own pooled figure, `pct` 0 against 60:
+
+| era | pct 0 | pct 60 | z at 60 |
+|---|---|---|---|
+| 1999-2010 (no gold) | +2.10 | **+2.40** | 8.49 |
+| 2011-2020 | +0.30 | **+1.20** | 4.24 |
+| 2021-2026 | +0.80 | **+1.60** | 5.66 |
+
+IT IMPROVES IN ALL THREE ERAS, which nothing else in this section has managed,
+and the improvement SURVIVED THE ARCHIVE FIX -- 2011-2020 went from +0.40/+1.20
+dirty to +0.30/+1.20 clean, so removing the mislabelled gold moved the baseline
+and left the gain intact.
+
+Per cell on 2011-2020, where the fix bit hardest, `pct 0` -> `pct 60`:
+
+| cell | 0 | 60 |
 |---|---|---|
-| 2021-2026 (in-sample) | +0.10 pp | 0.35 |
-| 1999-2010 | +0.40 pp | 0.94 |
-| 2011-2020 | **-1.40 pp** | **-3.30** |
+| XAUUSD 15m | -0.2 | +1.9 |
+| XAUUSD 1h | -1.4 | +1.2 |
+| XAUUSD 4h | -1.2 | +0.3 |
+| USDJPY 15m | +0.6 | +1.3 |
+| USDJPY 1h | -1.5 | +0.9 |
+| USDJPY 4h | -3.6 | -1.5 |
+| EURUSD 15m | +0.9 | +1.1 |
+| EURUSD 1h | +1.0 | +1.2 |
+| EURUSD 4h | +1.5 | +1.6 |
 
-Three disjoint eras, ~73k paired approaches, roughly 27 years. **A confirmed
-trendline is not a place where price holds more often than a nearby parallel
-line.** The one cell that looked real in-sample -- EURUSD 1h at +3.5 pp, z 4.12 --
-collapsed to +0.3 pp, z 0.42 on 1999-2010.
-
-Sweeping `min_swing_atr` from 0.0 to 3.0 does not rescue it (+0.10, -0.20, -0.40,
-+0.00, +0.30, +0.50, +0.60; no |z| above 1.8). That sweep did expose a real bug:
-the parameter is mis-scaled. `_significant()` measures prominence over only
-+/- `strength` bars, and a 7-bar high-to-low range is ~1 ATR by construction, so
-at 0.5 it filters 0.03% of pivots and at 1.0 it filters 1.6%.
+Nine of nine improve, four of them from negative to positive. 4h stays the weak
+frame it has always been here -- USDJPY 4h is the one cell still clearly
+negative at `pct 60`, in both of the eras it appears in.
 
 ### What DID replicate: quality predicts harm
 
@@ -4367,11 +5517,16 @@ worse payoff, at almost exactly the rate that cancels it. A high win rate is not
 an edge, and a setup that specifies its own target and stop usually specifies
 the bad ones.
 
-Three routes remain untested, in the order the evidence favours them: exits
-(everything here used a fixed symmetric bracket, which nobody trades), friction
-reduction (0.03 R at 3 ATR stops on 4h versus 0.23 R at 0.4 ATR -- a 7x spread,
-and D1 has never been run), and portfolio effects (a 3-5 pp edge sized across
-uncorrelated instruments is different arithmetic from per-trade expectancy).
+Two routes remain untested: friction reduction (0.03 R at 3 ATR stops on 4h
+versus 0.23 R at 0.4 ATR -- a 7x spread, and D1 has never been run) and
+portfolio effects (a 3-5 pp edge sized across uncorrelated instruments is
+different arithmetic from per-trade expectancy).
+
+EXITS WERE THE THIRD AND HAVE NOW BEEN RUN -- see "Exits: the barrier was the
+wrong instrument" in the S/R section. A 1 ATR trail turns the symmetric
+barrier's -0.100 R into +0.024 R gross, positive in all six cells, and the
+cheapest friction floor on those cells is 0.084 R. The complaint was right and
+the remedy is three to ten times too small.
 
 Confluence was the fourth, and it has now been run. It does not close the gap.
 
@@ -4387,6 +5542,22 @@ impossible, the chart and the backtest run one engine, and the diagnostics are
 honest enough to keep returning answers nobody wanted. That is what makes a
 negative result trustworthy rather than merely disappointing.
 
+ONE AMENDMENT, ADDED 2026-09-07. Two of the numbers this conclusion rested on
+turned out not to be load-bearing. The `min_swing_atr` sweep that appeared to
+close the door was sweeping a parameter that filtered under 2% of pivots at its
+strongest published setting -- it never tested what it claimed to. Re-run with a
+percentile that actually varies something, the placebo edge improves in all
+three eras. And the era table itself no longer reproduces: 2011-2020 reads +0.30
+today against a recorded -1.40.
+
+That does not overturn the conclusion, and nothing on the chart or in a strategy
+changed on it. +0.3 to +2.4 pp is still inside the friction gap, `min_swing_pct`
+still defaults to 0, and the strongest result here is still the negative one
+about sub-80 quality lines. What it does overturn is the CONFIDENCE: a door
+closed by a broken measurement was never properly closed, and a frozen result
+whose inputs were not frozen with it cannot be cited as settled. The honest
+state is "no edge demonstrated", not "no edge exists".
+
 ### Reproducing the trendline results
 
 ```bash
@@ -4398,6 +5569,25 @@ python tools/gold_breakout_wf.py --min-quality 90
 `random`), quality and outcome, so the paired bucket analysis above is a groupby
 away. `gold_breakout_wf` runs one pre-registered geometry through the real
 simulator on both spans; it does not sweep, on purpose.
+
+**THAT FIRST COMMAND IS THE OUT-OF-SAMPLE UNIVERSE, NOT THE FULL GRID**, and the
+distinction is not cosmetic -- it is what cracked the era table. Two symbols and
+two timeframes, no gold and no 15m. The prose beside that table says three of
+each, the in-sample row was measured on three of each, and the two out-of-sample
+rows were measured on THIS. Backing `se = edge / z` out of the recorded rows
+identifies which is which to two decimals; see "Why the baseline moved".
+
+So: run it as written to reproduce the OUT-OF-SAMPLE rows, and add
+`--symbols XAUUSD.a,USDJPY.a,EURUSD.a --tfs 15m,1h,4h` for the full grid. Quote
+which one you used. That sentence is the entire lesson of that section.
+
+USEFUL FLAGS ADDED SINCE. `--min-swing-pct N` drops the least prominent N% of
+pivots as a percentile of the series' own distribution -- prefer it to
+`--min-swing-atr`, which filters under 2% of pivots at its strongest documented
+setting. `--min-quality N` overrides the quality floor; note it changes nothing
+here, because this harness measures approaches to CONFIRMED lines and never
+gated on the offer threshold. That was worth discovering: the quality finding
+above set the shipped default to 90, and this tool cannot see it.
 
 ## The A-E layer stack, and displacement
 
@@ -4546,6 +5736,482 @@ Every mean-reversion hypothesis here has failed: trendline holds, zone holds,
 supply/demand holds, FVG holds, reclaimed lines, and now rejection. The only
 positive cell ever produced was momentum continuation on 4h.
 
+The approach dataset below closes the question a third way -- geometry,
+liquidity, regime and volatility state all fail to predict which side of a zone
+price leaves, out of sample, at AUC 0.499.
+
+### The canonical approach dataset, and a confound it exposed
+
+The zone work above was one-off scripts, each re-deriving zones, liquidity,
+regime and events from bars. That is how two of them ended up with the
+broker-clock bug and the third did not. `tools/approach_dataset.mjs` replaces
+them with ONE TABLE: a row per zone approach across XAUUSD 5m/15m/1h/4h --
+geometry, liquidity, regime, session, event proximity, higher-frame confluence,
+and outcomes at four horizons. Every question below is a query over it. It
+currently holds **57 fields and 181,272 rows** (108,304 on fixed pivots, 72,968
+on ZigZag).
+
+THE ROW COUNTS QUOTED BELOW DIFFER, AND THEY ARE NOT INCONSISTENT. The table has
+been rebuilt whenever a field was added or the inputs were repaired -- 234,552
+at first, then 138,869, 110,826, and 181,272 now -- and each number below was
+correct for the build that produced it. Two of the rebuilds shrank it on
+purpose: `break_count` and the width-free label changed what a row is, and the
+archive repair (see "Gold was not the timeframe it claimed") removed years of
+mislabelled gold, taking 4h from 20,920 bars to 16,244.
+
+WHAT MAKES THEM COMPARABLE is that the BASE RATE has not moved across any of it:
+43.3 / 43.0 on the first width-free build, 43.3 / 43.3 next, 43.2 / 43.3 now. The
+population is stable even as the sample changes, which is the only reason a
+result from one build can be read beside a result from another. Where that would
+not hold -- the paired `pct 0` vs `pct 60` comparison in the trendline section --
+the comparison is made WITHIN one run and says so.
+
+TWO PIVOT DEFINITIONS IN THE SAME TABLE. `zones.js` takes a `pivotsFn` seam
+whose default is its own `findPivots` call, so the `fixed` and `zigzag` arms
+run through the real detector and differ in the pivots and in nothing else --
+same clustering, same width cap, same scoring, same code.
+
+**THE OUTCOME DEFINITION WAS THE BIGGEST RESULT, AND IT WAS A MISTAKE.** The
+first label called a breakout only after a close beyond the FAR edge, while a
+rejection needed price to leave by the near edge, which is underfoot. A wider
+band therefore makes breakouts mechanically rarer, and the table said so
+loudly:
+
+| zone_width_atr | rejection, far-edge label | rejection, width-free label |
+|---|---|---|
+| 0.000 - 0.153 | 48.1% | 43.5% |
+| 0.299 - 0.463 | 56.2% | 43.5% |
+| 0.707 - 1.200 | **65.0%** | 43.0% |
+
+A 17-point gradient that looked like "wide zones hold, tight zones break" was
+the label measuring its own geometry. `touch_count` and `zone_span` inherited
+it because both correlate with width. The replacement -- `y_first_*` -- is a
+symmetric barrier race from the approach bar: which way did price travel 0.5
+ATR first? Both barriers sit the same distance from the same point, so band
+size cannot tilt the answer and geometry becomes a feature rather than part of
+the label. The old column is kept beside it, documented as geometry-dependent,
+because numbers were read off it and have to stay explicable.
+
+### What the approach table says: nothing predicts the direction
+
+Base rate on the width-free label: **43.3% back the way it came, 43.0% onward**.
+
+| cut | spread |
+|---|---|
+| `strength` 40-60 / 60-80 / 80-100 | 41.1 / 43.2 / 43.8 |
+| every geometry feature, by quintile | within ~1pp of base |
+| zone alone vs zone + liquidity | 43.9 vs 42.8 |
+| volatility LOW / NORMAL / HIGH / EXTREME | 43.3 / 43.3 / 43.5 / 42.6 |
+| regime sideways / transition / down / up | 42.7 / 43.6 / 42.9 / 43.5 |
+
+Not one bucket moves direction by more than 1.5 points.
+
+A MODEL SAYS THE SAME THING, WALK-FORWARD. Logistic regression, five folds,
+each predicted only from rows before it:
+
+| model | n | AUC | acc% | base% |
+|---|---|---|---|---|
+| zone features only | 38,944 | 0.4992 | 50.3 | 50.4 |
+| + liquidity | 38,944 | 0.4990 | 50.4 | 50.4 |
+| + regime, volatility, range position | 38,348 | 0.5000 | 50.2 | 50.4 |
+
+Three decimal places of coin flip, all three below the majority-class baseline.
+Adding liquidity changes the fourth decimal, which answers the redundancy
+question more strongly than the geometric overlap test did: two detectors can
+be geometrically independent and still carry the same nothing. A threshold
+sweep has nothing to sweep -- the model never emits a probability above 0.6,
+because there is nothing to be confident about.
+
+THE ONE SURVIVOR IS NOT A DIRECTION. `distance_from_price_atr`, top quintile
+against bottom: MFE 1.88 -> 2.44 ATR and MAE 1.86 -> 2.45, while the share
+going back the way it came FALLS from 46.0% to 37.9%. Price arriving at a level
+quickly produces larger moves both ways and resolves less often either way.
+That is volatility, useful for sizing and stop distance, useless for picking a
+side -- which is the same shape as every other survivor in this file.
+
+The dataset is the durable part. The next hypothesis about levels is a query
+over 234k rows rather than another script, and the label it has to beat is
+already fixed.
+
+### How far back should a level remember? The lookback sweep
+
+`lookback` was 500, it was 500 on 5m and on 4h alike, and it was the one
+parameter in `DEFAULT_ZONE_PARAMS` with no comment defending it.
+`tools/zone_lookback_sweep.mjs` sweeps 100-2000 across six cells. Every arm is
+fed the SAME precomputed pivots through the `pivotsFn` seam, so the arms differ
+in the window and in nothing else, and snapshots start at 2000 bars so the long
+arm is not scored on a shorter history than the short one.
+
+NOTHING DIRECTIONAL IS MEASURED HERE, on purpose. Selecting a window on a
+directional score would be fitting it to noise, and the noise is 43% wide.
+
+XAUUSD 15m, and the other five cells are within a point of it:
+
+| lookback | zones | max | capped% | width | dist | life |
+|---|---|---|---|---|---|---|
+| 100 | 4 | 7 | **0.9** | 0.25 | 2.7 | 60 |
+| 500 | 10 | 23 | **78.5** | 0.30 | 7.2 | 40 |
+| 1500 | 14 | 54 | **85.4** | 0.33 | 14.8 | 40 |
+
+**THE SHIPPED CAP OF SIX BINDS ON 72-80% OF BARS AT LOOKBACK 500**, in every
+cell tested. Three quarters of the time the chart was showing an arbitrary six
+out of about ten, ordered by the score retired above for forecasting nothing.
+That is the defect the sweep was looking for and it is a display defect, not a
+detection one.
+
+TWO SECONDARY RESULTS. The window is SCALE-FREE like everything else here --
+gold 5m and cable 1h produce the same ~10 bands, the same 0.30 ATR width, the
+same ~65 median score -- so the per-timeframe lookback table this sweep was
+meant to produce is unnecessary; one number is right everywhere. And a band's
+median life on the chart is 40-60 bars AT EVERY WINDOW, falling from 0.60 of
+the lookback at 100 to 0.02 at 2000. **Bands do not die by ageing out.** They
+die by re-clustering, and a longer memory does not make one last longer. That
+corrects a claim made earlier in this project: `zone_age_bars` topping out near
+519 is the age of a zone's OLDEST PIVOT, not the lifetime of the band, and the
+two had been conflated.
+
+A METHOD NOTE, because the first version of the sweep was wrong. Zone identity
+was matched on mid-price within a quarter ATR, which reports a band that gains
+a fourth touch -- and so moves its mid -- as one zone dying and another being
+born. It invented churn out of the thing zones are supposed to do. Identity is
+now a SHARED PIVOT: a zone is its cluster, so two snapshots hold the same zone
+when they were built from at least one pivot in common.
+
+### The tier ladder
+
+`zones.js` gains `tieredZones`: the same detector at 100 / 500 / 1500 bars,
+two bands kept from each. Six on screen, exactly as before -- but six that mean
+three distances instead of the top six of ten by a dead score. It is wired into
+the STRATEGY REPLAY only; the live chart still calls `liveZones` and looks
+exactly as it did.
+
+DEDUP IS BY SHARED PIVOT AND THE NARROWEST WINDOW WINS -- the tier is the
+shortest memory in which a level is visible. The other direction was built
+first and is wrong: the 500-bar window CONTAINS the last 100 bars, so every
+recent cluster is also in the mid set and the near tier never fires. Measured
+on the replay it returned two `far`, two `mid` and no `near` at all. Flipped,
+the same bar gives 4310-4324 `near`, 4511-4541 `mid`, 5044-5054 `far` -- the
+ladder spread across the screen by distance, which is what a ladder is for.
+
+A TIER IS CLAMPED BY THE HISTORY IT HAS, and now says so. `lookback` is what a
+tier ASKS for; `windowBars` on each zone is what it GOT, and they part company
+two ways. `js/util.js BAR_COUNT` loads 1200 / 1000 / 800 bars on 4h / 1d / 1w,
+so the 1500-bar far tier there is the whole chart -- and the tooltip had been
+reporting 1500 bars on a chart that did not have them. The replay clips it
+again, its slice ending at the cursor, so 150 bars into a walk every tier is
+150 deep whatever it asked for. Below ~300 bars the far tier finds nothing the
+mid tier has not already claimed and the ladder degrades to two rungs: fewer
+bands, not the same band three times, which is the dedup working.
+
+One field covers both cases and stays right if BAR_COUNT changes. The row reads
+`the last 1199 bars (far — all there is)` when clipped and `the last 500 bars
+(mid)` when not. Measured: 1h loads exactly 1500 bars, so its far tier reaches
+1499 and is marked clipped -- accurate, since the window did hit the start of
+the history.
+
+THE LADDER IS NOT AN AGEING MECHANISM, and that was worth testing because it
+looks like one. A band's pivots age out of the 100-bar window before the
+500-bar one, so bands should demote near -> mid -> far as they get old, and
+that would be a lifecycle without a state machine. Followed 2,374 bands across
+XAUUSD 15m: only 358 ever change tier at all, and the changes are symmetric --
+332 promotions toward `near` against 335 demotions away from it. Only 7% of
+promotions came with a new touch, so it is not rejuvenation either. Tier is
+churn from the keep-2 cut, NOT a proxy for age. It says which window found the
+band and nothing more, which is what the tooltip already claims.
+
+THE AXIS TAGS ARE ORDERED BY PROXIMITY TO PRICE, not by `strength`. Tags
+compete for slots -- two within a label's height collapse to one -- and the
+survivor used to be the higher-scoring band, which was a dead number making a
+live decision. It is now the level price reaches first. That also stops the
+ladder reading as a contradiction: `tier` says how far BACK you look, not how
+far AWAY a level is, so a `near` band and a `far` band can sit a few points
+apart, and ordering the column by distance puts it in the one order a price
+scale can be read in. Not by raw price, which is the other reading of "by
+price" and hands every collision to whichever tag is higher on the screen.
+
+TIER IS DRAWN AS LINE STYLE, NOT AS PROMINENCE: dotted near, dashed mid, solid
+far, at one fill and one stroke opacity. Brightness was the tempting encoding
+and it is the wrong one -- a brighter band reads as a stronger band, which is
+the claim `strength` was just retired for making. The tooltip says `Seen over
+the last 1500 bars`, a fact about the window, and grades nothing.
+
+### Breaks: the column the table did not have
+
+`break_count` and `bars_since_break` are now in the approach dataset. A break is
+a CONFIRMED TRAVERSE -- a close beyond one edge and later a close beyond the
+opposite edge -- so oscillating inside a wide band cannot manufacture one. It
+was the gap the ageing work exposed: every lifetime field counted bars, and a
+band price has cut through four times and a band price has never crossed were
+the same row.
+
+It is not a direction either.
+
+| break_count | n | back% | onward% | MFE | MAE |
+|---|---|---|---|---|---|
+| 0-3 | 16,613 | 42.6 | 42.9 | 1.94 | 2.00 |
+| 5-8 | 27,829 | 43.4 | 43.9 | 1.98 | 2.03 |
+| 11-47 | 26,276 | 42.9 | 42.8 | 2.19 | 2.17 |
+
+Flat on direction across the whole range, with MFE and MAE rising together --
+the same volatility shape as `distance_from_price_atr`, and the fourth feature
+in this file to have it. Walk-forward with `break_count` added: AUC 0.5008 /
+0.5033 / 0.4998 for the three feature sets, and the model puts 46 rows of
+76,704 above p=0.55. The column earns its place by closing a hole in the
+feature set, not by predicting anything.
+
+### Higher-frame confluence: the question the renderer refused to ask
+
+`js/main.js` declines to PROJECT a 4h band onto a 15m chart, and the argument is
+sound: a zone is horizontal, so a 4h band and a 15m band at one price are the
+same band, and drawing both double-counts a level. That justifies not DRAWING it
+twice. It never justified refusing to KNOW, and for the life of this project
+nothing measured whether a 15m level that is ALSO a 4h level behaves any
+differently. It was the one idea from the original S/R plan never tested.
+
+`htf_zone_present` and five companions are now on every approach row:
+
+| field | |
+|---|---|
+| `htf_tf` | the frame checked -- 5m->1h, 15m->4h, 1h->4h, 4h->1d |
+| `htf_zone_present` | an HTF band CONTAINS the approach price |
+| `htf_zone_dist_atr` | distance to the nearest HTF band |
+| `htf_zone_overlap` | the HTF band overlaps this zone's own band |
+| `htf_zone_strength` | score of the nearest HTF zone |
+| `htf_zone_count` | how many HTF zones were live |
+
+SIX FIELDS RATHER THAN A BOOLEAN, because "present" answers too little.
+Confluence and proximity are different claims, and if the result here comes back
+flat -- which every other feature in this file has -- a single boolean would
+make it impossible to tell "no confluence effect" from "the threshold was
+wrong". The distance is in the BASE frame's ATR, not the higher frame's: the
+question is what this approach can see, and a 4h ATR would make every 5m
+distance look negligible.
+
+A MISSING HTF SERIES EMITS `null`, NEVER `0`. A null says "not asked"; a zero
+says "asked, and no". The distinction matters because `approach_model.py` drops
+rows with null features, so a folder that silently became a zero would quietly
+add a whole cell to the sample with the answer already filled in.
+
+#### The causality contract, and why it is the whole difficulty
+
+An HTF bar stamped at time T is NOT usable at T -- it is still forming, and only
+closes one HTF interval later. Reading "the 4h zones at 09:05" from the 08:00
+bar's own extent is look-ahead, and it is invisible in a train/test split
+because every row has it.
+
+So each snapshot is keyed by the CLOSE time of the bar it was computed at, and a
+lookup takes the last snapshot whose close is at or before the approach's bar.
+A 15m approach at 09:05 sees the 4h zones as of the 08:00 bar's close, never the
+12:00 bar that contains it. `HTF_STEP` is 1, so there is no stride staleness on
+top of that -- the HTF series are small enough (1d is ~7k bars against 150k of
+5m) that a stride would buy nothing and cost weeks of freshness on the daily.
+
+VERIFIED, NOT ASSERTED. Over 15,095 query times the index was checked for two
+failures at once: a snapshot that needed a bar not yet closed, and a later
+snapshot that was already legal and should have been preferred. **Zero
+violations.** Maximum staleness of the snapshot used is 75.75 hours, which is a
+weekend -- on a Monday morning the most recent CLOSED 4h bar genuinely is three
+days old, and reporting anything fresher would be the bug.
+
+#### The answer: it carries nothing
+
+108,304 fixed-pivot approaches, width-free label, horizon 20. Base rate 43.2%
+back the way it came, 43.3% onward.
+
+| cut | n | back% | onward% | MFE | MAE |
+|---|---|---|---|---|---|
+| no HTF zone here | 93,632 | 43.2 | 43.3 | 2.04 | 2.05 |
+| an HTF zone contains the price | 14,672 | 43.2 | 43.0 | 2.05 | 2.08 |
+| the bands overlap | 23,452 | 43.4 | 42.9 | 2.03 | 2.05 |
+| no band overlap | 84,852 | 43.1 | 43.4 | 2.04 | 2.05 |
+
+**Nothing moves.** The widest gap in the table is 0.5 pp, against a base rate
+either arm sits on top of. A 15m level that is also a 4h level resolves exactly
+like one that is not.
+
+Distance does not order it either -- quintiles of `htf_zone_dist_atr` give 43.5
+/ 43.7 / 42.9 / 42.9 / 42.7, a 1.0 pp drift with no monotonicity, and the far
+quintile carries the higher MFE AND MAE (2.18 / 2.15) that every distance
+feature in this file ends up carrying. Volatility again, not direction.
+
+WALK-FORWARD, WHERE IT COULD STILL HAVE HELPED AT THE MARGIN:
+
+| model | n | AUC | acc% | base% |
+|---|---|---|---|---|
+| A zone only | 74,878 | 0.4995 | 49.9 | 49.4 |
+| B + liquidity | 74,878 | 0.5019 | 49.9 | 49.4 |
+| C + regime, volatility, range position | 72,308 | 0.5000 | 49.8 | 49.3 |
+| **D + higher frame** | 72,138 | **0.5014** | 50.1 | 49.3 |
+
+The fourth decimal, and the threshold sweep still has nothing to sweep -- the
+model never emits a probability the far side of 0.55. Four feature families now,
+all of them coin flips.
+
+WHAT THIS SETTLES, AND IT IS WORTH SAYING PLAINLY. The renderer's refusal to
+project a higher frame's bands was justified on aesthetic grounds -- do not
+double-count a level -- and that argument was always weaker than it looked,
+because it answered a drawing question with a knowledge answer. It turns out not
+to have cost anything: there was nothing on the higher frame to know. The
+argument was wrong and the decision was right, which is a distinction worth
+keeping, because the next time it will not necessarily be both.
+
+### Exits: the barrier was the wrong instrument, and it does not matter
+
+Every level measurement above scores a SYMMETRIC BARRIER -- did price travel 0.5
+ATR back the way it came before it travelled 0.5 ATR onward. That is the right
+instrument for asking whether a level knows anything: it makes the null exactly
+50/50 and band width cannot tilt it. It is also an exit nobody trades, which is
+why the trendline section lists exits as the largest untested lever.
+
+`tools/approach_exit_eval.mjs` holds the entry fixed -- approach bar close, in
+the REJECTION direction -- and varies only the exit. 69,688 approaches, six
+cells, two eras:
+
+| exit | n | avg R | se | win% | net R |
+|---|---|---|---|---|---|
+| barrier 0.5 (the label) | 69,688 | **-0.100** | 0.004 | 45.0 | -7,002 |
+| fixed 1:2 | 69,688 | -0.019 | 0.005 | 32.9 | -1,329 |
+| **trail 1 ATR** | 69,688 | **+0.024** | 0.004 | 38.0 | **+1,696** |
+| trail 2 ATR | 69,688 | +0.010 | 0.004 | 36.6 | +684 |
+| trail 3 ATR | 69,688 | +0.009 | 0.004 | 38.6 | +601 |
+
+THE EXIT REALLY WAS COSTING SOMETHING. A 1 ATR trail turns -0.100 R into +0.024,
+positive in all six cells and in eleven of twelve era-cells. The complaint that
+the barrier is not a tradeable exit was correct.
+
+AND IT CHANGES NOTHING, because the friction it has to clear is three to ten
+times larger. `tools/friction_map.py --stop-atr 1.0` on exactly these cells:
+
+| cell | friction floor, R |
+|---|---|
+| XAUUSD 1h | 0.084 |
+| XAUUSD 15m | 0.130 |
+| EURUSD 1h | 0.134 |
+| XAUUSD 5m | 0.202 |
+| EURUSD 15m | 0.237 |
+
+Best gross is +0.024 against a cheapest floor of 0.084. The gap is not close and
+no arm narrows it -- widening the trail to 2 or 3 ATR halves the gross while the
+friction only falls proportionally.
+
+TWO THINGS THIS TABLE DOES NOT SUPPORT, stated because the numbers invite them.
+
+The `se` column assumes independent trades and they are not: approaches overlap
+heavily in time -- several zones, adjacent bars, the same move scored many times
+-- so 69,688 rows are nowhere near 69,688 observations and the implied z is
+meaningless. The conclusion does not rest on it; a 3.5x shortfall against
+friction survives any correction to the error bar.
+
+And barrier-versus-trail is not a clean comparison. Both arms score a bar that
+touches both sides as a LOSS, which is this project's standing pessimistic rule,
+but at a 0.5 ATR barrier a single bar spans both sides constantly, so part of
+that -0.100 is the tie rule rather than the exit. Trail-against-trail is the
+comparison that holds.
+
+WHAT THIS CLOSES. Exits were the largest of the three untested routes, and the
+answer is that they improve the measurement without changing the verdict. The
+direction call is a coin flip -- AUC 0.499 across four feature families -- and an
+exit policy redistributes the payoff of a coin flip, it does not bias the coin.
+Friction reduction and portfolio effects remain untested.
+
+### What happens when a zone gets old
+
+Asked directly, and worth its own answer because the first one this project gave
+was wrong.
+
+NOTHING HAPPENS TO HOW IT BEHAVES. On 110,826 fixed-pivot approaches with the
+width-free label:
+
+| bucket | n | back% | onward% | MFE | MAE |
+|---|---|---|---|---|---|
+| `zone_age_bars` 12-118 | 22,041 | 44.2 | 43.8 | 1.95 | 1.96 |
+| `zone_age_bars` 442-519 | 22,291 | 42.8 | 42.8 | 2.11 | 2.08 |
+| `zone_recency_bars` 4-18 | 20,133 | 44.3 | 44.4 | 1.98 | 2.00 |
+| `zone_recency_bars` 97-505 | 22,375 | 42.5 | 41.5 | 2.03 | 2.02 |
+
+A 1.4pp drift across the whole range. MFE creeps up with age and MAE rises with
+it, which is volatility rather than direction -- the fourth feature in this file
+to have that shape. `break_count` behaves identically.
+
+IT DIES BY RE-CLUSTERING, NOT BY AGEING OUT, and this corrects an earlier claim.
+A band's median life on the chart is 40-60 bars AT EVERY WINDOW (see the sweep
+above), so a longer memory does not make one last longer. The claim it replaces
+was that a zone dies when its last pivot leaves the 500-bar window, citing
+`zone_age_bars` topping out at 519. That number is the age of a zone's OLDEST
+PIVOT; the band itself is long gone by then, and the two had been conflated.
+
+THE THREE WAYS A BAND ACTUALLY LEAVES THE CHART: its pivot cluster reshapes
+(the common one), its pivots fall outside the tier window, or the distance cull
+drops it beyond max(12 ATR, 0.75 x visible range).
+
+AND THE LADDER DOES NOT GIVE IT A LIFECYCLE -- tested, because it looks as
+though it should. See "The tier ladder" above: 15% of bands ever change tier and
+the changes are symmetric, so tier is churn from the keep-2 cut and not a proxy
+for age.
+
+So a zone is a LOCATION, not a countdown. It is as good on its 400th bar as its
+40th, it stops existing when its cluster reshapes rather than when it expires,
+and no age-derived field -- age, recency, breaks, tier -- moves direction by
+more than a point and a half. Which is the same conclusion the rest of this
+section reaches from every other direction, and the reason the zone is kept as
+context and nothing more.
+
+### Retiring the strength score
+
+`strength` is a 0-100 number over touches, tightness, span, proximity and
+reaction. It was printed on every zone tooltip. Three measurements say it does
+not forecast anything:
+
+| test | result |
+|---|---|
+| hold rate by bucket, against a random band of the same width | flat, and the top bucket held LEAST (55.6% against 60.3% random) |
+| direction by bucket, width-free label, 138,869 approaches | 41.1 / 43.2 / 43.8 across 40-60 / 60-80 / 80-100 |
+| in a walk-forward model beside every other zone feature | AUC 0.499 |
+
+So it is retired AS A CLAIM and kept AS A MECHANISM. The tooltip rows are gone
+from both the S/R and supply/demand bands, and so is the footnote that had to
+explain the number was not a forecast. `minStrength` still filters and the score
+still ranks within a tier -- the ladder keeps the top two from each of its three
+windows, and the score is what "top" means there. The ranking is real work and
+nothing about the detector changed. What DID change is that the cap is no longer
+where the score does its damage: the ladder replaced a single flat window whose
+six-zone cap discarded bands on 72-80% of bars, so the score is now choosing two
+from a handful rather than six from about ten.
+
+WHAT THE FIELD IS STILL CALLED. `strength`, not `sort_score`. The rename would
+touch `zones.js`, `sim/tl/zones.py` and the parity test between them to buy a
+word, and the risk of desynchronising a parity-tested pair is worse than the
+imprecision. The comments carry the meaning instead: `_rating()` in engine.js
+records that it is console-only now, and levels.js records why the number is no
+longer quoted in a label.
+
+THE ZONE ITSELF STAYS, as context. Every row left on the tooltip is an
+observation -- how many times price came back, how wide the band is, how far
+price travelled when it left -- and none of them is dressed as a prediction.
+That is the honest form of a level on this chart: it says where price has
+turned before, which is true and useful, and stops there.
+
+### Where the S/R work landed
+
+The sweep and the ladder are the two things kept out of all of it, and neither
+is a claim about direction:
+
+  - BETTER GEOMETRY. One flat lookback of 500 was showing an arbitrary six bands
+    out of about ten on 72-80% of bars. Three windows at 100 / 500 / 1500,
+    two kept from each, put the same six on screen meaning three distances.
+  - HONEST LABELS. The strength score is off the tooltips, tier is drawn as line
+    style rather than prominence, the axis tags order by proximity instead of by
+    a retired score, and every tier reports the window it ACTUALLY got rather
+    than the one it asked for.
+
+Everything else measured here stayed negative and is recorded as negative, and
+that now includes every idea the original plan listed. The last of them,
+higher-frame confluence, moves direction by 0.2 pp and the walk-forward AUC by
+0.0014.
+
+The zone tells you where price has turned before. It does not tell you what
+happens next, and nothing on the chart now implies that it does.
+
 ## Backtest simulator
 
 ```bash
@@ -4627,9 +6293,239 @@ partial write lands on `.part` before being renamed.
 data/bars/<SYMBOL>/<TF>/<YYYY>.csv.gz      ts,open,high,low,close,tick_volume,real_volume,spread
 data/ticks/<SYMBOL>/<YYYY-MM>/<DD>.csv.gz  ts_ms,bid,ask,last,volume,flags
 data/manifest.json                         coverage, server offset, terminal build
+data/bars_revision.json                    pointer to the latest archive fingerprint
+data/bars_revisions/<UTC>.json             per-file rows, gaps, sha256 — the record
+data/_quarantine/bars/                     files whose contents did not match their folder
 ```
 
 `data/` is git-ignored — it is large, and it is broker data.
+
+### Fingerprint the archive before you trust a number from it
+
+```bash
+python tools/bars_manifest.py --write --note "why"   # snapshot
+python tools/bars_manifest.py --check --strict       # exit 1 on any drift
+```
+
+`manifest.json` records what the TERMINAL reports. It does not fingerprint the
+files, so a repair, a backfill or a re-download leaves no trace — and a frozen
+result whose archive has silently moved underneath it cannot be re-derived. That
+is not hypothetical: a trendline figure recorded at -1.40 pp reads -0.40 today
+and part of the difference is still unaccounted for, because nothing recorded
+what was on disk at the time.
+
+RUN `--write` AFTER ANY DOWNLOAD, and quote the record's timestamp beside any
+number worth keeping. `--check --strict` in a script fails loudly when the
+archive has moved.
+
+IT ALSO CHECKS THE DATA IS WHAT THE FOLDER SAYS. Two failure modes, both found
+here for real: a whole file from the wrong timeframe (161 of them -- gold's
+15m/1h/4h were byte-identical DAILY files before 2016, and every FX pair had
+1997-1998 dailies in every intraday folder), and a mislabelled SECTION inside an
+otherwise correct file (`15m/2017` opened with 2,591 hourly bars). The second
+needs both a long contiguous run AND the wrong gap being another timeframe's
+nominal -- length alone flags thin 2010 1m liquidity, which is sparsity, not
+mislabelling.
+
+AND THE RUN CHECK STILL MISSES A PREFIX BROKEN BY WEEKENDS. Gold's 2017 hourly
+prefix scores a longest run of 22, because the market closes; the defect is
+2,591 bars long. The check flags a file worth looking at -- it is not a verdict,
+and the verdict came from printing where the wrong gaps actually sat. See
+`data/_quarantine/bars/README.md`.
+
+### Gold was not the timeframe it claimed, and neither was FX before 1999
+
+Chasing the baseline turned up a data bug that matters more than the baseline
+does. `data/bars/XAUUSD.a/15m/2010.csv.gz`, `.../1h/2010.csv.gz` and
+`.../4h/2010.csv.gz` are **byte-identical**, and their timestamps are 86400
+seconds apart. All three "timeframes" are one DAILY series:
+
+| year | 15m rows | 1h rows | 4h rows | |
+|---|---|---|---|---|
+| 2014 | 259 | 259 | 259 | identical files |
+| 2015 | 258 | 258 | 258 | identical files |
+| 2016 | 5,129 | 5,129 | 1,369 | 15m and 1h still identical -- both hourly |
+| 2017 | 15,636 | 5,855 | 1,542 | 15m partial, ~2/3 of a year |
+| 2018 | 23,472 | 5,875 | 1,548 | correct ratios at last |
+
+USDJPY and EURUSD are fine at every year -- checked the same way, 2010 15m and
+4h differ as they should. **Gold intraday history is only trustworthy from
+2018.** Before that a "15m gold" study is silently running on daily bars, which
+is why the 1999-2010 gold cells return 809 / 808 / 809 approaches -- three
+nearly equal counts across three timeframes, itself the tell that should have
+been noticed earlier.
+
+FIXED IN TWO PASSES, AND NOTHING WAS DELETED. 56 files by hand, then 105 more
+once `tools/bars_manifest.py` existed to look properly -- **161 in total**, all
+in `data/_quarantine/bars/`, which carries its own README naming every one and
+why. The move is reversible with `mv`.
+
+The hand pass is below; the second pass, and why a tool found three times as
+much as a person looking at the same archive, is under "A revision record"
+further down.
+
+| folder | years moved | what they actually were |
+|---|---|---|
+| 15m | 1998-2015 | DAILY. Byte-identical to `1d/<year>.csv.gz`. |
+| 1h | 1998-2015 | DAILY. Same files. |
+| 4h | 1998-2015 | DAILY. Same files. |
+| 15m | 2016 | HOURLY. Byte-identical to `1h/2016.csv.gz`. |
+
+`15m/2017.csv.gz` was MIXED -- hourly until 2017-06-12 01:30 UTC, real 15m after
+-- so it was split: the original is quarantined as `2017.mixed.csv.gz` and the
+live file keeps only the 15m portion, 15,636 rows down to 13,045. The cut is
+taken at the first bar after which TWENTY consecutive gaps are all 900s, so one
+stray 900s gap inside the hourly stretch cannot trigger it.
+
+NO DATA WAS LOST. The daily series those files duplicated is already correctly
+present in `data/bars/XAUUSD.a/1d/` -- 7,385 rows, 1998-2026. What the move
+removes is the ability to silently read dailies while believing you are reading
+15m. The one year where the copies are not byte-identical is 2007, where
+`15m/2007` and `1h/2007` carry 301 daily rows against `1d/2007`'s 300; that
+extra row is preserved in quarantine rather than discarded.
+
+THE QUARANTINE SITS OUTSIDE `data/bars/`, and that is not tidiness. It was
+`data/bars/_quarantine` for about a minute, which would have made it the eighth
+instrument: `tools/dataset.py` globs `bars/*/*` and `tools/swing_sweep.mjs`
+treats every entry under `bars/` as a symbol. A quarantine that gets swept back
+into the studies is not a quarantine.
+
+XAUUSD 15m/1h/4h now begin where they are real: **15m from 2017-06-12, 1h and
+4h from 2016.** Verified by re-scanning every remaining file's modal timestamp
+gap -- 900 / 3600 / 14400 respectively, in every year. The other five gold
+timeframes were still wrong at this point and were fixed in a third pass below;
+the per-timeframe start dates for the whole instrument are listed there.
+
+THE RECENT WORK IN THIS FILE IS UNAFFECTED by any of it: the zone, swing,
+BOS/CHoCH and sweep tools all take the most recent 40k-150k bars, and the
+strategy replay loads from the bridge (its window starts 2025-11-26 on 4h).
+
+A CRASH THE FIX EXPOSED, AND IT WAS ALWAYS THERE. Re-running 1999-2010 died
+three frames deep in pandas with "No objects to concatenate": with the gold
+quarantined, `load_bars('XAUUSD.a', '15m', 1999, 2010)` selects no files and
+reached `pd.concat([])`. A symbol having bars but NONE IN THE WINDOW ASKED FOR is
+a legitimate answer, not a missing archive, and it was reachable before this fix
+by asking any symbol for a range it does not cover. `load_bars` now returns a
+correctly shaped empty frame and `tl_diagnostics.py` prints `no bars in range`
+and carries on with the symbols that do have data -- which is how 1999-2010
+became an honest two-symbol era rather than a traceback. Note `ts` is not in
+`BAR_TYPES` (it is consumed by `_index` as the index), so the empty frame has to
+carry it explicitly or `_index` pops a column that is not there.
+
+### Why the revision record exists
+
+The universe question above was answerable from the z column. The residual --
+edges that still differ within the matched universe -- was not, and it never
+will be for that run, because **nothing recorded what the archive held at the
+time**. `data/manifest.json` probes what MetaTrader reports; it does not
+fingerprint the local files, so a repair or a backfill leaves no trace.
+
+`tools/bars_manifest.py` fixes that going forward:
+
+    python tools/bars_manifest.py --write            # snapshot
+    python tools/bars_manifest.py --check --strict   # exit 1 on any drift
+
+One row per file -- rows, first and last timestamp, modal gap, longest run of
+another timeframe's spacing, sha256 of the bytes -- written to
+`data/bars_revisions/<UTC>.json` with `data/bars_revision.json` pointing at the
+latest. It is deliberately NOT a lock file: MT5 backfills are legitimate and
+frequent, and the point is to make a change VISIBLE and DATEABLE so a result can
+be tied to the archive it was measured on. Verified both ways -- it reports
+byte-identical on an untouched archive, and `changed 1 / rows 1560 -> 1555` with
+exit 1 when five bars are removed from one file.
+
+THE FIRST RUN FOUND 105 MORE MISLABELLED FILES ON TOP OF THE 56 FIXED BY HAND.
+The hand pass had corrected XAUUSD's 15m, 1h and 4h -- the three timeframes
+under investigation -- and missed its 1m, 5m and 30m entirely, plus 1997-1998
+dailies sitting in every intraday folder of all four FX pairs. Real FX intraday
+starts 1999.
+
+That gap between "the folders I was looking at" and "the archive" is the whole
+argument for the tool, and it is worth stating plainly: the tool was not better
+at the check. It was better at not having a subject. A person auditing an
+archive audits the part they arrived for.
+
+Of the 105, **46 were not byte-identical to their `1d` counterpart** and were
+checked before moving rather than after: same day set, same open and close on
+all 260 days per file, differing only in the intra-day stamp (01:00 against
+00:00). Nothing unique was moved.
+
+TWO CHECKS, AND THE SECOND ONE TOOK THREE TRIES. Modal gap catches a wholly
+mislabelled file. It cannot catch a mislabelled SECTION -- `15m/2017` opened
+with 2,591 hourly bars and then became real 15m, so its mode was correct. The
+share of wrong gaps does not work either: 86400s inside a 4h file is both "a
+coarser timeframe" and "six missing bars". Nor does run length alone, which
+flags the 1m files' 259-406 bar runs at 120s -- thin 2010 liquidity, every other
+minute absent, which is sparsity. What works is length AND the wrong gap being
+itself a timeframe nominal: 3600s inside a 15m file is the 1h series, 120s
+inside a 1m file is no series this broker serves.
+
+A THIRD PASS, AND A CORRECTION WORTH KEEPING. The paragraph that stood here
+said XAUUSD 2017 in 1m/5m/30m held hourly bars INTERLEAVED with real intraday,
+so no single cut could separate them. That was wrong. The evidence that misled
+was the run-length check: the longest contiguous run of 3600s gaps in those
+files is 22, where a clean prefix should give ~2,477. The explanation is
+mundane -- gold trades about 22 hours a day, so every weekend gap interrupts the
+run. Counting runs said "scattered"; looking at POSITIONS said otherwise. In
+`5m/2017` all 2,477 hourly gaps sit in indices 0-2588 and there are ZERO after
+index 2591.
+
+Five files carried a coarse prefix and are now trimmed, originals kept as
+`<year>.mixed.csv.gz`:
+
+| file | rows before | after | dropped | real data starts |
+|---|---|---|---|---|
+| 1m/2017 | 197,811 | 195,220 | 2,591 | 2017-06-12 01:42 |
+| 5m/2017 | 41,680 | 39,089 | 2,591 | 2017-06-12 01:40 |
+| 30m/2017 | 9,116 | 6,526 | 2,590 | 2017-06-12 01:00 |
+| 1h/2016 | 5,129 | 5,090 | 39 | 2016-02-23 01:00 |
+| 4h/2016 | 1,369 | 1,333 | 36 | 2016-02-22 20:00 |
+
+The last two were a DAILY prefix inside an hourly and a 4-hourly file, 39 and 36
+bars, which no modal check could ever see because the rest of each file was
+correct.
+
+GOLD NOW STARTS WHERE ITS DATA IS REAL, per timeframe: 1m / 5m / 15m / 30m at
+2017-06-12, 1h at 2016-02-23, 4h at 2016-02-22, 1d at 1998-04-22, 1w at
+2007-01-07. Nominal-gap share runs 95.6% to 100% and the residue is 0-31 gaps
+per series against 16k-3.2M bars -- holidays and rollovers. **The earlier "treat
+gold intraday as starting 2018" rule is retired**: every file is now the
+timeframe its folder claims, and the first bar of each series is the honest
+start.
+
+THE LESSON IS ABOUT THE CHECK, NOT THE DATA. A summary statistic said the
+contamination was scattered and a plot of positions said it was a prefix. The
+run-length heuristic was measuring the market's trading hours as much as the
+defect. When a check and the raw arrangement disagree, look at the arrangement.
+
+### The bug was already known, in four places, and worked around
+
+Grepping for the retired 2018 rule turned up something worse than a stale
+sentence. **Four tools already knew**: `edge_matrix.py` documents "the pre-2018
+files hold daily bars mislabelled at the requested timeframe"; `horizon_sweep.py`
+carries a `FIRST_REAL` map with measurements per cell -- "2016 is 0% true 30m
+gaps, 2017 70%" -- and `money_report.py` and `stability.py` copy it.
+
+So the defect was diagnosed, quantified per timeframe, and routed around, three
+separate times, without ever being fixed at the source or written anywhere a
+reader of this file would find it. The trendline diagnostics knew nothing about
+it and consumed the bad bars for years.
+
+`horizon_sweep.py` even records the same lesson in miniature: "Blanket-starting
+gold at 2018 threw away two real years at 4h and 1h, which dropped 4h N=20 out of
+sample from 207 trades to 131 and failed it on the >=200 sample gate. The gate
+was right; the window was not."
+
+THE WORKAROUNDS ARE NOW STALE IN THE OTHER DIRECTION. With the archive fixed,
+gold's fast frames measure 98.9-99.9% true gaps from 2017-06-12, so a
+2018-01-01 cut discards half a year of valid data -- the same mistake, in the
+same file that already recorded it once. All four are updated to 2017-06-12,
+with the reasoning kept rather than deleted: a cell should start where its data
+is real, and `tools/bars_manifest.py --write` is what says where that is.
+
+NUMBERS ALREADY RECORDED IN THIS FILE FROM THOSE TOOLS WERE NOT RE-RUN. They
+were correct for the window they used, which was a legitimate window at the
+time; future runs will simply have more gold history to work with.
 
 ### Reading it back
 
@@ -4680,6 +6576,7 @@ for day, ticks in load_ticks('XAUUSD.a', '2026-08-01', '2026-08-31'):
   ambiguous bars pessimistically — a bar whose range contains both stop and
   target counts as the stop.
 
+
 ## Broker tickers
 
 Brokers suffix their symbols — Pepperstone serves `EURUSD.a`, not `EURUSD`. The
@@ -4697,8 +6594,17 @@ up saved under the broker's name, matching your terminal.
   history, which can block for a minute — measured on a live feed, 38 years of
   weeklies took over 60s cold and 312ms once primed. Bar requests therefore get
   a 90s timeout, the chart says what it is waiting for, and bar counts are
-  capped per timeframe (`BAR_COUNT` in `js/main.js`) so nothing asks for decades
+  capped per timeframe (`BAR_COUNT` in `js/util.js`) so nothing asks for decades
   of weeklies it will never draw.
+* `BAR_COUNT` also caps the zone ladder's far tier. 4h / 1d / 1w load 1200 /
+  1000 / 800 bars against a 1500-bar request, so `far` is the whole chart there
+  and the tooltip says so (`all there is`). 1h is the awkward one: it loads
+  exactly 1500, indices 0-1499, so the deepest window reachable from the last
+  bar is 1499 and it reads as clipped by a single bar. Accurate -- the window
+  does hit the start of the history -- but a one-bar shortfall wearing the same
+  note as 4h's 300-bar shortfall. The fix if it grates is to raise
+  `BAR_COUNT['1h']` to 1600 so the tier genuinely gets its 1500, which changes
+  how much history every 1h chart loads and so has not been done unasked.
 * `/calendar` and `/cot` reach out to public sources through the bridge and are
   empty in `--mock` mode.
 * The forming bar is advanced from `/quotes` (bid/ask mid), so its volume only

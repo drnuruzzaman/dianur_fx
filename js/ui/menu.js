@@ -164,6 +164,78 @@ export function openMenu(anchor, items, onPick) {
       if (it.kind === 'sep') { host.append(el('div', { class: 'sep' })); continue; }
       if (it.kind === 'cap') { host.append(el('div', { class: 'cap', text: it.label })); continue; }
 
+      /* A SEGMENTED ROW: one label, its choices side by side on a single line.
+         `{ kind: 'seg', label, options: [{ label, value, checked }] }`.
+
+         For a small set of MUTUALLY EXCLUSIVE values this beats a stack of
+         ticked rows on both counts that matter here. Vertically it is one line
+         instead of a caption plus four, and this menu is already long enough
+         that "lines per side" pushed the sources off the bottom. But the real
+         argument is that a tick column is the wrong picture: ticks say "these
+         are independent, any number may be on", which is exactly true of the
+         overlay switches above and exactly false of a single number. Four
+         checkboxes of which precisely one is always ticked is a radio group
+         drawn as the wrong control, and the reader has to notice the pattern
+         to learn it. A segmented control says "pick one" in its shape.
+
+         It is here rather than in a caller because both Auto TL menus need it
+         and a second copy is a second thing to keep in step. */
+      if (it.kind === 'seg') {
+        const track = el('div', { class: 'seg' });
+        for (const opt of it.options || []) {
+          track.append(el('button', {
+            class: 'seg-btn' + (opt.checked ? ' on' : ''),
+            title: opt.hint || '',
+            'aria-pressed': String(!!opt.checked),
+            onclick: (e) => {
+              e.stopPropagation();
+              /* The SEG's keepOpen governs, not the option's: whether the menu
+                 survives a pick is a property of the control, and letting each
+                 option answer differently would make the same row behave two
+                 ways. */
+              pick(opt.value, it);
+              if (!it.keepOpen) closeMenu();
+            },
+          }, opt.label));
+        }
+        host.append(el('div', { class: 'seg-row' },
+          it.label ? el('div', { class: 'seg-cap', text: it.label }) : null, track));
+        continue;
+      }
+
+      /* A CHIP ROW: one label, independently togglable values that wrap.
+         `{ kind: 'chips', label, options: [{ label, value, checked, mark }] }`.
+
+         The MULTI-SELECT sibling of 'seg' above, and the difference between
+         them is deliberately visible. A seg is one outlined track cut into
+         segments -- one control, one current position, pick exactly one. Chips
+         are separately outlined boxes with gaps between them -- several
+         controls, any number on, and no implication that turning one on turns
+         another off. Same compactness, opposite promise, and a reader should
+         not have to click to find out which one they are looking at.
+
+         `mark` puts a dot on a chip that is categorically different from its
+         neighbours without spending a row on saying so. */
+      if (it.kind === 'chips') {
+        const track = el('div', { class: 'chips' });
+        for (const opt of it.options || []) {
+          track.append(el('button', {
+            class: 'chip-btn' + (opt.checked ? ' on' : '') + (opt.mark ? ' mark' : ''),
+            title: opt.hint || '',
+            'aria-pressed': String(!!opt.checked),
+            onclick: (e) => {
+              e.stopPropagation();
+              pick(opt.value, it);
+              if (!it.keepOpen) closeMenu();
+            },
+          }, opt.label));
+        }
+        host.append(el('div', { class: 'seg-row' },
+          it.label ? el('div', { class: 'seg-cap', text: it.label }) : null, track,
+          it.note ? el('div', { class: 'chips-note', text: it.note }) : null));
+        continue;
+      }
+
       const row = el('button', {
         onclick: (e) => {
           e.stopPropagation();

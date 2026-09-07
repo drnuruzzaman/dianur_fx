@@ -44,9 +44,15 @@ from sim.strategies import BASELINES, strategy_for_tf
 BLOCKS = 4
 IS = ('2021-01-01', None)
 OOS = ('2016-01-01', '2021-01-01')
-#: gold intraday is thin before 2018 -- same rule tools/horizon_sweep.py uses
-FIRST_REAL = {('XAUUSD.a', '30m'): '2018-01-01', ('XAUUSD.a', '15m'): '2018-01-01',
-              ('XAUUSD.a', '5m'): '2018-01-01', ('XAUUSD.a', '1m'): '2018-01-01'}
+#: Gold's fast frames start at their first real bar -- see the note in
+#: tools/horizon_sweep.py. Was 2018-01-01 while the archive held
+#: mislabelled coarse bars; the archive was fixed 2026-09-07.
+FIRST_REAL = {
+    ('XAUUSD.a', '30m'): '2017-06-12',
+    ('XAUUSD.a', '15m'): '2017-06-12',
+    ('XAUUSD.a', '5m'): '2017-06-12',
+    ('XAUUSD.a', '1m'): '2017-06-12',
+}
 
 
 def rs(symbol, tf, start, end):
