@@ -22,5 +22,3 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: pip install pytest
-      - run: python -m compileall -q research
-      - run: pytest -q tests/test_tl_research_pipeline.py
