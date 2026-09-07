@@ -5,7 +5,6 @@ requests
 fastapi[standard]
 streamlit
 uvicorn
-matplotlib==3.10.7
 aiohttp
 joblib
 pydantic
