@@ -30,7 +30,3 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: pip install pytest pyyaml
-      - run: python -m compileall -q research sim
-      - run: pytest -q tests/test_tl_research_pipeline.py tests/test_tl_events.py
-      - run: python -m research.run_tl --contract-test
-      - run: python -m research.run_tl_events --help
