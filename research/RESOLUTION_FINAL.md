@@ -1,0 +1,1 @@
+Final research execution contract: 15m execution, 5m high/low barrier resolution. Effective simulator settings: execution=intrabar, intrabar_tf=5m. Reports include barrier_resolution and resolution counters.

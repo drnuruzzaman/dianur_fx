@@ -1,3 +1,9 @@
-/logs/
+data/
+logs/
+/.claude/*
 /.pytest_cache/*
+runs/
 __pycache__/
+
+# API keys. configs/secrets.env.example is the committed template.
+configs/secrets.env

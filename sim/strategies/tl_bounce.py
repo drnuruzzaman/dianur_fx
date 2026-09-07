@@ -48,7 +48,7 @@ class TrendlineBounce(MTFStrategy):
         a = self.atr(view)
         if np.isnan(a) or a <= 0:
             return None
-        quality = view.series('15m_trendline_strength')
+        quality = view.series(self.ex('trendline_strength'))
         if np.isnan(quality) or quality < self.min_quality:
             return None
 
@@ -56,8 +56,8 @@ class TrendlineBounce(MTFStrategy):
         c = view.close()
 
         # --- long at support ---
-        sup_d = view.series('15m_support_distance')
-        sup_px = view.series('15m_support_price')
+        sup_d = view.series(self.ex('support_distance'))
+        sup_px = view.series(self.ex('support_price'))
         if not np.isnan(sup_d) and 0 <= sup_d <= self.entry_atr and not np.isnan(sup_px):
             if not (self.regime_filter and regime == 2):
                 if self.ema_ok(view, LONG):
@@ -65,7 +65,7 @@ class TrendlineBounce(MTFStrategy):
                     risk = c - stop
                     if risk > 0:
                         target = c + self.risk_reward * risk
-                        res_px = view.series('15m_resistance_price')
+                        res_px = view.series(self.ex('resistance_price'))
                         if not np.isnan(res_px) and res_px > c:
                             target = min(target, res_px)
                         ok, _ = self.gate(view, LONG, 'bounce_support',
@@ -77,8 +77,8 @@ class TrendlineBounce(MTFStrategy):
         # --- short at resistance ---
         if not self.allow_short_side:
             return None
-        res_d = view.series('15m_resistance_distance')
-        res_px = view.series('15m_resistance_price')
+        res_d = view.series(self.ex('resistance_distance'))
+        res_px = view.series(self.ex('resistance_price'))
         if not np.isnan(res_d) and 0 <= res_d <= self.entry_atr and not np.isnan(res_px):
             if not (self.regime_filter and regime == 1):
                 if self.ema_ok(view, SHORT):
@@ -86,7 +86,7 @@ class TrendlineBounce(MTFStrategy):
                     risk = stop - c
                     if risk > 0:
                         target = c - self.risk_reward * risk
-                        sup2 = view.series('15m_support_price')
+                        sup2 = view.series(self.ex('support_price'))
                         if not np.isnan(sup2) and sup2 < c:
                             target = max(target, sup2)
                         ok, _ = self.gate(view, SHORT, 'bounce_resistance',

@@ -7,9 +7,10 @@ unclosed higher-timeframe bar. Strategies consume its output; it knows nothing
 about entries, exits, risk or money.
 """
 
+from .clockguard import TimezoneMixError, require_naive
 from .engine import Params, Snapshot, TrendlineEngine
 from .features import build, build_timeframe_state
 from .lines import Direction, Role, Status, Trendline
 from .mtf import MTFContext, TF_MS, LookAheadViolation, align_index, confluence
 from .pivots import find_pivots, pivots_confirmed_by
-from . import regime
+from . import regime, structure

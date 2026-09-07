@@ -22,14 +22,28 @@ export class SymbolSearch {
   setSymbols(list) { this.symbols = list || []; if (!this.modal.hidden) this.render(); }
   setQuotes(q) { this.quotes = q || {}; }
 
-  open() {
+  /**
+   * `once` borrows the picker for a single choice.
+   *
+   * There is exactly one #searchModal in the document, so the replay sandboxes
+   * cannot build their own without duplicating the whole overlay. They borrow
+   * this one instead: the handler is used for the next pick and then dropped,
+   * so the live chart's behaviour is untouched the moment the modal closes.
+   */
+  open(once = null) {
+    this._once = once;
     this.modal.hidden = false;
     this.input.value = '';
     this.input.focus();
     this.render();
   }
 
-  close() { this.modal.hidden = true; }
+  close() {
+    this.modal.hidden = true;
+    /* Cleared on close, not only on pick: dismissing with Escape must not
+       leave a borrowed handler armed for whoever opens the picker next. */
+    this._once = null;
+  }
   get isOpen() { return !this.modal.hidden; }
 
   match() {
@@ -75,8 +89,9 @@ export class SymbolSearch {
   pick(i) {
     const s = this.rows[i];
     if (!s) return;
-    this.close();
-    this.onPick(s.name);
+    const once = this._once;
+    this.close();                       // clears _once, so read it first
+    (once || this.onPick)(s.name);
   }
 
   key(e) {
@@ -90,4 +105,23 @@ export class SymbolSearch {
     }
     if (e.key === 'Enter') { e.preventDefault(); this.pick(this.sel); }
   }
+}
+
+
+/* One picker, reachable without a wire from js/main.js.
+ *
+ * The replay sandboxes are deliberately unknown to main.js -- that isolation is
+ * what keeps them from disturbing the live chart. Passing them a SymbolSearch
+ * instance would undo it, so main.js registers the instance it builds here and
+ * anything that needs a symbol asks for it. `openSymbolSearch` returns false
+ * when nothing has registered, which is the honest answer for a caller that
+ * then has to fall back to typing. */
+let shared = null;
+
+export function registerSymbolSearch(instance) { shared = instance; }
+
+export function openSymbolSearch(onPick) {
+  if (!shared) return false;
+  shared.open(onPick);
+  return true;
 }

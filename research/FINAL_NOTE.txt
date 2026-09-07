@@ -1,0 +1,1 @@
+Use `research.run_tl` to execute the existing simulator through the new research layer. The full research gates remain separate.

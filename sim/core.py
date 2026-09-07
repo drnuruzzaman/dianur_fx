@@ -189,6 +189,20 @@ class Config:
     apply_swap: bool = True
     max_bars_held: Optional[int] = None
     allow_short: bool = True
+    # STEP 8. What the risk fraction is taken OF. Default 'equity' is what
+    # every result in runs/ was measured with and must not change meaning.
+    #
+    #   'equity'  risk_pct of LIVE equity -- compounds, so size grows with the
+    #             account and shrinks in a drawdown
+    #   'start'   risk_pct of START equity -- constant cash risk, no compounding
+    #   'flat'    the same `flat_lots` every trade, ignoring the stop distance
+    #
+    # Sizing cannot change avg_R, which is normalised by risk. It changes the
+    # equity path, and it changes WHICH trades are affordable: _size returns 0
+    # when the budget will not cover the minimum lot, and the engine skips
+    # those. That skip is the only way sizing touches the trade list at all.
+    size_base: str = 'equity'
+    flat_lots: float = 0.10
     ruin_pct: float = 20.0          # stop trading below this % of start equity
     flat_by_hour: Optional[int] = None   # close before this server hour (carry-free)
     label: str = ''
@@ -212,6 +226,34 @@ class Result:
 # --------------------------------------------------------------------------- #
 # the engine                                                                  #
 # --------------------------------------------------------------------------- #
+def size_lots(spec, equity_acct, stop_distance, *, risk_pct, fx=None, when=None):
+    """Lots such that a stop-out costs ~risk_pct of equity. Never rounds up.
+
+    Module-level and not a method because a LIVE signal has to quote the same
+    size the backtest traded. This project has already been bitten once by the
+    same quantity having two implementations -- three strategies each carried a
+    private ATR that differed from the tested one by up to 0.86 price units --
+    so sizing gets one definition and both callers use it.
+
+    Rounds DOWN to volume_step and returns 0.0 below volume_min: a broker
+    rejects an undersized order, and silently rounding up would risk more than
+    asked. Note that 0.0 is a legitimate answer, not an error -- it means the
+    account is too small to take this trade at this stop distance.
+    """
+    if stop_distance <= 0:
+        return 0.0
+    risk_acct = equity_acct * risk_pct / 100.0
+    risk_ccy = (risk_acct if fx is None
+                else fx.from_account(risk_acct, spec['currency_profit'], when))
+    per_lot = stop_distance * spec['contract_size']
+    if per_lot <= 0:
+        return 0.0
+    step = spec['volume_step']
+    lots = np.floor((risk_ccy / per_lot) / step) * step
+    lots = min(lots, spec['volume_max'])
+    return 0.0 if lots < spec['volume_min'] - 1e-12 else round(lots, 8)
+
+
 class Simulator:
     """
     One instrument, one timeframe, one strategy, one pass.
@@ -248,18 +290,8 @@ class Simulator:
 
     def _size(self, equity_acct, stop_distance, when):
         """Lots such that a stop-out costs ~risk_pct of equity. Never rounds up."""
-        if stop_distance <= 0:
-            return 0.0
-        risk_acct = equity_acct * self.cfg.risk_pct / 100.0
-        risk_ccy = (risk_acct if self.fx is None
-                    else self.fx.from_account(risk_acct, self.spec['currency_profit'], when))
-        per_lot = stop_distance * self.spec['contract_size']
-        if per_lot <= 0:
-            return 0.0
-        step = self.spec['volume_step']
-        lots = np.floor((risk_ccy / per_lot) / step) * step
-        lots = min(lots, self.spec['volume_max'])
-        return 0.0 if lots < self.spec['volume_min'] - 1e-12 else round(lots, 8)
+        return size_lots(self.spec, equity_acct, stop_distance,
+                         risk_pct=self.cfg.risk_pct, fx=self.fx, when=when)
 
     def _spread_price(self, spread_points):
         """
@@ -387,7 +419,12 @@ class Simulator:
                     if stop is not None and ((side == LONG and stop < px) or
                                              (side == SHORT and stop > px)):
                         dist = abs(px - stop)
-                        lots = self._size(cash, dist, t)
+                        if self.cfg.size_base == 'flat':
+                            lots = float(self.cfg.flat_lots)
+                        else:
+                            base = (cash if self.cfg.size_base == 'equity'
+                                    else self.cfg.start_equity)
+                            lots = self._size(base, dist, t)
                         if lots > 0:
                             pos = Position(side=side, lots=lots, entry_i=i, entry_time=t,
                                            entry_price=px, stop=stop, target=pending.target,

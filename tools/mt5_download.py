@@ -56,6 +56,11 @@ TF = {
 
 # Scoped to the two instruments actually being researched. Override with
 # --symbols to widen; names are the broker's own tickers, suffix included.
+#: seconds per bar, for deciding whether a bar has actually CLOSED.
+#: MetaTrader hands over the forming bar as though it were finished.
+TF_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+              '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800}
+
 DEFAULT_SYMBOLS = ['XAUUSD.a', 'USDJPY.a']
 
 BAR_HEAD = 'ts,open,high,low,close,tick_volume,real_volume,spread\n'
@@ -203,10 +208,23 @@ def fetch_bars(symbols, tfs, years, progress=None, cancelled=None):
                     utc(year + 1) + timedelta(days=1))
                 if rows is None or len(rows) == 0:
                     continue
+                # The NEWEST bar of the current period is still forming, and
+                # MetaTrader hands it over as though it were finished. Written
+                # to disk it becomes a permanently wrong bar: XAUUSD 4h
+                # 2026-08-21 16:00 was saved with close 4588.52 while the real
+                # close was 4628.99, a 40-point error that survived every
+                # rerun because the file already existed and was skipped.
+                #
+                # A bar is only complete once its own close time has passed.
+                cutoff = datetime.now(timezone.utc).timestamp() - TF_SECONDS[tf]
+                dropped_forming = 0
                 lines = []
                 for r in rows:
                     ts = int(r['time'])
                     if not (utc(year).timestamp() <= ts < utc(year + 1).timestamp()):
+                        continue
+                    if ts > cutoff:
+                        dropped_forming += 1
                         continue
                     lines.append('%d,%s,%s,%s,%s,%d,%d,%d\n' % (
                         ts, r['open'], r['high'], r['low'], r['close'],
@@ -215,7 +233,10 @@ def fetch_bars(symbols, tfs, years, progress=None, cancelled=None):
                     continue
                 write_gz(path, BAR_HEAD, lines)
                 total_rows += len(lines)
-                print('  %-11s %-4s %d  %7d bars' % (name, tf, year, len(lines)))
+                print('  %-11s %-4s %d  %7d bars%s'
+                      % (name, tf, year, len(lines),
+                         '  (%d still forming, not written)' % dropped_forming
+                         if dropped_forming else ''))
     print('* bars written: %d rows' % total_rows)
     return total_rows
 

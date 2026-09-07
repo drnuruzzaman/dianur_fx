@@ -204,3 +204,52 @@ def test_the_fixture_is_the_real_js_output(stem, bars_path, expected_path):
     assert doc['pivots']['3']['highs'], 'fixture found no pivots'
     first_t = pd.Timestamp(doc['first_t'], unit='ms')
     assert abs((first_t - df.index[0]).total_seconds()) < 1, 'fixture is from other bars'
+
+
+# --------------------------------------------------------------------------- #
+# HIDDEN divergence.
+#
+# The mirror comparison: regular says the trend is failing, hidden says a
+# pullback inside it is ending. It is opt-in on both sides precisely so the
+# default output stays byte-identical -- the fixtures above and
+# sim/strategies/rsi_divergence both depend on that, and a change that quietly
+# added rows would alter a backtest without touching a strategy file.
+# --------------------------------------------------------------------------- #
+
+def test_hidden_divergence_matches():
+    from sim.divergence import find_divergences
+    for stem, bars_path, expected_path in CASES:
+        df, doc = load_case(bars_path, expected_path)
+        mine = find_divergences(df, include_hidden=True)
+        theirs = doc['divergences_hidden']
+        assert len(mine) == len(theirs), (
+            '%s: python %d hidden-inclusive divergences, js %d'
+            % (stem, len(mine), len(theirs)))
+        for a, b in zip(mine, theirs):
+            assert a['kind'] == b['kind']
+            assert a['pivot_i'] == b['pivotI'] and a['prev_i'] == b['prevI']
+            assert a['confirmed_i'] == b['confirmedI']
+            assert abs(a['rsi'] - b['rsi']) < 1e-9
+            assert abs(a['prev_rsi'] - b['prevRsi']) < 1e-9
+
+
+def test_hidden_is_opt_in_and_default_is_unchanged():
+    """
+    The whole point of the flag. If enabling hidden divergence changed the
+    default list, every existing backtest would silently move.
+    """
+    from sim.divergence import find_divergences
+    for stem, bars_path, expected_path in CASES:
+        df, _ = load_case(bars_path, expected_path)
+        reg = find_divergences(df)
+        both = find_divergences(df, include_hidden=True)
+        assert [d for d in both if not d['kind'].endswith('hidden')] == reg
+        assert len(both) > len(reg), 'no hidden divergences found at all'
+        # and the two families must be genuinely different comparisons
+        for d in both:
+            if d['kind'] == 'bullish_hidden':
+                assert d['price'] > d['prev_price'], 'bullish hidden needs a HIGHER low'
+                assert d['rsi'] < d['prev_rsi'], 'bullish hidden needs a LOWER RSI low'
+            elif d['kind'] == 'bearish_hidden':
+                assert d['price'] < d['prev_price'], 'bearish hidden needs a LOWER high'
+                assert d['rsi'] > d['prev_rsi'], 'bearish hidden needs a HIGHER RSI high'

@@ -11,6 +11,8 @@ LIFECYCLE
     CONFIRMED  a third touch arrived: the market has acknowledged the line
     ACTIVE     confirmed and still respected, tested recently
     BROKEN     price closed through it beyond tolerance
+    RECLAIMED  broke, then price closed back on the working side and STAYED
+               there. Opt-in via `reclaim_confirm_bars`; see register_reclaim
     ARCHIVED   broken long enough ago, or drifted too far from price, to matter
 
 Transitions are one-way except ACTIVE <-> CONFIRMED, and every transition
@@ -31,6 +33,8 @@ class Status(str, Enum):
     CONFIRMED = 'CONFIRMED'
     ACTIVE = 'ACTIVE'
     BROKEN = 'BROKEN'
+    #: broke, then price closed back on the working side and stayed there
+    RECLAIMED = 'RECLAIMED'
     ARCHIVED = 'ARCHIVED'
 
 
@@ -78,7 +82,21 @@ class Trendline:
     atr_at_creation: float = 0.0
     last_price_distance_atr: float = 0.0
     quality_at_break: Optional[float] = None    # frozen when it broke
+    reclaims: int = 0                           # times it came back
+    #: Layer D, the wick/close split on breakouts. A wick through the line opens
+    #: a CANDIDATE break; only a CLOSE through it confirms one. These count the
+    #: candidates, including the ones the close then refused -- which is the
+    #: number a breakout strategy needs to know its false-break rate, and which
+    #: was previously invisible because a wick-only excursion left no trace.
+    break_candidates: int = 0
+    break_candidate_open: bool = False
+    false_breaks: int = 0                       # wick through, close refused
+    reclaimed_at: Optional[int] = None
     _last_touch_i: int = field(default=-10_000, repr=False)
+    #: consecutive closes currently beyond tolerance; reset by a close back inside
+    _run: int = field(default=0, repr=False)
+    #: consecutive closes back on the working side while BROKEN
+    _back: int = field(default=0, repr=False)
 
     # ---- geometry ------------------------------------------------------- #
     def value_at(self, t_ms) -> float:
@@ -102,19 +120,30 @@ class Trendline:
 
     @property
     def is_live(self) -> bool:
-        return self.status in (Status.CANDIDATE, Status.CONFIRMED, Status.ACTIVE)
+        return self.status in (Status.CANDIDATE, Status.CONFIRMED,
+                               Status.ACTIVE, Status.RECLAIMED)
 
     @property
     def is_tradeable(self) -> bool:
         """Only a confirmed line is worth acting on; a candidate is a guess."""
-        return self.status in (Status.CONFIRMED, Status.ACTIVE)
+        return self.status in (Status.CONFIRMED, Status.ACTIVE, Status.RECLAIMED)
 
     # ---- lifecycle ------------------------------------------------------ #
-    def register_touch(self, t_ms, bar_i, min_gap_bars):
+    def register_touch(self, t_ms, bar_i, min_gap_bars, min_touches=3):
         """
         A retest. Consecutive grazing bars are one event, so counts stay
-        comparable across timeframes, and the third distinct touch is what
-        promotes a candidate to confirmed.
+        comparable across timeframes.
+
+        `min_touches` is the number of DISTINCT touches that promotes a
+        candidate to confirmed, anchors included. At the default of 3 a line
+        needs one confirmation beyond the two swings that defined it.
+
+        Setting it to 2 makes every line confirmed the moment it is formed,
+        because the two anchors already count. That is the common
+        hand-drawing convention and it is a real loosening: the
+        CANDIDATE -> CONFIRMED distinction disappears, and with it the
+        property that "a candidate breaking is a bad guess expiring, not
+        news". Break events then include lines nothing ever validated.
         """
         if bar_i - self._last_touch_i < min_gap_bars:
             return False
@@ -122,22 +151,45 @@ class Trendline:
         self.touches += 1
         self.tests += 1
         self.last_test_at = t_ms
-        if self.status is Status.CANDIDATE and self.touches >= 3:
+        if self.status is Status.CANDIDATE and self.touches >= min_touches:
             self.status = Status.CONFIRMED
             self.confirmed_at = t_ms
         elif self.status is Status.CONFIRMED:
             self.status = Status.ACTIVE
         return True
 
-    def register_violation(self, t_ms, max_violations):
+    def register_inside(self):
+        """
+        A close back on the correct side of the line. Resets the consecutive
+        run, which is what makes `confirm_bars` mean CONSECUTIVE rather than
+        cumulative.
+        """
+        self._run = 0
+
+    def register_violation(self, t_ms, max_violations, confirm_bars=1):
         """
         A line already BROKEN does not keep breaking. Letting it accumulate
         violations decayed its quality_score for the 40 bars it lingered before
         archiving, so anything reading the score later saw ~0 instead of what the
         line was worth when the break happened.
+
+        `confirm_bars` is the number of CONSECUTIVE closes beyond tolerance
+        required before the break counts. At 1 (the default) behaviour is
+        exactly as before.
+
+        Why it exists: on gold H1 the engine found a rising support with five
+        touches sitting one point under price -- the line a human would draw --
+        and had marked it BROKEN, because price closed through it once during
+        the rally and a single violation was permanent. The line went on working
+        and the engine had already buried it. Requiring two consecutive closes
+        is the difference between "price poked through" and "the line failed".
         """
         if self.status is Status.BROKEN:
             return False
+        self._back = 0
+        self._run += 1
+        if self._run < max(1, confirm_bars):
+            return False                     # not yet a confirmed break
         self.violations += 1
         if self.violations > max_violations:
             self.status = Status.BROKEN
@@ -145,6 +197,37 @@ class Trendline:
             self.quality_at_break = self.quality_score
             return True
         return False
+
+    def register_reclaim(self, t_ms, confirm_bars):
+        """
+        Price closed back on the working side and STAYED there.
+
+        BROKEN was terminal, and that buried a line the market was still using.
+        Measured on gold H1: a rising support with five touches sitting one
+        point under price, marked BROKEN because price had left it 29 bars
+        earlier -- and of the ten bars since the last violation, seven closed
+        back above it. The break was real; the death sentence was not.
+
+        Reclaim is deliberately harder than a break: `confirm_bars` consecutive
+        closes back on the working side, versus one to break by default. A line
+        should not resurrect because price brushed past it.
+
+        The violation is NOT forgiven -- `violations` stays, so the quality
+        score keeps its 12-point penalty, and `quality_at_break` keeps what the
+        line was worth when it failed. A reclaimed line is a line with a scar.
+        """
+        if self.status is not Status.BROKEN:
+            self._back = 0
+            return False
+        self._back += 1
+        if self._back < max(1, confirm_bars):
+            return False
+        self._back = 0
+        self._run = 0
+        self.status = Status.RECLAIMED
+        self.reclaimed_at = t_ms
+        self.reclaims += 1
+        return True
 
     def archive(self, t_ms, reason=''):
         self.status = Status.ARCHIVED

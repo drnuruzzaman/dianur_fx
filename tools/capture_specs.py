@@ -33,7 +33,11 @@ DATA = os.path.join(ROOT, 'data')
 
 # the instruments under test, plus whatever is needed to convert their profit
 # currency back into the account currency
-SYMBOLS = ['XAUUSD.a', 'USDJPY.a', 'AUDUSD.a']
+# EVERY symbol that must survive a re-run, not just the newest one: the
+# writer rebuilds `instruments` from scratch, so anything missing from this
+# list is DELETED from instruments.json. EURUSD.a was already in the file
+# and not in this list, so a re-run would have silently dropped it.
+SYMBOLS = ['XAUUSD.a', 'USDJPY.a', 'AUDUSD.a', 'EURUSD.a', 'GBPUSD.a']
 
 SWAP_MODES = {
     0: 'disabled', 1: 'points', 2: 'symbol_base_currency', 3: 'margin_currency',

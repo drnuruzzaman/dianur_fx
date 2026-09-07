@@ -1,0 +1,72 @@
+# Which cells the signal alerter watches, and what it announces.
+#
+# Edit this file to add or drop instruments and timeframes. Nothing else needs
+# touching -- tools/signal_alert.py reads it on every run, so a change takes
+# effect on the next poll without restarting anything.
+#
+#   python tools/signal_alert.py --list       what is being watched, and why
+#   python tools/signal_alert.py --dry-run    poll now, print, send nothing
+#
+# ONE SIGNAL IS ANNOUNCED ONCE. The alerter keys every send on
+# (symbol, timeframe, bar time, action), so polling every minute for a 4h cell
+# sends one message per signal, not 240.
+
+# How often the scheduled task polls. Informational here -- the real cadence is
+# the Windows task registered by configs/Scheduler/signal_alert_install.cmd.
+poll_seconds: 60
+
+# Which actions are worth a message. The rule emits four:
+#
+#   buy    open long        actionable, carries an entry, stop and lot size
+#   sell   open short       the same
+#   exit   close the trade  actionable, no entry
+#   hold   nothing to do    fires on every bar of every cell, so it is never
+#                           announced; listing it here would send a message a
+#                           minute and bury the three that matter
+alert_on: [buy, sell, exit]
+
+# The cells. `enabled: false` drops one without losing the line, which is
+# better than deleting it -- the reason it was being watched usually lives in
+# the comment beside it.
+#
+# A NOTE ON WHICH CELLS ARE WORTH WATCHING, because the measurements are blunt:
+# XAUUSD 4h is the only cell in this project that has ever shown positive net
+# expectancy (+0.102 R, and its confidence interval later turned out to span
+# zero once the full instrument list loaded). 15m clears its own spread; 5m
+# needs a raw account; 1m gold is negative before costs. Watching a fast cell
+# is not free -- see "Spread decides the timeframe" in the README.
+watch:
+  - symbol: XAUUSD.a
+    tf: "4h"
+    enabled: true
+    note: the only cell ever measured positive net of friction
+
+  - symbol: XAUUSD.a
+    tf: "1h"
+    enabled: true
+    note: negative net but the closest of the fast cells
+
+  - symbol: XAUUSD.a
+    tf: "15m"
+    enabled: true
+    note: clears its own spread, but nothing beyond it
+
+  - symbol: XAUUSD.a
+    tf: "5m"
+    enabled: true
+    note: clears its own spread, but nothing beyond it
+
+  - symbol: XAUUSD.a
+    tf: "1m"
+    enabled: true
+    note: clears its own spread, but nothing beyond it
+
+  - symbol: EURUSD.a
+    tf: "4h"
+    enabled: false
+    note: donchian is negative here in both eras
+
+  - symbol: USDJPY.a
+    tf: "4h"
+    enabled: false
+    note: enable if you want the yen leg watched too

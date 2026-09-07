@@ -6,7 +6,12 @@
 <title>DiaNurFx — Charts</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@300;400;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Roboto Mono carries 700 because the CSS asks for it. Without the face,
+     browsers SYNTHESISE bold by dilating the 400 stems, which at the 11.5px
+     the menu chips and the calendar use looks smeared rather than heavy --
+     reported as "hazy". `document.fonts.check("700 12px Roboto Mono")`
+     returns true either way, so it cannot be used to detect this. -->
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@300;400;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/app.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='13' height='13' fill='%23171C8F'/%3E%3Crect x='17' y='2' width='13' height='13' fill='%23FF9E1B'/%3E%3Crect x='2' y='17' width='13' height='13' fill='%2393C90F'/%3E%3Crect x='17' y='17' width='13' height='13' fill='%23E31C79'/%3E%3C/svg%3E">
 </head>
@@ -36,21 +41,19 @@
     <button class="tb" id="drawBtn" title="Drawing tools">✎ Draw</button>
     <button class="tb" id="autoBtn" title="Algorithmic trendlines (l)">⌑ Auto TL</button>
     <button class="tb" id="layoutBtn" title="Chart layout">▦ Layout</button>
+    <button class="tb" id="snapBtn" title="Snapshot, snapshot with panel info, or share">📷 Snapshot ▾</button>
   </div>
 
   <div class="spacer"></div>
-
-  <div class="acct" id="acct">
-    <div class="acct-cell"><span>Balance</span><b id="acBal">—</b></div>
-    <div class="acct-cell"><span>Equity</span><b id="acEq">—</b></div>
-    <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
-    <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
-  </div>
 
   <button class="pill" id="healthPill" title="Bridge status">connecting…</button>
 </header>
 
 <main class="workspace">
+  <button class="rail-toggle rail-toggle-l" id="sidebarToggle"
+          title="Watchlist, Session &amp; News (\)" aria-expanded="true">‹</button>
+  <div class="rail-stub rail-stub-l" id="sidebarStub" role="button" tabindex="0"
+       title="Hover to peek, click to pin open (\)"><span>Watchlist · Session · News</span></div>
   <aside class="sidebar" id="sidebar">
     <div class="side-head">
       <span>Watchlist</span>
@@ -60,16 +63,37 @@
     <div class="wl" id="watchlist"></div>
     <div class="side-head"><span>Session</span></div>
     <div class="sessions" id="sessions"></div>
+    <div class="side-head"><span>News</span></div>
+    <div class="news" id="newsPanel"></div>
   </aside>
 
-  <section class="charts" id="grid" data-layout="1"></section>
+  <section class="chartarea">
+    <div class="charts" id="grid" data-layout="1"></div>
+    <div class="chart-tabs" id="chartTabs">
+      <div class="ct-list" id="ctList"></div>
+    </div>
+  </section>
 
+  <button class="rail-toggle rail-toggle-r" id="rightbarToggle"
+          title="Trend read &amp; Signal engine (])" aria-expanded="true">›</button>
+  <div class="rail-stub rail-stub-r" id="rightbarStub" role="button" tabindex="0"
+       title="Hover to peek, click to pin open (])"><span>Trend read · Signal engine</span></div>
   <aside class="rightbar" id="rightbar">
-    <div class="side-head"><span>Time &amp; Sales</span><span class="mono dim" id="tapeSym">—</span></div>
-    <div class="tape-head"><span>Time</span><span>Price</span><span>Bid/Ask</span></div>
-    <div class="tape" id="tape"></div>
-    <div class="side-head"><span>Contract</span></div>
-    <div class="spec" id="spec"></div>
+    <div class="side-head">
+      <span>Donchian rule</span>
+      <button class="rail-tf" id="rpSym" title="Rule timeframe &mdash; changes the chart too">&mdash;</button>
+    </div>
+    <div class="rulepanel" id="rulepanel"></div>
+    <div class="side-head">
+      <span>Trend read</span>
+      <button class="rail-tf" id="trSym" title="Read timeframe — changes the chart too">—</button>
+    </div>
+    <div class="trendread" id="trendread"></div>
+    <div class="side-head">
+      <span>Signal engine</span>
+      <button class="rail-tf" id="sigSym" title="Execution timeframe — changes the chart too">—</button>
+    </div>
+    <div class="signalpanel" id="signalpanel"></div>
   </aside>
 </main>
 
@@ -81,20 +105,128 @@
     <button class="tab" data-tab="calendar">Calendar</button>
     <button class="tab" data-tab="backtest">Backtest</button>
     <div class="spacer"></div>
-    <span class="ro-badge" title="The MT5 bridge exposes no trading endpoints">READ&nbsp;ONLY</span>
-    <div class="panel-size">
-      <button class="size-btn" id="bottomToggle" title="Collapse panel">–</button>
-      <button class="size-btn" id="bottomExpand" title="Expand panel">□</button>
-    </div>
+    <!-- Where the account cells land while the panel is collapsed. -->
+    <div class="tabs-acct" id="tabsAcct"></div>
+    <!-- No handle. Double-clicking the tab strip collapses and restores the
+         panel, which is the idiom every docked panel already uses and costs no
+         chrome at all. -->
   </div>
   <div class="panel" id="panel"></div>
 </footer>
+
+<!-- The status bar. The account numbers were behind a `$` toggle in the tab
+     row, which made the one thing you must never lose track of -- how much room
+     the account has left -- the one thing that was hidden by default. -->
+<div class="statusbar" id="statusbar">
+  <div class="spacer"></div>
+  <!-- One group, moved wholesale between here and the tab row -- and RIGHT-ALIGNED
+       in both, so collapsing the panel does not slide the numbers across the
+       screen. Their position is the one thing that should not move. -->
+  <div class="acct-cells" id="acctCells">
+    <div class="acct-cell"><span>Balance</span><b id="acBal">—</b></div>
+    <div class="acct-cell"><span>Equity</span><b id="acEq">—</b></div>
+    <div class="acct-cell"><span>Floating</span><b id="acPl">—</b></div>
+    <div class="acct-cell"><span>Margin free</span><b id="acFree">—</b></div>
+    <div class="acct-cell"><span>Margin level</span><b id="acLevel">—</b></div>
+    <!-- REALISED profit, closed trades only, and the two cells that survive the
+         eye. They sit LAST, hard against the eye button, on purpose: when the
+         others collapse these do not move a pixel, so pressing the eye reads as
+         "the rest went away" rather than as the whole strip rearranging. -->
+    <div class="acct-cell acct-keep"><span>Profit today</span><b id="acDay">—</b></div>
+    <div class="acct-cell acct-keep"><span>This month</span><b id="acMonth">—</b></div>
+    <!-- Hiding is OPT-IN and the values show by default. The earlier `$` toggle
+         defaulted to hidden, which made how much room the account has left the
+         one number you had to go looking for. This keeps it in front of you
+         and gives you one press to cover it when the screen is shared. -->
+    <button class="status-btn acct-eye" id="acctEye" aria-pressed="false"
+            title="Hide account figures (shared screen)">
+      <span aria-hidden="true" id="acctEyeIcon">&#128065;</span>
+    </button>
+  </div>
+  <!-- Grouped so it can travel into the tab row with the account cells when the
+       panel collapses; on its own it went with the hidden status bar and left
+       no way to open the chat at all. -->
+  <div class="status-right" id="statusRight">
+    <button class="status-btn" id="chatBtn" title="Ask about a term, the current read, or the calendar">
+      <span aria-hidden="true">💬</span> Ask
+    </button>
+  </div>
+</div>
 
 <div class="modal" id="searchModal" hidden>
   <div class="modal-box">
     <input id="searchInput" type="text" placeholder="Search symbol — EURUSD, XAUUSD, US30…" autocomplete="off" spellcheck="false">
     <div class="results" id="searchResults"></div>
     <div class="modal-foot"><kbd>↑</kbd><kbd>↓</kbd> move <kbd>↵</kbd> select <kbd>esc</kbd> close</div>
+  </div>
+</div>
+
+<!-- ALERT SETTINGS. Written to configs/alerts.json, which the two Telegram
+     schedulers read on every poll -- so a change here takes effect on the next
+     minute with nothing restarted. The file is the source of truth; this modal
+     is one way to edit it and a text editor is the other. -->
+<div class="modal" id="alertsModal" hidden>
+  <div class="modal-box alerts-box">
+    <div class="alerts-head">Alert settings</div>
+    <div class="alerts-body">
+      <label class="alerts-row">
+        <input type="checkbox" id="alNews">
+        <span>Macro release alerts</span>
+        <span class="alerts-badge" id="alNewsState"></span>
+      </label>
+      <div class="alerts-sub">
+        <label>warn <input type="number" id="alNewsLead" min="1" max="240" step="1"> min before</label>
+        <label>impact
+          <select id="alNewsImpact">
+            <option value="any">any</option>
+            <option value="high">high only</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="alerts-head2">
+        Signal alerts
+        <span class="alerts-badge" id="alCount"></span>
+      </div>
+      <div class="alerts-hint">Click a timeframe to switch it on or off.</div>
+      <div id="alCells" class="alerts-cells"></div>
+      <button id="alAdd" class="btn alerts-addbtn">+ Add instrument…</button>
+    </div>
+    <div class="modal-foot">
+      <span id="alStatus" class="alerts-status"></span>
+      <span class="alerts-spacer"></span>
+      <button id="alCancel" class="btn">Cancel</button>
+      <button id="alSave" class="btn primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- PIN gate for the account figures. Local only: the PIN never leaves this
+     machine and is never sent to the bridge or anywhere else. -->
+<div class="modal" id="pinModal" hidden>
+  <div class="modal-box pin-box">
+    <div class="pin-head" id="pinTitle">Enter PIN</div>
+    <div class="pin-note" id="pinNote"></div>
+    <input id="pinInput" type="password" inputmode="numeric" autocomplete="off"
+           spellcheck="false" maxlength="12" placeholder="••••">
+    <input id="pinConfirm" type="password" inputmode="numeric" autocomplete="off"
+           spellcheck="false" maxlength="12" placeholder="repeat to confirm" hidden>
+    <!-- The way back from a forgotten PIN. Set alongside the PIN, entered in
+         its place when the PIN is gone. Longer on purpose: it is the fallback,
+         so it should not be four digits. -->
+    <input id="pinRecovery" type="password" autocomplete="off" spellcheck="false"
+           maxlength="64" placeholder="recovery password" hidden>
+    <div class="pin-err" id="pinErr" hidden></div>
+    <div class="modal-foot">
+      <span id="pinHint"><kbd>↵</kbd> confirm <kbd>esc</kbd> cancel</span>
+      <span class="pin-spacer"></span>
+      <button class="status-btn" id="pinForgot" hidden
+              title="Use your recovery password to set a new PIN">Forgot PIN?</button>
+      <!-- "Change", not "Reset": it verifies the current PIN before letting a
+           new one be set, so it is no longer a way around the gate. -->
+      <button class="status-btn" id="pinForget" hidden
+              title="Verify your current PIN, then choose a new one">Change PIN</button>
+    </div>
   </div>
 </div>
 

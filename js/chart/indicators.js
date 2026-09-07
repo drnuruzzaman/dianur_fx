@@ -10,15 +10,40 @@
  */
 
 import { findDivergences, rsiSeries } from './divergence.js';
+import { rollingShifted } from './rules.js';
+import { zigzag } from './structure.js';
 
 const C = {
   pink: '#E31C79', navy: '#4959ff', green: '#93C90F', orange: '#FF9E1B',
   grey: '#B1B3B3', cyan: '#31c7d6', violet: '#a86bff', white: '#e8eef6',
 };
 
+/* An EMA over a series that STARTS with nulls, seeded from the first real
+   value rather than through them.
+
+   `ema` above seeds with an SMA of the first `len` entries, which is right for
+   price and wrong for anything derived: RSI's first `length` values are null,
+   and averaging nulls yields NaN that then decays through the entire series.
+   MACD sidesteps it by substituting 0, which is safe for a series centred on
+   zero and would be visibly wrong here -- an RSI EMA seeded at 0 climbs toward
+   50 over its first bars and draws a hook that never happened. */
+function emaAfterNulls(vals, len) {
+  const out = new Array(vals.length).fill(null);
+  const start = vals.findIndex((v) => v !== null && v !== undefined && !Number.isNaN(v));
+  if (start < 0) return out;
+  const e = ema(vals.slice(start), len);
+  for (let i = 0; i < e.length; i++) out[start + i] = e[i];
+  return out;
+}
+
+/* sma/ema/wilder are EXPORTED so strategies can reuse them rather than carry
+   their own copies. sim/indicators.py mirrors these three specifically -- the
+   mean-of-first-n seeding here is NOT what rules.js emaSeries does, and a
+   strategy that grabbed the wrong one would diverge from the engine in a way
+   no chart would ever look wrong. */
 const src = (bars, key) => bars.map((b) => (key === 'hl2' ? (b.h + b.l) / 2 : b[key ?? 'c']));
 
-function sma(vals, len) {
+export function sma(vals, len) {
   const out = new Array(vals.length).fill(null);
   let sum = 0;
   for (let i = 0; i < vals.length; i++) {
@@ -29,7 +54,7 @@ function sma(vals, len) {
   return out;
 }
 
-function ema(vals, len) {
+export function ema(vals, len) {
   const out = new Array(vals.length).fill(null);
   const k = 2 / (len + 1);
   let prev = null;
@@ -47,7 +72,7 @@ function ema(vals, len) {
 }
 
 /** Wilder smoothing — used by RSI and ATR so values match MetaTrader. */
-function wilder(vals, len) {
+export function wilder(vals, len) {
   const out = new Array(vals.length).fill(null);
   let prev = null;
   for (let i = 0; i < vals.length; i++) {
@@ -119,6 +144,80 @@ export const INDICATORS = {
       ];
     },
   },
+  donchian: {
+    label: 'Donchian channel', pane: 'main', inputs: { entry: 20, exit: 10 },
+    calc: (bars, o) => {
+      // rollingShifted is the SAME function js/chart/donchian.js uses to make
+      // the trading decision, so the drawn channel cannot disagree with the
+      // rule that fires on it. The shift matters: the channel excludes the bar
+      // being decided, which is why the line looks one bar behind price.
+      const hi = bars.map((b) => b.h);
+      const lo = bars.map((b) => b.l);
+      const up = rollingShifted(hi, o.entry, Math.max);
+      const dn = rollingShifted(lo, o.entry, Math.min);
+      // The 10-bar channel is the EXIT, and only one side of it is live at a
+      // time: exitLo closes a long, exitHi closes a short. Both are drawn
+      // because which one is live depends on a position the chart does not
+      // know about -- the panel names the live one.
+      const xu = rollingShifted(hi, o.exit, Math.max);
+      const xd = rollingShifted(lo, o.exit, Math.min);
+      const fin = (a) => a.map((v) => (Number.isFinite(v) ? v : null));
+      return [
+        { type: 'line', label: `upper ${o.entry}`, color: C.green, data: fin(up), width: 1.4 },
+        { type: 'line', label: `lower ${o.entry}`, color: C.pink, data: fin(dn), width: 1.4 },
+        { type: 'line', label: `exit ${o.exit} hi`, color: C.grey, data: fin(xu), width: 1, dash: [3, 3] },
+        { type: 'line', label: `exit ${o.exit} lo`, color: C.grey, data: fin(xd), width: 1, dash: [3, 3] },
+      ];
+    },
+  },
+  zigzag: {
+    label: 'ZigZag line', pane: 'main', inputs: { atr: 3 },
+    /*
+     * The ZigZag's legs, as a STUDY rather than a bespoke overlay.
+     *
+     * A study returns a per-bar series, and a ZigZag is a handful of turns --
+     * so the turns are joined by LINEAR INTERPOLATION and the series is dense.
+     * That is not a trick to fit the contract: the value between two turns IS
+     * the straight line between them, which is what the leg is. It also means
+     * this rides the machinery every other overlay already has -- the
+     * Indicators menu, per-symbol persistence, the renderer -- instead of a
+     * second drawing path that could drift from the replay's.
+     *
+     * `atr` is the reversal threshold in ATR: a leg must travel this far before
+     * it can end. 3.0 is `SIGNIFICANT_ATR`, the same number the ranked marks
+     * call rank 1, so the line joins the turns the rings mark. Raising it draws
+     * a coarser structure; there is no "right" value, which is why it is an
+     * input rather than a constant.
+     *
+     * THE TAIL IS NULL ON PURPOSE. Everything after the last CONFIRMED turn is
+     * left blank, because the leg in progress runs to an extreme that has not
+     * been proved and would move when the next bar prints. A ZigZag that
+     * repaints its last leg is the classic version of this indicator and the
+     * reason it has the reputation it has; this one stops where the evidence
+     * stops, so the line you see is one the walk could have drawn at the time.
+     */
+    calc: (bars, o) => {
+      const mult = Number(o.atr) > 0 ? Number(o.atr) : 3;
+      const turns = zigzag(bars, { atrMult: mult });
+      const out = new Array(bars.length).fill(null);
+      for (let k = 0; k + 1 < turns.length; k++) {
+        const a = turns[k], b = turns[k + 1];
+        const span = b.i - a.i;
+        if (span <= 0) continue;
+        const step = (b.price - a.price) / span;
+        for (let i = a.i; i <= b.i; i++) out[i] = a.price + step * (i - a.i);
+      }
+      /* TRANSLUCENT ON PURPOSE. This is context, not a signal: it says which
+         turns belong to the same leg, and the candles are the subject. Opaque
+         white made it the brightest thing on the chart and pulled the eye off
+         price; .42 receded too far to follow across a busy stretch. .62 is the
+         setting that reads as one continuous path without competing -- grey,
+         so it takes no side, and translucent, so the candles show through it
+         rather than being crossed out. */
+      return [{ type: 'line', label: `zigzag ${mult} ATR`,
+                color: 'rgba(177,179,179,.62)', data: out, width: 1.2 }];
+    },
+  },
   vwap: {
     label: 'VWAP (session)', pane: 'main', inputs: {},
     calc: (bars) => {
@@ -145,22 +244,43 @@ export const INDICATORS = {
   },
   rsidiv: {
     label: 'RSI + divergence', pane: 'own',
-    inputs: { length: 14, strength: 3, minRsiGap: 2, oversold: 40, overbought: 60 },
+    /* `oversold`/`overbought` are the DIVERGENCE search thresholds, not the
+       bands you read. They stay at 40/60 because that is what findDivergences
+       was measured with; changing them changes which divergences exist, not
+       just what the pane looks like.
+
+       `bandHigh/Mid/Low` are the READING guides -- 70 / 50 / 20 -- and are
+       drawn instead. Keeping both sets of lines put five horizontals in a pane
+       this short, which is more furniture than signal. */
+    inputs: { length: 14, strength: 3, minRsiGap: 2, oversold: 40, overbought: 60,
+              bandHigh: 80, bandMid: 50, bandLow: 20, emaLen: 9,
+              includeHidden: 0 },
     calc: (bars, o) => {
       const rsi = rsiSeries(bars, o.length);
       const divs = findDivergences(bars, {
         rsiLen: o.length, strength: o.strength, minRsiGap: o.minRsiGap,
         oversold: o.oversold, overbought: o.overbought,
+        includeHidden: !!o.includeHidden,
       });
-      const col = (d) => (d.kind === 'bullish' ? C.green : C.pink);
+      /* Hidden divergence is drawn DIMMER and dashed, and that is a judgement
+         about evidence rather than taste. Measured at the confirmation bar
+         against matched control candles over three eras, hidden returned
+         -1.51 / -0.24 / +0.07 pp -- no information at all, and regular is
+         barely better (+0.12 / +0.71 / +4.79, significant only in the era the
+         work was developed on). Drawing them identically would imply the two
+         carry comparable weight; neither carries much, and hidden carries
+         less. */
+      const hidden = (d) => d.kind.endsWith('_hidden');
+      const col = (d) => (d.kind.startsWith('bullish') ? C.green : C.pink);
       // Two legs per divergence: the RSI leg in this pane and the PRICE leg on
       // the candles, because the whole point is that the two disagree.
       const rsiLegs = divs.map((d) => ({
-        t1: d.prevT, v1: d.prevRsi, t2: d.t, v2: d.rsi, color: col(d), width: 2.2,
+        t1: d.prevT, v1: d.prevRsi, t2: d.t, v2: d.rsi, color: col(d),
+        width: hidden(d) ? 1.2 : 2.2, dash: hidden(d) ? [3, 3] : undefined,
       }));
       const priceLegs = divs.map((d) => ({
         t1: d.prevT, v1: d.prevPrice, t2: d.t, v2: d.price, color: col(d),
-        width: 1.4, dash: [5, 3],
+        width: hidden(d) ? 1 : 1.4, dash: hidden(d) ? [2, 4] : [5, 3],
       }));
       // A pivot is only visible `strength` bars after it happens, so the bar the
       // divergence could first be ACTED on is marked separately from the swing
@@ -172,10 +292,35 @@ export const INDICATORS = {
       });
       return [
         { type: 'range', min: 0, max: 100 },
+        // the window divergences are searched in, shaded rather than outlined
         { type: 'zone', from: o.oversold, to: o.overbought, color: 'rgba(73,89,255,.06)' },
-        { type: 'level', value: o.overbought, color: 'rgba(227,28,121,.35)', dash: [3, 3] },
-        { type: 'level', value: o.oversold, color: 'rgba(147,201,15,.35)', dash: [3, 3] },
-        { type: 'line', label: 'RSI ' + o.length, color: C.violet, data: rsi, width: 1.5 },
+        /* The reading bands, NAMED. These are labels only: the numbers that
+           decide which divergences exist are `oversold`/`overbought` above and
+           they stay at 40/60, because moving them changes the detection rather
+           than the picture. So the pane says overbought 80 / oversold 20 while
+           the shaded 40-60 window is still where divergences are searched. */
+        { type: 'level', value: o.bandHigh, color: 'rgba(227,28,121,.45)',
+          dash: [3, 3], label: 'overbought ' + o.bandHigh, labelColor: C.pink },
+        { type: 'level', value: o.bandMid, color: 'rgba(177,179,179,.40)',
+          label: String(o.bandMid), labelColor: C.grey },
+        { type: 'level', value: o.bandLow, color: 'rgba(147,201,15,.45)',
+          dash: [3, 3], label: 'oversold ' + o.bandLow, labelColor: C.green },
+        /* A SMOOTHED RSI, AND NOTHING MORE. Drawn thinner and dimmer than the
+           RSI it follows, because it is context and not a second opinion: an
+           EMA of RSI cannot carry information RSI does not, being a linear
+           filter over a series that is already an average of averages.
+
+           It is NOT a signal here, and that was measured rather than assumed.
+           `rsi_ema_cross` -- long on RSI crossing above this line, short below
+           -- was run through the full gates on XAUUSD 1h/4h/1d in and out of
+           sample: 0 of 6 cells passed, -0.0079 R over 907 trades on the 4h cell
+           where Donchian makes +0.1923 over 231. Four times the trading for
+           less than nothing. See sim/strategies/rsi_ema_cross.py. */
+        { type: 'line', label: 'EMA ' + o.emaLen, color: C.orange,
+          data: emaAfterNulls(rsi, o.emaLen), width: 1 },
+        // `tag` puts the live value on the axis, the way price has always had
+        { type: 'line', label: 'RSI ' + o.length, color: C.violet, data: rsi,
+          width: 1.5, tag: true, tagDigits: 2 },
         { type: 'segment', label: 'div', segs: rsiLegs },
         { type: 'mark', points: marks },
         { type: 'segment', label: 'div-price', pane: 'main', segs: priceLegs },

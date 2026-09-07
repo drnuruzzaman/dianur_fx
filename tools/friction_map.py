@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sim.core import Config
 from sim.instruments import DATA, load, spec
-from sim.strategies.donchian import atr
+from sim.indicators import atr
 
 
 def main():
@@ -51,7 +51,7 @@ def main():
     rows = []
     root = os.path.join(DATA, 'bars')
     for sym in sorted(os.listdir(root)):
-        for tf in ['15m', '1h', '4h', '1d']:
+        for tf in ['1m', '5m', '15m', '1h', '4h', '1d']:
             if not os.path.isdir(os.path.join(root, sym, tf)):
                 continue
             try:
@@ -61,7 +61,11 @@ def main():
                 continue
             if len(b) < 500:
                 continue
-            a = atr(b, 14).median()
+            # sim.indicators.atr returns an ndarray, not a Series: the private
+            # per-strategy copies that did return Series were removed when the
+            # project unified on one ATR, and this call site was missed because
+            # tools/ is not covered by the test suite.
+            a = np.nanmedian(np.asarray(atr(b, 14), dtype=float))
             # same floor the simulator applies: the recorded column is 0 for
             # every FX bar after 2020, so taking it at face value would report
             # a spread-free market (see sim/core.py _spread_price)

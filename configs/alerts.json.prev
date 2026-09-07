@@ -1,0 +1,77 @@
+{
+  "_note": "Written by the Settings modal (live pill -> Settings) and read by tools/signal_alert.py and tools/event_alert.py on every poll. Safe to hand-edit; the UI rewrites the whole file, so a comment added here will not survive a save -- put explanations in the per-cell `note` field, which does.",
+  "news": {
+    "enabled": true,
+    "lead_minutes": 10,
+    "impact": "any"
+  },
+  "signals": {
+    "alert_on": [
+      "buy",
+      "sell",
+      "exit"
+    ],
+    "watch": [
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "4h",
+        "enabled": true,
+        "note": "the only cell ever measured positive net of friction"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1h",
+        "enabled": true,
+        "note": "negative net but the closest of the fast cells"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "15m",
+        "enabled": true,
+        "note": "clears its own spread, but nothing beyond it"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "5m",
+        "enabled": true,
+        "note": "clears its own spread, but nothing beyond it"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1m",
+        "enabled": true,
+        "note": "clears its own spread, but nothing beyond it"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "4h",
+        "enabled": true,
+        "note": "enable if you want the yen leg watched too"
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "4h",
+        "enabled": false,
+        "note": ""
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1m",
+        "enabled": false,
+        "note": ""
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1h",
+        "enabled": true,
+        "note": ""
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "1m",
+        "enabled": true,
+        "note": ""
+      }
+    ]
+  }
+}

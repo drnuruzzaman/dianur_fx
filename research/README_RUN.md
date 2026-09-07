@@ -1,0 +1,1 @@
+Run: python -m research.run_tl --symbol EURUSD --strategy bounce --start 2021-01-01. Use --all for all hypotheses. Outputs are written under research_runs/.

@@ -585,6 +585,42 @@ def read_spec(name):
     }
 
 
+def probe_session():
+    """
+    Is the terminal session BEHIND the handle still alive?
+
+    WHY THIS IS NOT OPTIONAL. `mt5.initialize()` succeeding once sets a flag,
+    and that flag survives the terminal it describes. Restart MetaTrader and
+    this process keeps a handle to a session that no longer exists: every call
+    still returns, quietly, with nothing in it. Health then reports
+    `connected: true, error: null` while /symbols returns 0 and the chart draws
+    an empty pane -- the one moment the endpoint most needs to tell the truth is
+    the one where a cached flag cannot.
+
+    `symbols_total()` is the cheapest question with a real answer. A live
+    session on any broker has hundreds; a dead one answers 0 or None without
+    raising. Health is polled every 5s, so this must stay cheap -- it is one IPC
+    round trip and no allocation.
+
+    Returns {'alive': bool, 'symbols': int, 'handle': bool}.
+    """
+    try:
+        with MT5_LOCK:
+            n = mt5.symbols_total()
+    except Exception:                                     # noqa: BLE001
+        # the IPC itself is gone, which is a dead session by any definition
+        return {'alive': False, 'symbols': 0, 'handle': False}
+    n = int(n or 0)
+    return {'alive': n > 0, 'symbols': n, 'handle': True}
+
+
+#: A dead session is a CONFIGURATION problem with one fix, so the message says
+#: the fix rather than the symptom. Two bridges is the common cause: the second
+#: cannot bind the port, so the stale first one keeps answering.
+SESSION_GONE = ('MT5 answers with 0 symbols -- the terminal session is gone. '
+                'Restart the bridge, and make sure only ONE is running.')
+
+
 def read_symbols():
     with MT5_LOCK:
         rows = mt5.symbols_get() or []
@@ -940,7 +976,14 @@ def download_worker(symbols, tfs, years, days, want_bars, want_ticks):
     """Bulk pull on the bridge own MT5 session, holding the lock throughout."""
     sys.path.insert(0, os.path.dirname(HERE))
     try:
+        import importlib
+
         from tools import mt5_download as dl
+        # Reloaded, like _reindex_now does. A long-lived bridge caches the
+        # module from its first import, so an edit to the download tool has no
+        # effect until a restart -- which cost a re-download here, silently,
+        # with the fix already on disk and the old code still running.
+        dl = importlib.reload(dl)
     except Exception as exc:                              # noqa: BLE001
         with DOWNLOAD_LOCK:
             DOWNLOAD.update(running=False,
@@ -1007,6 +1050,118 @@ def _reindex_now():
 # --------------------------------------------------------------------------- #
 # HTTP layer                                                                  #
 # --------------------------------------------------------------------------- #
+def signal_now(symbol, tf, strategy=None, position=None):
+    """sim.signal.evaluate over the bars MT5 is serving right now.
+
+    `strategy` DEFAULTS TO THE TIMEFRAME'S OWN, via horizon.strategy_for_tf,
+    and not to a flat 'donchian'. The edge is a duration: N=20 on 15m is a
+    five-hour channel measured at -0.0756 R, while the 3.3-day channel that
+    passed its gates there is N=317. Naming the strategy explicitly still
+    wins -- a sweep or a comparison must be able to ask for a specific rule --
+    but the DEFAULT has to be the rule this timeframe was validated as, or
+    /signal quotes one rule while the chart draws another. That divergence has
+    happened once already between the panel and the replay; this is the same
+    bug on the fourth surface.
+
+    Imported lazily and RELOADED, for the reason recorded in _download_worker:
+    a bridge that has been up for hours holds the module it first imported, so
+    an edit to the rule would be invisible here until a restart -- and a signal
+    service silently running last week's rule is worse than one that is down.
+
+    `position` may be 'flat'/'long'/'short' to override what is held; without it
+    the live position is read from the terminal, because the rule's answer
+    genuinely depends on it (a breakout is an entry only when flat).
+    """
+    import importlib
+
+    try:
+        from sim import signal as sig_mod
+        sig_mod = importlib.reload(sig_mod)
+        from sim.fx import FX
+        from sim.instruments import account_currency, spec as spec_of
+        from sim.strategies import BASELINES, params_for_tf, strategy_for_tf
+    except Exception as exc:                              # noqa: BLE001
+        return {'error': 'sim import failed: %s' % exc}
+
+    if not strategy:
+        strategy = strategy_for_tf(tf) if tf in TF_NAMES else 'donchian'
+    if strategy not in BASELINES:
+        return {'error': 'unknown strategy %r' % strategy}
+
+    # ENOUGH BARS FOR THE CHANNEL THIS TIMEFRAME RUNS. A flat 600 was fine for
+    # a 20-bar channel and is not for a 950-bar one: the rule would warm up on
+    # every bar it had and answer 'no signal' forever, which reads as a quiet
+    # market rather than as a rule that never started.
+    entry = int(params_for_tf(tf)['entry']) if tf in TF_NAMES else 20
+    want = max(600, entry + 300)
+    payload = (MOCK.bars(symbol, tf, want) if STATE['mock']
+               else read_bars(symbol, tf, want, 0))
+    rows = payload.get('bars') or []
+    need = max(120, entry + 40)
+    if len(rows) < need:
+        return {'error': 'only %d bars, %s needs %d' % (len(rows), strategy, need),
+                'bars': len(rows)}
+
+    import pandas as pd
+
+    df = pd.DataFrame(rows)
+    df['ts'] = pd.to_datetime(df['t'], unit='ms')
+    df = df.set_index('ts')[['o', 'h', 'l', 'c']].rename(
+        columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close'})
+    # THE LAST BAR IS STILL FORMING. Deciding on it is look-ahead: the close
+    # moves, so the signal can appear and vanish inside one bar.
+    closed = df.iloc[:-1]
+    if closed.empty:
+        return {'error': 'no closed bars'}
+
+    side, note = 0, 'flat'
+    if position in ('flat', 'long', 'short'):
+        side = {'flat': 0, 'long': 1, 'short': -1}[position]
+        note = 'overridden: %s' % position
+    else:
+        # read_positions returns a LIST, not {'positions': [...]}
+        legs = [p for p in (read_positions() or [])
+                if (p.get('symbol') or '') == symbol]
+        net = 0.0
+        for leg in legs:
+            v = float(leg.get('volume') or 0)
+            net += v if str(leg.get('side')).lower() == 'buy' else -v
+        side = 0 if abs(net) < 1e-9 else (1 if net > 0 else -1)
+        note = ('flat' if not legs else
+                '%d leg%s, net %+.2f lots' % (len(legs), '' if len(legs) == 1
+                                              else 's', net))
+
+    equity = 0.0
+    try:
+        equity = float((read_account() or {}).get('equity') or 0)
+    except Exception:                                     # noqa: BLE001
+        pass
+
+    try:
+        sp = spec_of(symbol, tf)
+        fx = FX.build(account_currency())
+    except Exception as exc:                              # noqa: BLE001
+        return {'error': 'spec/fx failed: %s' % exc}
+
+    offset = int(STATE.get('time_offset_ms') or 0)
+    last_t = closed.index[-1]
+    sig = sig_mod.evaluate(
+        closed, BASELINES[strategy](), sp,
+        equity=equity or None, risk_pct=float(STATE.get('risk_pct') or 0.5),
+        fx=fx, position_side=side, symbol=symbol, tf=tf,
+        bar_time_server=last_t + pd.Timedelta(milliseconds=offset))
+    if sig is None:
+        return {'error': 'not enough bars for %s' % strategy}
+
+    out = dict(vars(sig))
+    out['broker_position'] = note
+    out['equity'] = equity
+    out['instruction'] = sig.instruction()
+    # never a number the caller could mistake for an order ticket
+    out['read_only'] = True
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'NurAI-MT5-Bridge/1.0'
     origins = list(DEFAULT_ORIGINS)
@@ -1206,11 +1361,35 @@ class Handler(BaseHTTPRequestHandler):
                                    'note': 'live data calls block until this finishes'})
 
             if route == '/health':
+                # PROBED, NOT REMEMBERED. The app decides whether to trust the
+                # feed from this endpoint, so it asks the terminal every time
+                # rather than reporting what was true when the process started.
+                probe = None
+                connected = STATE['connected']
+                error = STATE['error']
+                # Probed on EVERY call, including after the latch. Reporting
+                # `session_probe: null` once disconnected hid the one number
+                # that says why -- and "0 symbols" is the difference between a
+                # dead session and a bridge that never connected at all.
+                if not STATE['mock']:
+                    probe = probe_session()
+                    # Never un-latches: a restarted terminal needs a fresh
+                    # initialize(), so a handle that has gone stale cannot come
+                    # back on its own and reporting recovery would be a lie.
+                    if connected and not probe['alive']:
+                        connected = False
+                        error = SESSION_GONE
+                        # latch it, so every OTHER endpoint starts refusing too
+                        # instead of returning empty results that read as "the
+                        # market has no data" rather than "we are disconnected"
+                        STATE['connected'] = False
+                        STATE['error'] = SESSION_GONE
                 return self._json({
-                    'ok': STATE['mock'] or STATE['connected'],
+                    'ok': STATE['mock'] or connected,
                     'mock': STATE['mock'],
-                    'connected': STATE['connected'],
-                    'error': STATE['error'],
+                    'connected': connected,
+                    'session_probe': probe,
+                    'error': error,
                     'login': STATE['login'], 'server': STATE['server'],
                     'terminal': STATE['terminal'],
                     'time_offset_ms': STATE['time_offset_ms'],
@@ -1316,6 +1495,33 @@ class Handler(BaseHTTPRequestHandler):
                 payload = (MOCK.bars(name, tf, count) if STATE['mock']
                            else read_bars(name, tf, count, months))
                 return self._json(payload)
+
+            if route == '/signal':
+                # THE RULE'S CURRENT STATEMENT, computed in Python.
+                #
+                # This exists so a lot size has ONE implementation. The browser
+                # cannot size a position honestly: it would need an FX rate, and
+                # MetaTrader's live rate and sim/fx.py's bar-close rate differ by
+                # ~0.095% on USDJPY -- enough to flip a whole 0.01 lot step in 30
+                # of 420 tested cases, and the browser's answer came out LARGER
+                # every time. A JS sizing module was written, parity-tested,
+                # caught doing exactly that, and deleted. So sizing is served
+                # from here instead.
+                #
+                # READ ONLY, like everything else on this bridge: it returns a
+                # statement and cannot act on one.
+                # NOT upper-cased, unlike /spec: sim/instruments.json is keyed
+                # by the exact broker name, so 'XAUUSD.a' must stay lower-case
+                # in the suffix. MT5 resolves either; the sim does not.
+                name = one('symbol', '') or ''
+                tf = one('tf', '4h')
+                # empty -> signal_now picks the timeframe's own rule
+                strat = one('strategy', '') or None
+                if not name:
+                    return self._json({'error': 'symbol required'}, 400)
+                if tf not in TF_NAMES:
+                    return self._json({'error': 'bad timeframe %s' % tf}, 400)
+                return self._json(signal_now(name, tf, strat, one('position')))
 
             return self._json({'error': 'no such endpoint', 'path': route}, 404)
 

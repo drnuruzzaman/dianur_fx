@@ -25,6 +25,7 @@
   --mono:"Roboto Mono",ui-monospace,Consolas,monospace;
 
   --topbar-h:46px; --bottom-h:210px; --side-w:232px; --right-w:246px;
+  --status-h:26px;
   --r:4px;
 }
 
@@ -35,10 +36,15 @@ html,body{height:100%}
 body{
   margin:0; background:var(--bg); color:var(--text);
   font-family:var(--sans); font-size:13px; line-height:1.35;
-  display:grid; grid-template-rows:var(--topbar-h) 1fr auto;
+  /* topbar / workspace / footer panel / status bar */
+  display:grid; grid-template-rows:var(--topbar-h) 1fr auto var(--status-h);
   overflow:hidden; -webkit-font-smoothing:antialiased;
 }
-body.bottom-collapsed{--bottom-h:34px}
+/* Collapsed, the status bar has nothing left in it -- its cells have moved up
+   into the tab row -- so it takes no height and the tab strip becomes the
+   bottom edge of the app. */
+body.bottom-collapsed{--bottom-h:34px; --status-h:0px}
+body.bottom-collapsed .statusbar{display:none}
 .mono{font-family:var(--mono)}
 .dim{color:var(--text-dim)}
 .spacer{flex:1}
@@ -80,19 +86,231 @@ kbd{
 .pill[data-state="mock"]{color:#241300; background:var(--orange); border-color:var(--orange)}
 .pill[data-state="down"]{color:#fff; background:var(--pink); border-color:var(--pink)}
 
-.acct{display:flex; gap:2px}
-.acct-cell{display:flex; flex-direction:column; padding:2px 10px; border-left:1px solid var(--line-soft)}
-.acct-cell span{font-size:9.5px; text-transform:uppercase; letter-spacing:2px; color:var(--text-faint)}
-.acct-cell b{font-family:var(--mono); font-size:12.5px; font-weight:500}
+/* Account balances. They live in the FOOTER tab bar next to READ ONLY, not in
+   the header: the numbers are account state, they sit with the account tabs
+   (Positions / Orders / History), and they are hidden until asked for so a
+   shared screen does not lead with a balance. */
+/* ---------------- status bar ---------------- */
+/* Always visible, always the same five numbers, at the bottom edge where a
+   terminal's account state belongs. Its own grid row rather than an overlay, so
+   it can never sit on top of the panel it reports on. */
+/* The strip is a control -- double-click collapses -- so it takes the hand,
+   not the two-headed resize arrow: nothing here is dragged, and an arrow that
+   promises dragging is a worse lie than no cursor at all. */
+/* Both strips are controls, so both take the pointer. */
+#tabs, .statusbar{cursor:pointer}
+#tabs .tab, .statusbar button{cursor:pointer}
+
+.acct-cells{display:flex; align-items:center; gap:2px}
+/* In the tab row the cells sit at the right, before the size buttons. */
+.tabs-acct{display:flex; align-items:center}
+.statusbar{
+  display:flex; align-items:center; gap:2px;
+  height:var(--status-h); padding:0 8px;
+  background:var(--surface); border-top:1px solid var(--line);
+}
+.status-btn{
+  display:flex; align-items:center; gap:5px;
+  height:19px; padding:0 9px; cursor:pointer;
+  background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px;
+  font-family:var(--sans); font-size:10.5px; letter-spacing:.3px;
+}
+.status-btn:hover{border-color:var(--accent); color:#fff}
+.status-btn.on{background:var(--accent-soft); border-color:transparent; color:#fff}
+
+/* ---------------- Ask panel ---------------- */
+.chat-panel{
+  /* ANCHORED AT THE BOTTOM, beside the Ask button that opens it, and it grows
+     UPWARD. `bottom` is the fixed edge and `top` is left auto, so increasing
+     the height moves the TOP edge up -- which is also what makes `resize`
+     extend it upward rather than down over the status bar. */
+  position:fixed; right:0; bottom:var(--status-h); top:auto; z-index:70;
+  /* Same width as the right rail, so the two read as one column of chrome
+     down the right edge rather than as two overlapping ideas. */
+  /* Tall enough for a real exchange. The read-back of the current state runs
+     to a dozen lines on its own, and at 520px it arrived already scrolled --
+     the answer scrolling itself out of view the moment it appears. Runs from
+     just under the top bar down to the status bar. */
+  /* Opens exactly as tall as the footer, so its top edge lands on the tab
+     strip -- the double-click header -- and nothing above it is covered.
+
+     RESIZE IS VERTICAL ONLY, and upward. The width is not a free choice: it
+     matches the right rail on purpose, and a corner grip that let both go would
+     break that alignment by accident. Dragging grows the panel up towards the
+     top bar, where `max-height` pins it.
+
+     `min-height` matters because `--bottom-h` drops to 34px when the panel is
+     collapsed, and a 34px chat box is not a chat box. */
+  width:var(--right-w);
+  height:var(--bottom-h);
+  min-height:180px;
+  max-height:calc(100vh - var(--topbar-h) - var(--status-h));
+  overflow:hidden;      /* the grip below replaces `resize` */
+  display:flex; flex-direction:column;
+  background:rgba(2,16,31,.98); border:1px solid var(--line);
+  border-radius:5px; box-shadow:0 8px 28px rgba(0,0,0,.55);
+}
+.chat-panel[hidden]{display:none}
+/* Top-LEFT, on the edge that actually moves. The native `resize` grip can only
+   sit bottom-right, which on a bottom-anchored panel is the fixed corner. */
+.chat-grip{
+  position:absolute; top:0; left:0; width:22px; height:22px;
+  cursor:ns-resize; z-index:1;
+  background:linear-gradient(135deg,
+    var(--text-faint) 0 1px, transparent 1px 4px,
+    var(--text-faint) 4px 5px, transparent 5px 8px,
+    var(--text-faint) 8px 9px, transparent 9px);
+  opacity:.5; border-top-left-radius:5px;
+}
+.chat-grip:hover{opacity:1}
+/* THE CHAT STOPS ABOVE THE ASK BUTTON, always. Open, `bottom:var(--status-h)`
+   already rests it on the status bar. Collapsed, the status bar is gone and that
+   resolves to 0, which buried the button under the panel -- so it rests on the
+   tab row instead. A control you cannot see is a control you cannot press to
+   close the thing covering it. */
+body.bottom-collapsed .chat-panel{bottom:var(--bottom-h)}
+.status-right{display:flex; align-items:center; margin-left:6px}
+.chat-head{
+  padding:6px 9px; font-size:9.5px; color:var(--text-faint);
+  border-bottom:1px solid var(--line); line-height:1.4;
+}
+.chat-log{flex:1; overflow-y:auto; padding:8px 9px; display:flex;
+  flex-direction:column; gap:8px}
+.chat-msg{font-size:11px; line-height:1.45; white-space:pre-wrap}
+.chat-you{color:var(--text); align-self:flex-end; text-align:right;
+  background:var(--surface-2); padding:4px 8px; border-radius:4px; max-width:85%}
+.chat-bot{color:var(--text-dim); font-family:var(--mono); font-size:10.5px}
+/* A refusal is styled as its own thing rather than as an answer, because the
+   one failure mode that matters here is a guess wearing the voice of a fact. */
+.chat-cannot{color:var(--orange); font-size:11px;
+  border-left:2px solid rgba(255,158,27,.5); padding-left:7px}
+.chat-form{border-top:1px solid var(--line); padding:6px}
+.chat-input{
+  width:100%; padding:5px 7px; font-family:var(--sans); font-size:11px;
+  background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px;
+}
+.chat-input:focus{outline:none; border-color:var(--accent)}
+.acct-cell{display:flex; align-items:baseline; gap:5px;
+  padding:1px 8px; border-left:1px solid var(--line-soft)}
+.acct-cell span{font-size:9px; text-transform:uppercase; letter-spacing:1.5px;
+  color:var(--text-faint)}
+.acct-cell b{font-family:var(--mono); font-size:11px; font-weight:500}
+.acct-btn{margin-left:6px; margin-right:2px; border:1px solid var(--line);
+  border-radius:4px; width:24px;
+  /* A bare "$" in the UI face renders thin beside the other glyph buttons. */
+  font-family:var(--mono); font-size:12px; font-weight:700}
+.acct-btn[aria-expanded="true"]{background:var(--accent-soft); color:#fff;
+  border-color:transparent}
 
 /* ---------------- workspace ---------------- */
+/* Both rails collapse to nothing so the chart can take the full width. The
+   grid columns are driven by variables rather than by hiding the <aside>,
+   because `display:none` would tear down the panels and lose their scroll
+   position and any in-progress render; collapsing the TRACK keeps them mounted
+   and simply gives them no room. */
 .workspace{
-  display:grid; grid-template-columns:var(--side-w) minmax(0,1fr) var(--right-w);
-  min-height:0; overflow:hidden;
+  display:grid;
+  grid-template-columns:var(--side-track) minmax(0,1fr) var(--right-track);
+  min-height:0; overflow:hidden; position:relative;
+  transition:grid-template-columns .16s ease;
 }
+body{--side-track:var(--side-w); --right-track:var(--right-w); --stub-w:26px}
+/* Collapsed leaves a STUB, not nothing: a rail you cannot see is a rail you
+   forget exists, and the name on the spine is what makes it findable again. */
+body.side-collapsed{--side-track:var(--stub-w)}
+body.right-collapsed{--right-track:var(--stub-w)}
+
+/* PEEK OVERLAYS THE CHART, it does not reflow it. Widening the grid track on
+   hover would resize every canvas on every mouse-over -- a full re-render for a
+   glance. Sliding the panel over the chart costs one transform and leaves the
+   chart's backing store untouched. */
+body.side-collapsed .sidebar,
+body.right-collapsed .rightbar{
+  position:absolute; top:0; bottom:0; z-index:8;
+  transition:transform .16s ease; box-shadow:0 0 18px rgba(0,0,0,.55);
+}
+body.side-collapsed .sidebar{
+  left:0; width:var(--side-w); transform:translateX(-100%);
+}
+body.right-collapsed .rightbar{
+  right:0; width:var(--right-w); transform:translateX(100%);
+}
+body.side-collapsed.side-peek .sidebar{ transform:translateX(var(--stub-w)) }
+body.right-collapsed.right-peek .rightbar{ transform:translateX(calc(-1 * var(--stub-w))) }
+
+/* The spine. Vertical text via writing-mode rather than a rotate transform, so
+   the strip keeps a real layout box and stays clickable and focusable. */
+.rail-stub{
+  display:none; position:absolute; top:0; bottom:0; width:var(--stub-w);
+  z-index:7; cursor:pointer; background:var(--surface);
+  align-items:center; justify-content:center;
+  font-size:9.5px; letter-spacing:2.5px; text-transform:uppercase;
+  color:var(--text-faint); user-select:none;
+  transition:color .12s ease, background .12s ease;
+}
+.rail-stub span{ writing-mode:vertical-rl; white-space:nowrap }
+.rail-stub-l{ left:0; border-right:1px solid var(--line) }
+.rail-stub-r{ right:0; border-left:1px solid var(--line) }
+.rail-stub-r span{ transform:rotate(180deg) }
+.rail-stub:hover,.rail-stub:focus-visible{ color:var(--text); background:var(--surface-2); outline:0 }
+body.side-collapsed .rail-stub-l,
+body.right-collapsed .rail-stub-r{ display:flex }
+/* The floating handle is the OPEN-state control; collapsed, the spine is. Two
+   controls for one thing in the same place would just be clutter. */
+body.side-collapsed .rail-toggle-l,
+body.right-collapsed .rail-toggle-r{ display:none }
+
+/* The handle floats over the chart edge rather than sitting in the grid, so a
+   collapsed rail leaves no gutter behind. */
+.rail-toggle{
+  /* Vertically CENTRED, not pinned to the top: the top-left of a chart is where
+     the legend lives, and the handle sat straight on the instrument name. The
+     middle of a rail edge is empty by construction. */
+  position:absolute; top:50%; transform:translateY(-50%);
+  z-index:6; width:16px; height:38px;
+  display:grid; place-items:center; cursor:pointer; padding:0;
+  background:var(--surface); color:var(--text-faint);
+  border:1px solid var(--line); border-radius:3px;
+  font-size:11px; line-height:1;
+  transition:left .16s ease, right .16s ease, color .12s ease;
+  opacity:.55;
+}
+.rail-toggle:hover{opacity:1}
+.rail-toggle:hover{color:var(--text); background:var(--surface-2)}
+/* Amber sits between up and down: a margin level of 150% is not healthy and
+   not yet a margin call, and colouring it green or red would say otherwise. */
+.warn{color:var(--orange)}
+.rail-toggle-l{left:calc(var(--side-track) + 4px)}
+.rail-toggle-r{right:calc(var(--right-track) + 4px)}
+/* EXPLICIT column placement. A collapsed rail is position:absolute, which takes
+   it out of the grid flow -- and auto-placement then slides everything after it
+   one column left, putting the chart in the 26px stub track and blanking it.
+   Pinning each area to its own column makes the layout independent of which
+   rails are currently in flow. */
+.sidebar{grid-column:1}
+/* The chart AREA owns column 2 and stacks the grid above the tab strip; the
+   grid keeps its own display:grid for tiling. Splitting the two means the tab
+   strip is not itself a grid cell fighting the layout. */
+.chartarea{grid-column:2; display:flex; flex-direction:column; min-width:0; min-height:0}
+.rightbar{grid-column:3}
 .sidebar,.rightbar{
   background:var(--surface); display:flex; flex-direction:column; min-height:0; overflow:hidden;
 }
+/* A zero-width track still lays its content out and can bleed a pixel of
+   border; clipping the aside itself keeps a collapsed rail truly invisible. */
+body.side-collapsed .sidebar,
+body.right-collapsed .rightbar{ border:0; overflow:hidden }
+/* The right rail stacks four sections (Trend read, Signal engine, Time & Sales,
+   Contract). Their combined natural height exceeds a laptop viewport, and the
+   rail used to `overflow:hidden` that difference away -- the tape kept its
+   header and lost its rows, which reads as an empty feed rather than a clipped
+   one. The rail therefore scrolls as a whole, and the tape additionally keeps
+   its OWN bounded scroll so it can never grow long enough to push Contract off
+   the end again. */
+.rightbar{overflow-y:auto; overflow-x:hidden}
+.rightbar .side-head{position:sticky; top:0; z-index:3}
 .sidebar{border-right:1px solid var(--line)}
 .rightbar{border-left:1px solid var(--line)}
 .side-head{
@@ -107,15 +325,20 @@ kbd{
 .icon-btn:hover{background:var(--surface-2); color:var(--text)}
 
 .wl-head,.tape-head{
-  display:grid; padding:4px 10px; font-size:9.5px; letter-spacing:1.5px;
+  display:grid; padding:4px 10px; font-size:9px; letter-spacing:1.4px;
   text-transform:uppercase; color:var(--text-faint); border-bottom:1px solid var(--line-soft);
 }
 .wl-head{grid-template-columns:1fr 72px 54px 14px}
 .wl-head span+span,.tape-head span+span{text-align:right}
 .wl{overflow-y:auto; flex:1 1 auto; min-height:80px}
+/* One step down across the rail and the bottom tables. These are reference
+   surfaces you scan rather than read, and at the old size the watchlist and the
+   positions grid were competing with the chart for attention. The row padding
+   comes down with the text so the rows tighten instead of gaining dead space. */
 .wl-row{
-  display:grid; grid-template-columns:1fr 72px 54px 14px; gap:4px; align-items:center;
-  padding:5px 10px; cursor:pointer; border-left:2px solid transparent;
+  display:grid; grid-template-columns:1fr 68px 50px 14px; gap:4px; align-items:center;
+  padding:4px 10px; cursor:pointer; border-left:2px solid transparent;
+  font-size:10.5px;
 }
 .wl-x{
   background:transparent; border:0; color:var(--text-faint); cursor:pointer;
@@ -126,7 +349,7 @@ kbd{
 .wl-row:hover{background:var(--surface-2)}
 .wl-row.active{background:var(--accent-soft); border-left-color:var(--pink)}
 .wl-row .sym{font-weight:700; letter-spacing:.3px}
-.wl-row .px,.wl-row .chg{font-family:var(--mono); font-size:11.5px; text-align:right}
+.wl-row .px,.wl-row .chg{font-family:var(--mono); font-size:10.5px; text-align:right}
 .up{color:var(--up)} .down{color:var(--down)}
 .flash-up{animation:fu .45s ease-out} .flash-down{animation:fd .45s ease-out}
 @keyframes fu{from{background:rgba(147,201,15,.28)}to{background:transparent}}
@@ -139,7 +362,13 @@ kbd{
 .sess.open i{background:var(--green); box-shadow:0 0 7px rgba(147,201,15,.75)}
 .sess .clock{margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--text-faint)}
 
-.tape{overflow-y:auto; flex:1 1 auto; min-height:100px; font-family:var(--mono); font-size:11px}
+/* A bounded, self-scrolling window rather than `flex:1`: as a flex child it
+   was the only section that could give up space, so every pixel the two new
+   panels needed came out of the tape until nothing was left. */
+.tape{
+  overflow-y:auto; flex:none; height:clamp(150px, 24vh, 320px);
+  font-family:var(--mono); font-size:11px}
+.tape-head{position:sticky; top:0; z-index:2; background:var(--surface)}
 .tape-head{grid-template-columns:60px 1fr 1fr}
 .tape-row{display:grid; grid-template-columns:60px 1fr 1fr; gap:4px; padding:2px 10px}
 .tape-row span:not(:first-child){text-align:right}
@@ -149,12 +378,131 @@ kbd{
 .spec dt{color:var(--text-faint)} .spec dd{margin:0; font-family:var(--mono); text-align:right}
 
 /* ---------------- chart grid ---------------- */
-.charts{display:grid; gap:1px; background:var(--line); min-height:0; min-width:0}
+.charts{display:grid; gap:1px; background:var(--line); flex:1 1 auto; min-height:0; min-width:0}
 .charts[data-layout="1"]{grid-template:1fr/1fr}
 .charts[data-layout="2h"]{grid-template:1fr/1fr 1fr}
 .charts[data-layout="2v"]{grid-template:1fr 1fr/1fr}
 .charts[data-layout="4"]{grid-template:1fr 1fr/1fr 1fr}
+/* MT5-style open-chart tabs. One tab per OPEN chart, not per visible cell:
+   the layout decides how many render at once, the tabs decide which ones. */
+.chart-tabs{
+  display:flex; align-items:stretch; gap:1px; flex:none; height:24px;
+  background:var(--line); border-top:1px solid var(--line);
+}
+.ct-list{display:flex; gap:1px; overflow-x:auto; overflow-y:hidden; flex:1 1 auto}
+.ct-list::-webkit-scrollbar{height:5px}
+.ct-list::-webkit-scrollbar-thumb{background:var(--line-soft); border-radius:3px}
+.ct{
+  display:flex; align-items:center; gap:6px; flex:none; padding:0 8px;
+  background:var(--surface); color:var(--text-dim); cursor:pointer;
+  font-family:var(--mono); font-size:10.5px; white-space:nowrap; border:0;
+  border-top:2px solid transparent;
+}
+.ct:hover{background:var(--surface-2); color:var(--text)}
+/* `shown` = rendered in some cell right now. `active` = the focused one. In a
+   4-chart layout four tabs are shown and only one is active, so the two states
+   have to be visually distinct or the highlight lies about what is focused. */
+.ct.shown{background:var(--bg); color:var(--text)}
+.ct.active{border-top-color:var(--pink); color:#fff}
+.ct-x{
+  border:0; background:transparent; color:var(--text-faint); cursor:pointer;
+  font-size:12px; line-height:1; padding:0 2px; border-radius:2px;
+}
+.ct-x:hover{background:var(--down); color:#fff}
 .cell{position:relative; background:var(--bg); min-width:0; min-height:0; overflow:hidden}
+/* Zone tooltip. pointer-events:none is essential -- the div sits under the
+   cursor by construction, and without it every mouse-move would hit the tooltip
+   instead of the canvas and the chart would stop tracking. */
+.zone-tip{
+  position:absolute; z-index:5; pointer-events:none; max-width:290px;
+  display:flex; flex-direction:column; gap:2px; padding:6px 8px;
+  background:rgba(2,16,31,.96); border:1px solid var(--line);
+  border-radius:4px; box-shadow:0 4px 14px rgba(0,0,0,.5);
+}
+.zone-tip[hidden]{display:none}
+.zone-tip u{
+  text-decoration:none; font-size:9.5px; color:var(--text-faint);
+  line-height:1.35; padding-top:4px; margin-top:2px;
+  border-top:1px solid var(--line);
+}
+/* info-tip — the shared panel tooltip; same visual family as .zone-tip, but
+   position:fixed because it is anchored to elements inside scrolling panels. */
+.info-tip{
+  position:fixed; z-index:60; pointer-events:none; max-width:280px;
+  display:flex; flex-direction:column; gap:3px; padding:7px 9px;
+  background:rgba(2,16,31,.97); border:1px solid var(--line);
+  border-radius:4px; box-shadow:0 4px 16px rgba(0,0,0,.55);
+}
+.info-tip[hidden]{display:none}
+.info-tip b{
+  font-family:var(--mono); font-size:10px; letter-spacing:1.1px; color:var(--text);
+}
+.info-tip i{font-style:normal; font-size:10.5px; color:var(--text-dim); line-height:1.4}
+.info-tip u{
+  text-decoration:none; font-family:var(--mono); font-size:9.5px;
+  /* NOT --accent: pink is --down here, and a bearish-coloured note would
+     read as a verdict on the number it is explaining. */
+  color:var(--text); line-height:1.35; padding-top:3px; margin-top:1px;
+  border-top:1px solid var(--line);
+}
+[data-tip-title]{cursor:help}
+
+/* The pin button while the analysis is frozen. Orange like the AS OF banner,
+   because they are the same state seen from two places. */
+.cell-tools button.on{
+  color:var(--orange); border-color:rgba(255,158,27,.5);
+  background:rgba(255,158,27,.14);
+}
+
+/* Orange, not pink: pink is --down, and a bearish-coloured banner over a BULL
+   read would fight the very number it is qualifying. Orange is the only brand
+   colour here with no directional meaning. */
+.panel-asof{
+  display:flex; align-items:baseline; gap:6px; margin:-2px 0 5px;
+  padding:3px 5px; border-radius:3px;
+  background:rgba(255,158,27,.13); border:1px solid rgba(255,158,27,.34);
+}
+.panel-asof b{
+  font-family:var(--mono); font-size:8.5px; letter-spacing:1.1px;
+  color:var(--orange);
+}
+.panel-asof span{font-size:9.5px; color:var(--text)}
+
+/* The arrow: a rotated square with two of its four borders removed, so the
+   corner that pokes out of the tooltip carries the same 1px edge as the body
+   and the other two sides stay open onto the tooltip's own background. A CSS
+   triangle (border-width trick) cannot do that -- it has no border of its own,
+   so it would read as a floating blob against the panel behind it.
+
+   `top` is set from JS per row; only the horizontal placement is static. */
+.info-tip .tip-arrow{
+  position:absolute; width:9px; height:9px; transform:rotate(45deg);
+  background:rgba(2,16,31,.97); border:1px solid var(--line);
+}
+.info-tip.from-left  .tip-arrow{right:-5px; border-left:0;  border-bottom:0}
+.info-tip.from-right .tip-arrow{left:-5px;  border-right:0; border-top:0}
+
+/* The row being explained. The arrow says WHICH WAY the tooltip points; this
+   says WHAT IT POINTS AT, which matters in the Signal engine where six
+   near-identical rows sit 14px apart. */
+[data-tip-title].tip-on{
+  background:var(--surface-2); border-radius:3px;
+  box-shadow:-2px 0 0 0 var(--text-faint);
+}
+
+.zone-tip b{font-family:var(--mono); font-size:10.5px; letter-spacing:1.2px; color:var(--text)}
+.zone-tip i{font-style:normal; font-size:10.5px; color:var(--text-dim); line-height:1.35}
+.zone-tip span{
+  display:flex; align-items:baseline; gap:5px;
+  font-family:var(--mono); font-size:9.5px; color:var(--text);
+}
+/* fixed-width label column, so the values line up into a readable table */
+.zone-tip em{
+  flex:0 0 66px; font-style:normal; text-transform:uppercase;
+  letter-spacing:.6px; font-size:8.5px; color:var(--text-faint);
+}
+.zone-tip small{font-size:9px; color:var(--text-faint)}
+.zone-tip i + span{margin-top:4px}
 .cell.active::after{
   content:""; position:absolute; inset:0; pointer-events:none;
   border:1px solid rgba(227,28,121,.55);
@@ -204,20 +552,40 @@ kbd{
 .tab:hover{color:var(--text)}
 .tab.active{color:#fff; border-bottom-color:var(--pink)}
 .tab b{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:3px}
-.ro-badge{
-  font-family:var(--mono); font-size:9.5px; letter-spacing:1.5px; padding:3px 7px;
-  border:1px solid var(--green); color:var(--green); border-radius:3px;
-}
 .panel{overflow:auto; flex:1 1 auto; min-height:0}
-body.bottom-collapsed .panel{display:none}
-table.grid{width:100%; border-collapse:collapse; font-size:12px}
+/* PEEK, the same contract as the two side rails: hovering the strip shows the
+   panel, clicking the strip pins it. The tab row IS the stub -- it is what stays
+   on screen when the panel is collapsed, it carries the names of what is inside,
+   and it is already where the pointer goes.
+
+   The peeked panel OVERLAYS the chart rather than growing the grid row, for the
+   same reason the rails overlay: widening a track on hover re-renders every
+   canvas underneath it. A glance should cost a transform, not a repaint. */
+body.bottom-collapsed .panel{
+  display:block; position:absolute; left:0; right:0; bottom:100%;
+  height:calc(210px - 34px); z-index:8;
+  background:var(--surface); border-top:1px solid var(--line);
+  box-shadow:0 -14px 22px rgba(0,0,0,.5);
+  /* Hidden by fade rather than by sliding off an edge: this panel has no screen
+     edge to slide behind, so a translated copy would just sit on top of the tab
+     strip on its way out. */
+  opacity:0; transform:translateY(6px); pointer-events:none;
+  transition:opacity .14s ease, transform .14s ease;
+}
+body.bottom-collapsed.bottom-peek .panel{
+  opacity:1; transform:none; pointer-events:auto;
+}
+/* The footer is the positioning context for that overlay, and it must not clip
+   it -- the panel is drawn entirely outside the 34px strip. */
+.bottom{position:relative}
+table.grid{width:100%; border-collapse:collapse; font-size:11px}
 table.grid th{
   position:sticky; top:0; z-index:2; background:var(--bg); text-align:right; font-weight:400;
-  font-size:9.5px; letter-spacing:1.5px; text-transform:uppercase; color:var(--text-faint);
-  padding:5px 10px; border-bottom:1px solid var(--line-soft); white-space:nowrap;
+  font-size:9px; letter-spacing:1.4px; text-transform:uppercase; color:var(--text-faint);
+  padding:4px 10px; border-bottom:1px solid var(--line-soft); white-space:nowrap;
 }
 table.grid th:first-child,table.grid td:first-child{text-align:left}
-table.grid td{padding:4px 10px; text-align:right; font-family:var(--mono); font-size:11.5px;
+table.grid td{padding:3px 10px; text-align:right; font-family:var(--mono); font-size:10.5px;
   border-bottom:1px solid rgba(13,58,107,.4); white-space:nowrap}
 table.grid tr:hover td{background:var(--surface-2)}
 table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
@@ -262,6 +630,72 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
   text-transform:uppercase; color:var(--text-faint)}
 .menu .swatch{width:9px; height:9px; border-radius:2px; flex:none}
 
+/* SEGMENTED ROW -- one label, its choices on one line. Used for "lines per
+   side" in both Auto TL menus; see the note in js/ui/menu.js for why a small
+   pick-exactly-one set is not a stack of ticks. */
+.menu .seg-row{padding:5px 9px 6px}
+.menu .seg-cap{font-size:9.5px; letter-spacing:2.5px; text-transform:uppercase;
+  color:var(--text-faint); margin-bottom:5px}
+/* The track is the border, the buttons are not. Four separately outlined chips
+   read as four controls; one outlined strip divided into four reads as one
+   control with a current position, which is what it is. */
+.menu .seg{display:flex; gap:1px; background:var(--line-soft);
+  border:1px solid var(--line); border-radius:4px; overflow:hidden}
+.menu .seg-btn{
+  /* width:auto beats the full-width `.menu button` rule above; flex:1 makes
+     every segment the same size, so the strip does not jump when the widths of
+     the labels differ. */
+  width:auto; flex:1 1 0; justify-content:center; padding:5px 0;
+  border-radius:0; background:var(--surface); font-family:var(--mono);
+  font-size:12px; color:var(--text-faint);
+  transition:background .12s ease, color .12s ease;
+}
+.menu .seg-btn:hover{background:var(--surface-2); color:var(--text)}
+/* The selected segment is filled, not ticked. A tick inside a segment would be
+   two ways of saying the same thing and would shift the label off centre.
+
+   THE FILL IS OPAQUE, and that is the fix for text that read as "hazy". The
+   selected label was never short of contrast -- measured at 13:1 against its
+   own background -- but it sat on `--accent-soft`, a 16% pink over whatever is
+   behind it, and translucent colour under small bright text muddies the stems.
+   A flat colour of the same hue costs nothing and renders cleanly. (The other
+   half of that fix is in index.html: Roboto Mono had no 700 face, so `bold`
+   here was SYNTHESISED by dilating the 400 stems, which at 11.5px is exactly
+   what "hazy" looks like.) */
+.menu .seg-btn.on{background:#3d1234; color:#fff; font-weight:700}
+.menu .seg-btn.on:hover{background:#4a1640}
+
+/* CHIP ROW -- the multi-select sibling of .seg. Every chip carries its OWN
+   border and there are gaps between them, because these are several
+   independent controls rather than one control with a position. That is the
+   whole visual distinction from the segmented strip above, and it is doing
+   real work: the two rows sit a few pixels apart in the same menu. */
+.menu .chips{display:flex; flex-wrap:wrap; gap:4px}
+.menu .chip-btn{
+  width:auto; flex:0 0 auto; justify-content:center; padding:4px 9px;
+  background:var(--surface); border:1px solid var(--line); border-radius:3px;
+  font-family:var(--mono); font-size:11.5px; color:var(--text-faint);
+  transition:background .12s ease, color .12s ease, border-color .12s ease;
+}
+.menu .chip-btn:hover{background:var(--surface-2); color:var(--text)}
+/* THE SELECTED CHIP KEEPS THE ORDINARY BORDER. It used to take an accent one,
+   which made the two rows disagree about what "selected" looks like a few
+   pixels apart -- a filled segment above, a filled AND outlined chip below. The
+   fill is the state in both. What still separates the rows is what each border
+   encloses: one track around all four segments, one border per chip. That is
+   the structural difference (pick one vs pick any), and it survives the shared
+   fill; a second signal on top of it only made the pair look unrelated. */
+.menu .chip-btn.on{background:#3d1234; color:#fff; font-weight:700}
+.menu .chip-btn.on:hover{background:#4a1640; color:#fff}
+/* The chart's OWN frame is not a projection like the others, and the dot says
+   so in the space a chip already occupies rather than in a row of its own. */
+.menu .chip-btn.mark::before{
+  content:''; width:4px; height:4px; border-radius:50%; margin-right:5px;
+  background:var(--text-faint); flex:none;
+}
+.menu .chip-btn.mark.on::before{background:var(--pink)}
+.menu .chips-note{margin-top:5px; font-size:10.5px; color:var(--text-faint)}
+
 .toast{
   position:fixed; bottom:calc(var(--bottom-h) + 16px); left:50%; transform:translateX(-50%);
   z-index:80; background:var(--surface-2); border:1px solid var(--line);
@@ -275,17 +709,32 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
 *::-webkit-scrollbar-thumb{background:#0d3a6b; border-radius:9px}
 *::-webkit-scrollbar-thumb:hover{background:#155093}
 
-@media (max-width:1280px){ .rightbar{display:none} .workspace{grid-template-columns:var(--side-w) 1fr} }
-@media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} .acct{display:none} }
+/* NARROW WINDOWS ARE HANDLED IN JS, NOT HERE, and the two rules that used to
+   live at this spot are why. Both tried to reclaim the rails' 478px with CSS
+   alone and both broke the grid:
+
+     @media (max-width:1280px){ body:not(.right-collapsed){--right-track:var(--stub-w)} }
+
+   shrank the right TRACK to the 26px stub but left `.rightbar` in grid flow at
+   its full --right-w, so a 246px aside was laid into a 26px column and simply
+   overflowed it -- the chart got 212px at a 1150px window while the rail took
+   312. Collapsing a rail is two things, a narrow track AND an absolutely
+   positioned panel, and this did only the first.
+
+     @media (max-width:920px){ .sidebar{display:none} .workspace{grid-template-columns:1fr} }
+
+   was worse: `display:none` tears the panel down, which the note at the top of
+   the workspace section says not to do because it loses scroll position and
+   any in-progress render, and it left the spine and the toggle behind pointing
+   at a panel that no longer existed. `1fr` then gave the RIGHT rail no track
+   either, so it overflowed the grid entirely.
+
+   Narrow mode now adds the same `side-collapsed` / `right-collapsed` classes
+   the toggle does (see js/main.js), so it inherits the whole mechanism --
+   track, overlay, spine, peek -- instead of reimplementing a third of it. */
 
 /* ---------------- backtest tab ---------------- */
 body.bottom-expanded{--bottom-h:min(72vh,720px)}
-.bt-bar{display:flex; align-items:center; gap:6px; padding:5px 8px;
-  border-bottom:1px solid var(--line-soft); flex:none}
-.bt-seg{background:transparent; border:1px solid var(--line); color:var(--text-dim);
-  border-radius:3px; cursor:pointer; font-family:var(--sans); font-size:11.5px;
-  letter-spacing:1px; text-transform:uppercase; padding:3px 10px}
-.bt-seg.active{background:var(--accent-soft); color:#fff; border-color:var(--pink)}
 .bt-btn{background:var(--surface-2); border:1px solid var(--line); color:var(--text);
   border-radius:3px; cursor:pointer; font-family:var(--sans); font-size:11.5px; padding:3px 9px}
 .bt-btn:hover{border-color:var(--pink)}
@@ -459,3 +908,606 @@ table.grid tr.cal-now td{background:var(--surface-2); text-align:left; padding:3
   font-family:var(--mono); font-size:10px; letter-spacing:2px; text-transform:uppercase;
   color:var(--pink); opacity:1}
 table.grid tr.cal-now:hover td{background:var(--surface-2)}
+
+/* ---- Trend read -------------------------------------------------------- */
+/* A verdict panel, laid out as a verdict: the call and its conviction first and
+   large, the per-timeframe evidence beneath, then the three numbers that decide
+   whether the read is actionable. Reading top-to-bottom should answer "trade or
+   wait?" before you reach the detail. */
+.trendread{padding:9px 10px 10px; border-bottom:1px solid var(--line); flex:none}
+.tr-empty{padding:6px 0; font-size:12px}
+
+.tr-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.tr-verdict{
+  font-size:12px; letter-spacing:.09em; padding:4px 10px; border-radius:3px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text-dim);
+  white-space:nowrap}
+.tr-verdict.tr-bull{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.tr-verdict.tr-bear{color:#fff; background:var(--down); border-color:var(--down)}
+.tr-verdict.tr-watch{color:var(--text); border-color:var(--line)}
+.tr-verdict.tr-neutral{color:var(--text-faint); border-style:dashed}
+/* The conviction number is the second thing read, so it is sized to be seen
+   from the same glance as the badge rather than hunted for. */
+.tr-score{font-size:17px; line-height:1; font-weight:500; color:var(--text)}
+.tr-score.dim{color:var(--text-faint); font-weight:400}
+
+.tr-note{font-size:11px; margin-top:7px; line-height:1.35}
+.tr-rows{margin-top:10px; display:flex; flex-direction:column; gap:5px}
+.tr-row{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  font-size:11px}
+.tr-tf{color:var(--text-faint)}
+.tr-state{display:inline-flex; align-items:baseline; gap:5px; white-space:nowrap}
+.tr-mark{font-style:normal; font-size:9px}
+
+.tr-facts{
+  margin-top:10px; padding-top:8px; border-top:1px solid var(--line-soft);
+  display:flex; flex-direction:column; gap:5px}
+.tr-fact{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  font-size:11px}
+.tr-val{font-variant-numeric:tabular-nums; white-space:nowrap}
+.tr-val.mono{font-family:var(--mono)}
+
+/* ---- Signal engine ----------------------------------------------------- */
+/* Bars diverge from a centre line because the SIGN is the information: six
+   left-anchored bars would read as six magnitudes and hide the disagreement
+   that makes a composite worth computing. */
+.signalpanel{padding:9px 10px 10px; border-bottom:1px solid var(--line); flex:none}
+.sig-empty{padding:6px 0; font-size:12px}
+.sig-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.sig-badge{
+  font-size:12px; letter-spacing:.09em; padding:4px 10px; border-radius:3px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text-dim)}
+.sig-badge.sig-bull{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.sig-badge.sig-bear{color:#fff; background:var(--down); border-color:var(--down)}
+.sig-badge.sig-neutral{color:var(--text-faint)}
+.sig-score{font-size:17px; line-height:1; font-weight:500}
+
+.sig-bars{margin-top:10px; display:flex; flex-direction:column; gap:5px}
+.sig-row{display:grid; grid-template-columns:58px 1fr 26px; align-items:center; gap:7px;
+  font-size:11px}
+.sig-label{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.sig-track{position:relative; height:7px; background:var(--surface-2); border-radius:2px}
+.sig-zero{position:absolute; left:50%; top:-1px; bottom:-1px; width:1px;
+  background:var(--line); opacity:.9}
+.sig-fill{position:absolute; top:0; bottom:0; border-radius:2px}
+.sig-fill.pos{background:var(--up)}
+.sig-fill.neg{background:var(--down)}
+.sig-num{text-align:right; font-size:11px; font-variant-numeric:tabular-nums}
+
+.sig-stats{
+  margin-top:10px; padding-top:8px; border-top:1px solid var(--line-soft);
+  display:flex; flex-direction:column; gap:5px}
+.sig-stat{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  font-size:11px}
+.sig-val{font-variant-numeric:tabular-nums; white-space:nowrap}
+.sig-verdict{margin-top:8px; font-size:11px; line-height:1.35}
+
+/* The Donchian rule panel. Same visual grammar as the signal engine above it,
+   deliberately: both are read at a glance, and a second set of conventions in
+   the same rail would slow both down. The SIMULATED tag is the one piece that
+   must NOT blend in -- it is the difference between "the rule is long" and
+   "you are long". */
+.rulepanel{padding:9px 10px 10px; border-bottom:1px solid var(--line); flex:none}
+.rp-empty{padding:6px 0; font-size:12px; color:var(--text-faint)}
+.rp-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+.rp-badge{
+  font-size:12px; letter-spacing:.09em; padding:4px 10px; border-radius:3px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text-dim)}
+/* Colour = direction. Fill = urgency: filled means act, outlined means the
+   position is already on. */
+.rp-badge.rp-bull{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.rp-badge.rp-bear{color:#fff; background:var(--down); border-color:var(--down)}
+.rp-badge.rp-bull-held{color:var(--up); border-color:var(--up);
+  background:rgba(147,201,15,.12)}
+.rp-badge.rp-bear-held{color:var(--down); border-color:var(--down);
+  background:rgba(227,28,121,.14)}
+.rp-badge.rp-close{color:var(--orange); border-color:var(--orange);
+  background:rgba(255,158,27,.14)}
+.rp-badge.rp-quiet{color:var(--text-faint)}
+/* Masking, not removing: the cells keep their width so the status bar does not
+   reflow when you cover the numbers, and a jumping layout does not announce to
+   the room that something was just hidden. */
+.acct-eye{padding:2px 6px; font-size:12px; line-height:1; opacity:.75}
+.acct-eye:hover{opacity:1}
+/* HIDDEN MEANS GONE, not dotted out. Masking the digits still left BALANCE and
+   EQUITY legible with a row of bullets beside them, which tells anyone looking
+   exactly what was covered and that there was something worth covering.
+
+   `visibility` rather than `display`: the cells keep their box, so the status
+   bar does not reflow and the eye does not jump under the pointer. Nothing is
+   rendered -- labels, values and all. */
+/* The CELLS, not the container: the eye lives inside #acctCells so it travels
+   with them when the bottom panel collapses, and hiding the container would
+   hide the only control that can bring them back. */
+/* The eye now leaves TWO cells standing -- profit today and this month -- so
+   the strip still answers "how is it going" while the balance, equity and
+   margin are covered. Those two collapse with `display` rather than being
+   masked: masking would hold five empty boxes open and strand the pair in the
+   middle of a gap. The kept cells sit last in the row, against the eye, so
+   nothing that stays visible moves when the rest go. */
+body.acct-hidden .acct-cell:not(.acct-keep){display:none}
+body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
+/* The tab counters are the account leaking through a side door: "Positions 3"
+   says as much as most people wanted covered. */
+body.acct-hidden #posCount, body.acct-hidden #ordCount{visibility:hidden}
+.sealed{color:var(--orange)}
+
+/* PRIVATE VALUES, revealed a row at a time.
+ *
+ * Even once the eye is open, a position's size and P&L are not something to
+ * leave standing on a shared screen -- so they are covered by default and each
+ * row uncovers only while the pointer is on it. The bar keeps the cell's own
+ * width so nothing reflows on hover: a table that jumps as the mouse crosses it
+ * announces which row is being read.
+ *
+ * `color:transparent` rather than `visibility:hidden` so the text still lays
+ * the column out, and the covering bar is drawn behind it. While the account is
+ * covered entirely these rows are not rendered at all -- see `sealed` in
+ * js/ui/panels.js -- so this rule only ever applies in the revealed state. */
+tr .pv{color:transparent; position:relative}
+tr .pv::after{
+  content:''; position:absolute; left:2px; right:2px; top:50%;
+  height:9px; transform:translateY(-50%); border-radius:2px;
+  background:var(--line); opacity:.75}
+tr:hover .pv{color:inherit}
+tr:hover .pv::after{display:none}
+.rp-verdict{
+  font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
+  cursor:help; white-space:nowrap; border:1px solid}
+.rp-verdict.rp-v-good{color:#0b1a05; background:var(--up); border-color:var(--up)}
+.rp-verdict.rp-v-bad{color:#fff; background:var(--down); border-color:var(--down)}
+.rp-verdict.rp-v-partial{color:var(--orange); border-color:var(--orange);
+  background:transparent}
+.rp-verdict.rp-v-unknown{color:var(--text-faint); border-color:var(--line);
+  background:transparent}
+
+.rp-sim{
+  font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
+  border:1px dashed var(--orange); color:var(--orange); cursor:help;
+  white-space:nowrap}
+.rp-note{margin-top:6px; font-size:10.5px; line-height:1.35; color:var(--text-dim)}
+
+.rp-rows{margin-top:9px; display:flex; flex-direction:column; gap:4px}
+.rp-row{display:grid; grid-template-columns:60px auto 1fr; align-items:baseline;
+  gap:7px; font-size:11px}
+.rp-k{color:var(--text-dim); white-space:nowrap}
+.rp-v{font-variant-numeric:tabular-nums; white-space:nowrap}
+.rp-n{font-size:9.5px; color:var(--text-faint); line-height:1.3}
+
+/* "All reached." Green, because a trade that has run through everything in
+   front of it is the good case, and an empty space would have read as a fault. */
+.rp-clear{margin-top:5px; font-size:10px; color:var(--up); letter-spacing:.04em}
+
+/* THE TAKE-PROFIT SWITCH IS GONE, and so are its styles. It went when the
+   measurement did -- no target beat the trailing exit across twelve cells --
+   and the rules outlived the markup by long enough to cause a bug worth
+   recording: `.rp-tp` was ALSO the class on every transport button, so a block
+   style meant for a panel row was landing `margin-top:11px` and a `border-top`
+   on the play controls, pushing them out of line with the selects beside them
+   and drawing a stray rule above them. `.rp-btn.rp-tp` overrode the padding and
+   nothing else, which is why it looked like a one-off spacing glitch rather
+   than two features sharing a name. The transport buttons are `.rp-trans` now.
+   Deleting dead CSS is not tidying here; it is the fix. */
+
+/* THE VERDICT, at the foot of the panel. Quiet on purpose: it is context for
+   everything above it, not a headline, and it was removed from the header twice
+   for being loud there. Uppercase and letter-spaced so it reads as a label
+   rather than as another number. */
+/* THE SAME HAIRLINE, NAMED, so the two places that draw it cannot drift. It
+   separates the levels from the rows above them and the verdict from the levels
+   -- one rule, two users, and it is the only divider on this panel. */
+.rp-rule{margin-top:10px; padding-top:6px; border-top:1px solid var(--line-soft)}
+.rp-cell{margin-top:10px; padding-top:6px; border-top:1px solid var(--line-soft);
+  display:flex; align-items:baseline; justify-content:space-between; gap:8px}
+.rp-cell-k{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint)}
+.rp-cell-v{font-size:9.5px; letter-spacing:.08em; color:var(--text-dim);
+  text-align:right}
+
+/* THE SECOND LABEL beside the action badge: which way the rule is, or what the
+   market is doing when it is not in anything.
+
+   FILLED FOR A DIRECTION, OUTLINED FOR A REGIME, and the split is the point. A
+   direction is a fact about your trade; a regime is a claim about the market.
+   One shared style would invite reading SIDEWAYS as "I am flat" or LONG as
+   "the market is rising", which are two different mistakes. */
+.rp-state{
+  font-family:var(--sans); font-size:9px; letter-spacing:.1em;
+  padding:2px 6px; border-radius:2px; white-space:nowrap; align-self:center}
+.rp-state-long{color:#0b1a05; background:var(--up); border:1px solid var(--up)}
+.rp-state-short{color:#fff; background:var(--down); border:1px solid var(--down)}
+.rp-state-regime{color:var(--text-dim); border:1px solid var(--line);
+  background:transparent}
+
+/* WHICH EXIT BINDS. Same vocabulary as the strategy replay's badge, deliberately
+   -- the two panels describe the same rule and a reader moving between them
+   should not have to learn the notation twice. Named rp- rather than reusing
+   .sr-live because the two panels own their own styles; if they are ever
+   unified, this is the pair to merge. */
+.rp-live{
+  margin-left:6px; font-family:var(--sans); font-size:9px; letter-spacing:.09em;
+  padding:1px 4px; border-radius:2px; vertical-align:1px;
+  color:var(--text-faint); border:1px solid var(--line)}
+.rp-live-on{color:#0b1a05; background:var(--up); border-color:var(--up);
+  font-weight:500}
+/* Section heading inside the panel, matching the replay's. */
+.rp-h{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint); margin:11px 0 4px; padding-bottom:3px;
+  border-bottom:1px solid var(--line-soft)}
+
+.rp-untradeable{
+  margin-top:8px; padding:5px 7px; border-radius:3px; cursor:help;
+  font-size:10px; letter-spacing:.06em;
+  color:#fff; background:var(--down); border:1px solid var(--down)}
+.rp-notp{
+  margin-top:8px; font-size:10px; letter-spacing:.06em; cursor:help;
+  color:var(--orange); border-top:1px solid var(--line-soft); padding-top:7px}
+.rp-rec{
+  margin-top:7px; display:flex; gap:10px; justify-content:space-between;
+  font-size:10.5px; color:var(--text-dim); cursor:help;
+  font-variant-numeric:tabular-nums}
+
+/* The rail headings are timeframe pickers, so they have to read as pressable
+   without becoming a second toolbar competing with the real one. */
+.rail-tf{
+  background:transparent; border:1px solid transparent; border-radius:3px;
+  color:var(--text-dim); font-family:var(--mono); font-size:10px;
+  letter-spacing:.5px; padding:1px 6px; cursor:pointer}
+.rail-tf:hover{color:#fff; border-color:var(--line); background:var(--surface-2)}
+
+
+/* ---------------- Elliott replay (Backtest tab) ---------------- */
+/* Everything here is scoped inside the Backtest panel. The live chart has no
+   Elliott chrome at all -- that is the point of where this lives. */
+/* `.bt-body` is a two-column grid for the Runs view; the replay is ONE panel
+   and takes both columns, or the chart is squeezed into 300px beside nothing. */
+.bt-body:has(.bt-elliott),
+.bt-body:has(.bt-strategy){grid-template-columns:1fr}
+.bt-elliott,
+.bt-strategy{padding:0; height:100%; min-height:0; display:flex; overflow:hidden}
+.ell-wrap{display:flex; flex-direction:column; flex:1; min-width:0; min-height:0}
+.ell-bar{
+  display:flex; align-items:center; gap:4px; flex-wrap:wrap;
+  padding:6px 8px; border-bottom:1px solid var(--line-soft); flex:none;
+}
+/* The belief sits BESIDE the chart, and the chart takes what is left -- which
+   lands within a few pixels of the live chart's width, because the tab spans the
+   full window while the live chart gives up both rails. Same width matters: a
+   wave in 1231px of canvas and the same wave in 940px are different pictures,
+   and the point of the sandbox is to judge what the live chart would show.
+   Reading the count down a tall column also beats reading it across a short
+   band, which is what the stacked version made of it. */
+.ell-body{display:flex; flex:1; min-height:0}
+.ell-chart{flex:1; min-width:0; min-height:220px; position:relative}
+.ell-panel{
+  width:244px; flex:none; overflow:auto;
+  padding:6px 9px 12px; border-left:1px solid var(--line-soft);
+}
+.rp-btn{
+  height:22px; padding:0 8px; cursor:pointer;
+  background:var(--surface-2); color:var(--text-dim);
+  border:1px solid var(--line); border-radius:3px;
+  font-family:var(--sans); font-size:10.5px; letter-spacing:.4px; white-space:nowrap;
+}
+.rp-btn:hover{color:#fff; border-color:var(--accent)}
+/* The transport glyphs are square, and the one that is RUNNING is lit -- the
+   bar says what it is doing, not only what it can do. */
+.rp-btn.rp-trans{width:26px; padding:0; text-align:center; font-size:11px}
+/* ICON-ONLY, and bigger than the text it replaced. A 10.5px glyph sized to sit
+   beside a word is too small to read AS a picture once the word is gone, which
+   is the whole point of dropping it -- so the type scale that governs a label
+   stops applying and the icon gets sized as an icon. The button keeps its
+   `title`, and carries an aria-label, because a camera with no text next to it
+   is unreadable to a screen reader. */
+.rp-btn.rp-icon{width:28px; padding:0; text-align:center; font-size:15px;
+  line-height:1; display:inline-flex; align-items:center; justify-content:center}
+.rp-btn.on{background:var(--accent-soft); color:#fff; border-color:transparent}
+.rp-btn:disabled{opacity:.4; cursor:default}
+.rp-btn:disabled:hover{color:var(--text-dim); border-color:var(--line)}
+/* Recording is a state you must not lose track of, so it is the one control
+   that changes colour rather than just lighting up. */
+.rp-btn.rec{background:var(--pink); border-color:var(--pink); color:#fff}
+.rp-sel,.rp-sym,.rp-date{
+  height:22px; background:var(--surface-2); color:var(--text);
+  border:1px solid var(--line); border-radius:3px;
+  font-family:var(--mono); font-size:10.5px; padding:0 4px;
+}
+/* The replay date picker. `color-scheme` is the load-bearing line: without it
+   the browser paints its native calendar button and popup for a LIGHT page, so
+   a black-on-black icon sits invisible on the dark bar and the popup opens
+   white. It is one declaration and it themes the whole native widget. */
+.rp-date{color-scheme:dark; width:118px}
+.rp-date::-webkit-calendar-picker-indicator{
+  filter:invert(1); opacity:.55; cursor:pointer;
+}
+.rp-date:hover::-webkit-calendar-picker-indicator{opacity:.9}
+.rp-sym{width:96px}
+/* The symbol control is a button now; it keeps the field's footprint so the
+   bar does not reflow when a longer ticker is picked. */
+.rp-btn.rp-symbtn{min-width:96px; font-family:var(--mono); font-size:10.5px;
+  justify-content:flex-start; text-align:left; color:var(--text)}
+.rp-sep{width:1px; height:16px; background:var(--line); margin:0 4px}
+.rp-lbl{font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--text-faint)}
+.rp-status{font-family:var(--mono); font-size:10px; color:var(--text-faint); margin-left:6px}
+
+.ell-note{font-size:9.5px; color:var(--text-faint); line-height:1.45; margin:8px 0}
+.ell-empty{font-size:10.5px; color:var(--text-faint); padding:10px 0}
+.ell-count{border-top:1px solid var(--line-soft); padding:6px 0}
+.ell-count.primary .ell-label{color:var(--text)}
+.ell-head{display:flex; align-items:baseline; gap:6px; font-size:10.5px}
+.ell-head b{font-size:9.5px; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-faint)}
+.ell-label{color:var(--text-dim); flex:1}
+.ell-share{font-family:var(--mono); color:var(--text)}
+.ell-line{font-size:10px; color:var(--text-dim); margin-top:3px; line-height:1.45}
+.ell-ev{margin-top:4px; font-size:10px; line-height:1.5}
+.ell-ev .ok{color:var(--up)}
+.ell-ev .no{color:var(--text-faint)}
+.ell-scen{
+  display:flex; gap:8px; margin-top:8px; padding-top:6px;
+  border-top:1px solid var(--line-soft);
+  font-family:var(--mono); font-size:10px; color:var(--text-dim);
+}
+.ell-outcome{
+  margin:8px 0; padding:6px 8px; font-size:10.5px; line-height:1.5;
+  border-left:3px solid var(--line);
+}
+.ell-outcome.ok{border-left-color:var(--up); background:rgba(147,201,15,.08)}
+.ell-outcome.no{border-left-color:var(--down); background:rgba(227,28,121,.08)}
+.ell-sec{
+  margin:12px 0 2px; font-size:9.5px; letter-spacing:1.4px; text-transform:uppercase;
+  color:var(--text-faint); border-top:1px solid var(--line-soft); padding-top:8px;
+}
+.ell-tbl{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:9.5px; margin:4px 0}
+.ell-tbl th{text-align:right; font-weight:400; color:var(--text-faint); padding:1px 0}
+.ell-tbl th:first-child{text-align:left}
+.ell-tbl td{text-align:right; color:var(--text-dim); padding:1px 0}
+.ell-tbl td:first-child{text-align:left}
+.ell-tbl td.ok{color:var(--up)}
+.ell-tbl td.no{color:var(--down)}
+.ell-tbl td.thin{color:var(--text-faint)}
+.ell-mtf td.wide{text-align:left; color:var(--text-dim)}
+.ell-mtf td:first-child{color:var(--text); text-transform:uppercase; font-size:9px}
+.ell-score{display:flex; gap:10px; font-family:var(--mono); font-size:11px; margin:4px 0}
+.ell-score .ok{color:var(--up)}
+.ell-score .no{color:var(--down)}
+
+/* ---------------- strategy replay (js/ui/strategyreplay.js) ---------------- */
+.sr-wrap{display:flex; flex-direction:column; height:100%; width:100%;
+  min-height:0; min-width:0}
+.sr-bar{display:flex; align-items:center; gap:4px; flex-wrap:wrap; flex:none;
+  padding:6px 8px; border-bottom:1px solid var(--line-soft)}
+.sr-f{display:flex; align-items:center; gap:5px; font-size:9px; letter-spacing:1.6px;
+  text-transform:uppercase; color:var(--text-faint)}
+.sr-sym{width:104px}
+.sr-body{display:flex; flex:1 1 auto; min-height:0}
+.sr-chart{flex:1 1 auto; min-width:0; position:relative}
+.sr-chart canvas{display:block}
+.sr-panel{flex:0 0 264px; border-left:1px solid var(--line-soft); overflow:auto;
+  padding:8px 10px}
+.sr-act{font-family:var(--mono); font-size:11px; letter-spacing:1.4px;
+  padding:4px 8px; border-radius:3px; text-align:center; margin-bottom:5px}
+.sr-act-enter{background:var(--accent-soft); color:#fff; border:1px solid var(--pink)}
+.sr-act-exit{background:rgba(255,158,27,.16); color:var(--orange);
+  border:1px solid var(--orange)}
+.sr-act-hold{background:var(--surface-2); color:var(--text);
+  border:1px solid rgba(147,201,15,.5)}
+.sr-act-wait{background:var(--surface-2); color:var(--text-faint);
+  border:1px solid var(--line)}
+.sr-note{font-size:10.5px; color:var(--text-dim); line-height:1.45; margin:4px 0 7px}
+.sr-up{color:var(--up); font-weight:500}
+.sr-down{color:var(--down); font-weight:500}
+/* 'IN POSITION' is a STATE, not a direction: it was green for a short
+   as readily as for a long. The direction lives on the side row. */
+.sr-live{
+  margin-left:7px; font-family:var(--sans); font-size:9px; letter-spacing:.09em;
+  padding:1px 4px; border-radius:2px; vertical-align:1px}
+.sr-kv td .sr-live{color:var(--text-faint); border:1px solid var(--line)}
+.sr-kv td .sr-live-on{color:#0b1a05; background:var(--up);
+  border-color:var(--up); font-weight:500}
+.sr-warn{font-size:10px; color:var(--orange); line-height:1.45; margin:6px 0;
+  padding:5px 7px; background:rgba(255,158,27,.08);
+  border-left:2px solid var(--orange); border-radius:2px}
+.sr-h{font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--text-faint); margin:11px 0 4px; padding-bottom:3px;
+  border-bottom:1px solid var(--line-soft)}
+/* The divider an `.sr-h` would have drawn, for the blocks that no longer have
+   a heading. Same hairline, same spacing -- see `.rp-rule`, which does this on
+   the live panel for the same reason. */
+.sr-rule{margin-top:11px; padding-top:6px; border-top:1px solid var(--line-soft)}
+.sr-kv{width:100%; border-collapse:collapse; font-size:11.5px}
+.sr-kv td{padding:2px 0; color:var(--text-dim)}
+.sr-kv td:last-child{text-align:right; color:var(--text); font-family:var(--mono)}
+
+.sr-badge{font-size:10px; line-height:1.4; padding:3px 7px; border-radius:3px;
+  margin:2px 0 6px; border:1px solid transparent}
+.sr-st-validated{background:rgba(147,201,15,.12); color:var(--green);
+  border-color:rgba(147,201,15,.45)}
+.sr-st-failed{background:rgba(227,28,121,.12); color:var(--pink);
+  border-color:rgba(227,28,121,.45)}
+.sr-st-untested{background:var(--surface-2); color:var(--text-faint);
+  border-color:var(--line)}
+
+/* ------------------------------------------------------------------ PIN
+   A screen-share cover for the account figures, not a security control --
+   see the note in main.js. Styled off .modal-box so it matches the search
+   dialog rather than inventing a second dialog language. */
+.pin-box{width:min(360px,92vw)}
+.pin-head{padding:12px 15px 0; font-weight:700; letter-spacing:.4px; font-size:14px}
+.pin-note{padding:6px 15px 0; font-size:11px; line-height:1.5; color:var(--text-faint)}
+#pinInput,#pinConfirm{
+  width:calc(100% - 30px); margin:10px 15px 0; padding:9px 11px;
+  border:1px solid var(--line); border-radius:4px; background:var(--bg);
+  color:var(--text); font-family:var(--mono); font-size:16px; letter-spacing:.32em;
+  outline:none;
+}
+#pinInput:focus,#pinConfirm:focus{border-color:var(--accent)}
+#pinConfirm{margin-top:7px; letter-spacing:.18em; font-size:13px}
+.pin-err{margin:8px 15px 0; font-size:11px; color:var(--down)}
+.pin-spacer{flex:1}
+.modal-foot #pinForget{font-size:10px; padding:2px 7px; opacity:.8}
+.modal-foot #pinForget:hover{opacity:1}
+
+/* Centred, not top-anchored. The search modal sits high because a long result
+   list grows downward from it; the PIN box is a fixed four lines, so the same
+   12vh offset just left it stranded above centre. */
+#pinModal{place-items:center; padding-top:0}
+
+/* It ARRIVES rather than appearing. A dialog that blinks into existence reads
+   as a page glitch; a short rise settles the eye on the input it is about to
+   type into. Runs on show because [hidden] is display:none, and leaving that
+   state restarts the animation -- no class juggling needed. */
+@keyframes pin-in{
+  from{opacity:0; transform:translateY(10px) scale(.975)}
+  to  {opacity:1; transform:none}
+}
+@keyframes pin-veil{from{opacity:0} to{opacity:1}}
+#pinModal:not([hidden]){animation:pin-veil .16s ease-out}
+#pinModal:not([hidden]) .pin-box{
+  animation:pin-in .2s cubic-bezier(.2,.8,.3,1);
+  transform-origin:center top;
+}
+/* A wrong PIN SHAKES. The message alone is easy to miss when your eyes are on
+   the keypad, and the movement says "try again" before you have read a word. */
+@keyframes pin-shake{
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(-6px)} 40%{transform:translateX(5px)}
+  60%{transform:translateX(-3px)} 80%{transform:translateX(2px)}
+}
+/* Specificity matters here: the entrance rule above is `#pinModal … .pin-box`
+   (id + class), so a bare `.pin-box.pin-bad` loses to it and the shake never
+   ran. Matched through the id so the later rule actually wins. */
+#pinModal .pin-box.pin-bad{animation:pin-shake .32s ease-in-out}
+
+/* Motion is decoration here; the dialog works identically without it. */
+@media (prefers-reduced-motion: reduce){
+  #pinModal:not([hidden]),
+  #pinModal:not([hidden]) .pin-box,
+  #pinModal .pin-box.pin-bad{animation:none}
+}
+
+/* The recovery password is prose, not digits: normal tracking and a smaller
+   face so a long phrase still fits the box. */
+#pinRecovery{
+  width:calc(100% - 30px); margin:7px 15px 0; padding:8px 11px;
+  border:1px solid var(--line); border-radius:4px; background:var(--bg);
+  color:var(--text); font-family:var(--mono); font-size:12.5px; letter-spacing:.04em;
+  outline:none;
+}
+#pinRecovery:focus{border-color:var(--accent)}
+.modal-foot #pinForgot{font-size:10px; padding:2px 7px; opacity:.8; margin-right:4px}
+.modal-foot #pinForgot:hover{opacity:1}
+
+/* Submenu: a second panel beside the first, not a nested list. The parent row
+   stays highlighted so it is obvious which item the panel belongs to. */
+.menu .arrow{margin-left:auto; padding-left:10px; opacity:.55}
+.menu button.open{background:var(--accent-soft)}
+.submenu{position:fixed}
+
+/* The swing-engine readout on the Elliott replay. It borrows `.sr-kv` from the
+   strategy replay rather than growing a parallel set of rules, so the two
+   surfaces cannot drift apart visually; this only supplies the spacing the
+   Elliott panel needs around it. */
+.ell-panel .ell-swing {
+  margin: 0 0 10px;
+  border-bottom: 1px solid var(--line, #16324d);
+  padding-bottom: 8px;
+}
+
+/* The swing-engine readout on the strategy replay. Same rules as the Elliott
+   panel's copy, so the two surfaces report identically. */
+.sr-swing {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+/* ------------------------------------------------------------- news rail ---
+   The news section of the left sidebar. Scrolls on its own rather than pushing
+   the watchlist and sessions off the rail: the watchlist is what the rail is
+   for, and a busy news day should not cost it. */
+.news { overflow-y: auto; max-height: 42vh; padding: 0 8px 8px; }
+.nw-note {
+  font-size: 10px; color: var(--text-faint); line-height: 1.35;
+  padding: 6px 0 8px; border-bottom: 1px solid var(--line);
+}
+.nw-empty { font-size: 11px; color: var(--text-faint); padding: 8px 0; }
+.nw-div {
+  font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-faint); margin: 10px 0 4px;
+  border-top: 1px solid var(--line); padding-top: 6px;
+}
+.nw-item { padding: 7px 0; border-bottom: 1px solid rgba(13,58,107,.35); }
+/* The ones that name this instrument. A left border rather than a background:
+   the rail is narrow and a tint on a block of text costs legibility. */
+.nw-item.nw-on { border-left: 2px solid var(--up); padding-left: 6px; }
+.nw-top { display: flex; gap: 6px; align-items: baseline; font-size: 9.5px; }
+.nw-topic {
+  color: var(--text); text-transform: uppercase; letter-spacing: .05em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+.nw-imp { color: var(--text-faint); font-family: "Roboto Mono", monospace; }
+.nw-age { color: var(--text-faint); }
+.nw-head {
+  font-size: 11.5px; line-height: 1.35; color: var(--text); margin-top: 3px;
+}
+/* Clamped: `why_it_matters` is the best thing in the payload and also the
+   longest, and four of them unclamped fill the rail on their own. */
+.nw-why {
+  font-size: 10px; line-height: 1.35; color: var(--text-faint); margin-top: 3px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The direction word in a release tooltip. Coloured because a direction that
+   is not readable at a glance is not worth a row; the caveat printed under it
+   is what stops the colour reading as a forecast. */
+.zone-tip .tip-up { color: var(--up); }
+.zone-tip .tip-down { color: var(--down); }
+.zone-tip .tip-flat { color: var(--text-faint); }
+
+/* ---------------------------------------------------------- alert settings
+   The modal behind the live pill's Settings item. Styled off .modal-box so it
+   matches the search and PIN dialogs rather than inventing a third look.
+
+   Z-INDEX 59, ONE BELOW .modal. Adding an instrument BORROWS the symbol picker
+   (search.js `once` mode) rather than shipping a second search, and that picker
+   is a .modal too -- at equal z-index the later element in the document wins,
+   which is this one. Sitting one below lets the picker open on top of it. */
+.alerts-box{width:min(540px,93vw); max-height:84vh; display:flex; flex-direction:column}
+#alertsModal{z-index:59}
+.alerts-head{padding:11px 15px 4px; font-weight:600; letter-spacing:.02em}
+.alerts-head2{padding:14px 15px 2px; font-weight:600; letter-spacing:.02em;
+  border-top:1px solid var(--line); margin-top:10px;
+  display:flex; align-items:center; gap:8px}
+.alerts-badge{font-size:10.5px; font-weight:400; opacity:.6;
+  border:1px solid var(--line); border-radius:9px; padding:1px 7px}
+.alerts-hint{padding:0 15px 8px; font-size:11px; opacity:.62}
+.alerts-body{overflow:auto; padding-bottom:10px}
+.alerts-row{display:flex; align-items:center; gap:8px; padding:6px 15px; cursor:pointer}
+.alerts-sub{display:flex; gap:14px; padding:2px 15px 8px 36px; font-size:11px; opacity:.8}
+.alerts-sub input[type=number]{width:52px}
+
+/* ONE ROW PER INSTRUMENT, timeframes as chips. The first design had one row per
+   (symbol, timeframe) with a dropdown, which made "watch gold on three frames"
+   three rows that each had to be added separately and read as unrelated. */
+.alerts-inst{padding:8px 15px; border-top:1px solid var(--line-soft,rgba(255,255,255,.06))}
+.alerts-inst:first-child{border-top:0}
+.alerts-inst-head{display:flex; align-items:center; gap:8px}
+.alerts-inst .sym{font-family:"Roboto Mono",monospace; font-size:12.5px; font-weight:600}
+.alerts-inst .rm{margin-left:auto; cursor:pointer; opacity:.4; font-size:15px; line-height:1}
+.alerts-inst .rm:hover{opacity:1; color:var(--down)}
+/* armed: the button says what the next click will do, and stops being a glyph */
+.alerts-inst .rm.arm{opacity:1; color:var(--down); font-size:10.5px;
+  font-family:inherit; border:1px solid var(--down); border-radius:9px;
+  padding:1px 7px; line-height:1.4}
+.alerts-chips{display:flex; flex-wrap:wrap; gap:5px; margin-top:6px}
+.tf-chip{font-family:"Roboto Mono",monospace; font-size:11px; padding:2px 9px;
+  border:1px solid var(--line); border-radius:11px; cursor:pointer;
+  opacity:.45; user-select:none; transition:opacity .1s, background .1s}
+.tf-chip:hover{opacity:.8}
+.tf-chip.on{opacity:1; background:var(--up); color:#04201d; border-color:transparent}
+.alerts-note{font-size:10.5px; opacity:.5; margin-top:5px}
+.alerts-addbtn{margin:10px 15px 0; width:calc(100% - 30px)}
+.alerts-empty{padding:10px 15px; font-size:11px; opacity:.6}
+.alerts-status{font-size:11px; opacity:.75}
+.alerts-spacer{flex:1}

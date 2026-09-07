@@ -142,10 +142,25 @@ def test_the_offered_lines_match_at_the_last_bar(stem, bars_path, expected_path)
         assert a == pytest.approx(b, rel=1e-9, abs=1e-9), \
             f'{label}: python={a} js={b}'
 
+    def close_q(a, b, label):
+        """
+        Quality needs the same NaN handling the prices already get. "No line is
+        offered on this side" is a legitimate and increasingly common answer --
+        min_quality is 90, so a side with nothing above the bar reports NaN in
+        Python and null in JS. `(x or 0)` turned that agreement into `nan <= tol`,
+        which is False, and the two engines were failing a test by agreeing.
+        """
+        a = float('nan') if a is None else float(a)
+        b = float('nan') if b is None else float(b)
+        assert pd.isna(a) == pd.isna(b),             f'{label}: one side offers a line and the other does not (py={a}, js={b})'
+        if pd.isna(a):
+            return
+        assert abs(a - b) <= Q_TOL, f'{label}: python={a} js={b}'
+
     close(last.support_px, js['supportPx'], 'support price')
     close(last.resistance_px, js['resistancePx'], 'resistance price')
-    assert abs((last.support_q or 0) - (js['supportQ'] or 0)) <= Q_TOL
-    assert abs((last.resistance_q or 0) - (js['resistanceQ'] or 0)) <= Q_TOL
+    close_q(last.support_q, js['supportQ'], 'support quality')
+    close_q(last.resistance_q, js['resistanceQ'], 'resistance quality')
     assert last.live_count == js['liveCount']
 
 
@@ -170,3 +185,86 @@ def test_the_reference_is_not_empty(stem, bars_path, expected_path):
     assert any(l['status'] in ('CONFIRMED', 'ACTIVE') for l in tl['lines'])
     assert any(l['confirmed'] for l in tl['lines'])
     assert tl['breakBars'], 'reference contains no break events'
+
+
+# --------------------------------------------------------------------------- #
+# The RECLAIM lifecycle.
+#
+# BROKEN used to be terminal, which buried lines the market was still using: on
+# gold H1 a rising support with five touches sat one point under price, marked
+# BROKEN because price had left it 29 bars earlier, and seven of the ten bars
+# since had closed back above it.
+#
+# Reclaim is OFF by default, so every test above exercises the original
+# lifecycle. This one turns it on -- otherwise the new code path would ship
+# unported and untested, which is exactly how minTouches and breakConfirmBars
+# came to exist in Python only.
+# --------------------------------------------------------------------------- #
+
+def test_reclaim_lifecycle_matches():
+    from sim.tl.engine import Params, TrendlineEngine
+    from sim.tl.mtf import TF_MS as PY_TF_MS
+
+    for stem, bars_path, expected_path in CASES:
+        df = pd.read_csv(bars_path, parse_dates=['t']).set_index('t')
+        js = json.load(open(expected_path, encoding='utf-8'))['reclaim']
+        tf = tf_of(stem)
+        snaps = TrendlineEngine(tf, PY_TF_MS[tf],
+                                Params(reclaim_confirm_bars=3,
+                                       break_confirm_bars=2,
+                                       min_touches=3)).walk(df)
+        last = snaps[-1]
+        assert last.live_count == js['live_count'], '%s: live count' % stem
+        assert sum(1 for l in last.live if l.is_tradeable) == js['tradeable'], (
+            '%s: tradeable count' % stem)
+
+        # keyed by anchors: snap.live ordering is not part of the contract
+        mine = sorted(
+            ({'k': '%s|%d|%d' % (l.role.value, l.pivot_1['i'], l.pivot_2['i']),
+              'status': l.status.value, 'reclaims': l.reclaims,
+              'violations': l.violations, 'quality': l.quality_score}
+             for l in last.live), key=lambda d: d['k'])
+        theirs = sorted(js['byline'], key=lambda d: d['k'])
+        assert [d['k'] for d in mine] == [d['k'] for d in theirs], (
+            '%s: different line populations' % stem)
+        for a, b in zip(mine, theirs):
+            assert a['status'] == b['status'], (
+                '%s %s: python %s, js %s' % (stem, a['k'], a['status'], b['status']))
+            assert a['reclaims'] == b['reclaims'], '%s %s: reclaims' % (stem, a['k'])
+            assert a['violations'] == b['violations'], '%s %s: violations' % (stem, a['k'])
+            assert abs(a['quality'] - b['quality']) <= 0.011, (
+                '%s %s: quality' % (stem, a['k']))
+
+
+def test_reclaim_is_on_and_actually_changes_the_outcome():
+    """
+    A parity test that compared two implementations both doing nothing would
+    pass and prove nothing. This asserts the feature is live AND that it moves
+    the result, so the compared path is real.
+
+    Reclaim ships ON: pooled edge over everything the engine offers went
+    +0.21 -> +1.02 pp (1999-2010), -1.43 -> -0.40 (2011-2020),
+    +1.19 -> +0.90 (2021-2026). The reclaimed slice itself, gated at
+    reclaim_min_quality, runs +4.76 / +3.10 / +4.75 pp.
+    """
+    from sim.tl.engine import Params, TrendlineEngine
+    from sim.tl.mtf import TF_MS as PY_TF_MS
+
+    assert Params().reclaim_confirm_bars == 3, 'reclaim ships on'
+    assert Params().reclaim_min_quality == 70.0, (
+        'the quality floor is measured, not incidental — see engine.Params')
+
+    stem, bars_path, expected_path = CASES[0]
+    df = pd.read_csv(bars_path, parse_dates=['t']).set_index('t')
+    tf = tf_of(stem)
+    off = TrendlineEngine(tf, PY_TF_MS[tf],
+                          Params(reclaim_confirm_bars=0)).walk(df)[-1]
+    on = TrendlineEngine(tf, PY_TF_MS[tf], Params()).walk(df)[-1]
+    n_off = sum(1 for l in off.live if l.is_tradeable)
+    n_on = sum(1 for l in on.live if l.is_tradeable)
+    assert n_on > n_off, (
+        'reclaim produced no additional tradeable lines (%d vs %d) — the path '
+        'under test is not being exercised' % (n_on, n_off))
+    assert any(l.status.value == 'RECLAIMED' for l in on.live)
+    assert all(l.violations > 0 for l in on.live if l.status.value == 'RECLAIMED'), \
+        'a reclaimed line must keep its violation: the scar is the point'

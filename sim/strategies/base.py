@@ -62,8 +62,52 @@ class MTFStrategy(Strategy):
         self.signal_log = []                        # every signal, gated or not
 
     # ---- plumbing ------------------------------------------------------- #
+    #: BASE_COLUMNS declares the EXECUTION-frame columns with a '15m_' prefix
+    #: because 15m is the default execution frame. It is a placeholder, not a
+    #: literal: `columns()` rewrites it to whatever `exec_tf` actually is, so a
+    #: strategy can be run at another execution timeframe without every
+    #: subclass restating its column list. Context-frame columns (1h_, 4h_,
+    #: d1_) are left alone -- those name real, specific frames.
+    EXEC_PLACEHOLDER = '15m'
+
+    def ex(self, name):
+        """
+        An execution-frame column name.
+
+        `BASE_COLUMNS` declares columns with the '15m_' placeholder and
+        `columns()` rewrites them to the real execution frame -- so a hardcoded
+        '15m_atr' in a `series()` call DECLARES correctly and READS wrongly. That
+        mismatch is silent until the strategy runs somewhere other than 15m, and
+        it kept tl_bounce and rsi_divergence pinned to 15m long enough that they
+        had never been compared with Donchian on the timeframe where the only
+        surviving result lives.
+        """
+        return '%s_%s' % (self.exec_tf, name)
+
     def columns(self):
-        return tuple(self.BASE_COLUMNS)
+        pre = self.EXEC_PLACEHOLDER + '_'
+        out = []
+        for c in self.BASE_COLUMNS:
+            if c.startswith(pre) and self.exec_tf != self.EXEC_PLACEHOLDER:
+                out.append(f'{self.exec_tf}_{c[len(pre):]}')
+            else:
+                out.append(c)
+        # Running at a higher execution frame makes the lower context frames
+        # meaningless -- a 4h execution bar cannot take context from 1h. Drop
+        # any context column whose frame is at or below the execution frame
+        # rather than demanding a column the feature build could not produce.
+        if self.exec_tf != self.EXEC_PLACEHOLDER:
+            order = ['1m', '5m', '15m', '30m', '1h', '4h', 'd1', '1d']
+            def rank(tf):
+                tf = 'd1' if tf == '1d' else tf
+                return order.index(tf) if tf in order else -1
+            keep, ex = [], rank(self.exec_tf)
+            for c in out:
+                tf = c.split('_', 1)[0]
+                if tf == self.exec_tf or rank(tf) < 0 or rank(tf) > ex:
+                    keep.append(c)
+            out = keep
+        return tuple(dict.fromkeys(out))
 
     def prepare(self, bars):
         f = self.features
@@ -124,16 +168,16 @@ class MTFStrategy(Strategy):
     def ema_ok(self, view, side):
         if not self.ema_filter:
             return True
-        f, s = view.series(f'{self.exec_tf}_ema_fast'), view.series(f'{self.exec_tf}_ema_slow')
+        f, s = view.series(self.ex('ema_fast')), view.series(self.ex('ema_slow'))
         if np.isnan(f) or np.isnan(s):
             return False
         return f >= s if side == LONG else f <= s
 
     def regime_code(self, view, tf=None):
-        return view.series(f'{tf or self.exec_tf}_regime')
+        return view.series('%s_regime' % (tf or self.exec_tf))
 
     def atr(self, view):
-        return view.series(f'{self.exec_tf}_atr')
+        return view.series(self.ex('atr'))
 
     def manage(self, view, position):
         """Shared exit: time stop. Price stops/targets are the simulator's job."""

@@ -51,6 +51,19 @@ def load_bars(symbol, tf, start=None, end=None):
         lo = pd.Timestamp(start).year if start else 0
         hi = pd.Timestamp(end).year if end else 9999
         files = [f for f in files if lo <= int(os.path.basename(f)[:4]) <= hi]
+    # A symbol can have bars but none in the window asked for -- XAUUSD has no
+    # intraday history before 2016, so any pre-2016 era selects nothing. That is
+    # a legitimate answer, not a missing archive, and it used to reach
+    # pd.concat([]) and die with "No objects to concatenate" three frames deep.
+    # An empty frame with the right shape lets the caller say "no approaches"
+    # and carry on with the symbols that do have data.
+    if not files:
+        # `ts` is not in BAR_TYPES -- it is consumed by _index as the index --
+        # so the empty frame has to carry it explicitly or _index pops a column
+        # that is not there.
+        cols = {'ts': pd.Series(dtype='int64')}
+        cols.update({c: pd.Series(dtype=t) for c, t in BAR_TYPES.items()})
+        return _index(pd.DataFrame(cols), 's')
     frames = [pd.read_csv(f, dtype=BAR_TYPES) for f in files]
     df = _index(pd.concat(frames, ignore_index=True), 's')
     if start:

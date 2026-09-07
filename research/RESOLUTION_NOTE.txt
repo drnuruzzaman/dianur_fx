@@ -1,0 +1,1 @@
+The authoritative research configuration is 15m execution with 5m_high_low barrier resolution; the adapter maps it to Simulator execution=intrabar, intrabar_tf=5m.

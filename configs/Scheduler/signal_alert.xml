@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>DiaNurFx: announces rule signals to Telegram for the cells in configs-signals.yaml. Polls every minute; signal_alert.py keys each send on symbol, timeframe, bar time and action, so a signal is announced exactly once.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <Duration>P1D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+      <Enabled>true</Enabled>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>TASK_USER</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <!-- true, matching telegram_bot and calendar_refresh. false meant a run
+         that came due while the machine was asleep or off was simply dropped,
+         with the next scheduled minute as the only recovery. -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <!-- PT10M, not PT2M. signal_alert allows 90s PER CELL and seven are
+         enabled, so a slow bridge can legitimately run past ten minutes, and
+         the old two minute limit TERMINATED it mid run. That is survivable now
+         that the ledger is written after each send rather than at the end, but
+         a limit shorter than the work is still a limit that fires on healthy
+         runs. It stays finite so a wedged poll cannot hold the slot forever.
+         IgnoreNew means the next minute is skipped, not queued. -->
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <!-- The other two tasks have this and these did not. A job that sends
+         trading signals should not be the one that stays dead after a single
+         transient failure. -->
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>PYTHON_EXE</Command>
+      <Arguments>tools\signal_alert.py</Arguments>
+      <WorkingDirectory>PROJECT_DIR</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

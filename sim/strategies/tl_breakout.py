@@ -63,11 +63,16 @@ class TrendlineBreakout(MTFStrategy):
             return None
 
         # 1. a line broke on this bar
+        # Column names follow the EXECUTION frame, which is not always 15m --
+        # the only result in this project that survived a split-sample test is
+        # on gold 4h, and hardcoding '15m_' here made that untestable.
         for side, broke_col, px_col, q_col, tag in (
-                (LONG, '15m_resistance_broken', '15m_broken_resistance_price',
-                 '15m_broken_resistance_quality', 'break_up'),
-                (SHORT, '15m_support_broken', '15m_broken_support_price',
-                 '15m_broken_support_quality', 'break_dn')):
+                (LONG, self.ex('resistance_broken'),
+                 self.ex('broken_resistance_price'),
+                 self.ex('broken_resistance_quality'), 'break_up'),
+                (SHORT, self.ex('support_broken'),
+                 self.ex('broken_support_price'),
+                 self.ex('broken_support_quality'), 'break_dn')):
             if side == SHORT and not self.allow_short_side:
                 continue
             if view.series(broke_col) != 1:

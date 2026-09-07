@@ -27,6 +27,12 @@ export const DIV_DEFAULTS = {
   maxPivotGap: 60,
   oversold: 40,
   overbought: 60,
+  includeHidden: false,
+  /* Regular divergence is filtered to RSI extremes because a reversal signal
+     from mid-range RSI says little. Hidden divergence lives in the OPPOSITE
+     place — a pullback inside a trend — so the extreme filter would reject
+     nearly all of it. It gets a mid-range band instead. */
+  hiddenBand: [30, 70],
 };
 
 /** Wilder RSI, identical to the `rsi` study in indicators.js. */
@@ -73,7 +79,14 @@ export function findDivergences(bars, options = {}) {
   const { highs, lows } = findPivots(bars, o.strength);
   const out = [];
 
-  for (const [kind, pivots] of [['bullish', lows], ['bearish', highs]]) {
+  /* HIDDEN divergence is the mirror comparison and means the opposite thing:
+     regular says the trend is failing, hidden says a pullback inside it is
+     ending. Off by default so this returns exactly what it always has — the
+     parity fixtures and sim/strategies/rsi_divergence both depend on that. */
+  const specs = [['bullish', lows], ['bearish', highs]];
+  if (o.includeHidden) specs.push(['bullish_hidden', lows], ['bearish_hidden', highs]);
+
+  for (const [kind, pivots] of specs) {
     for (let k = 1; k < pivots.length; k++) {
       const cur = pivots[k];
       const prev = pivots[k - 1];
@@ -83,9 +96,20 @@ export function findDivergences(bars, options = {}) {
       const rp = rsi[prev.i];
       if (rc === null || rp === null) continue;
 
-      const ok = kind === 'bullish'
-        ? (cur.price < prev.price && rc > rp + o.minRsiGap && rc < o.oversold)
-        : (cur.price > prev.price && rc < rp - o.minRsiGap && rc > o.overbought);
+      const [loB, hiB] = o.hiddenBand;
+      let ok;
+      if (kind === 'bullish') {
+        // price lower low, RSI higher low: the decline is losing force
+        ok = cur.price < prev.price && rc > rp + o.minRsiGap && rc < o.oversold;
+      } else if (kind === 'bearish') {
+        ok = cur.price > prev.price && rc < rp - o.minRsiGap && rc > o.overbought;
+      } else if (kind === 'bullish_hidden') {
+        // price HIGHER low, RSI LOWER low: a pullback inside an uptrend
+        ok = cur.price > prev.price && rc < rp - o.minRsiGap && rc >= loB && rc <= hiB;
+      } else {
+        // price LOWER high, RSI HIGHER high: a bounce inside a downtrend
+        ok = cur.price < prev.price && rc > rp + o.minRsiGap && rc >= loB && rc <= hiB;
+      }
       if (!ok) continue;
 
       out.push({

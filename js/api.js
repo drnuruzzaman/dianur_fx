@@ -86,6 +86,13 @@ export const api = {
   deals:     guarded('deals', async (days = 7) => (await get('/deals', { days })).deals || [], (d) => DEMO.deals(d)),
   symbols:   guarded('symbols', async () => (await get('/symbols')).symbols || [], () => DEMO.symbols()),
   spec:      guarded('spec', (symbol) => get('/spec', { symbol }), (s) => DEMO.spec(s)),
+  /* The rule's own statement, computed in PYTHON. The lot size is the reason:
+     sizing needs an FX rate, and the browser's rate and the backtest's differ
+     by enough to move a lot step (see the /signal comment in the bridge). No
+     demo fallback -- a fabricated trading instruction is worse than none, so
+     without a bridge this simply reports unavailable. */
+  signalNow: (symbol, tf, opts = {}) =>
+    get('/signal', { symbol, tf, ...opts }),
   quotes:    guarded('quotes', async (symbols) => (await get('/quotes', { symbols: symbols.join(',') })).quotes || {},
                      (s) => DEMO.quotes(s)),
   ticks:     guarded('ticks', (symbol, from_ms, limit = 500) => get('/ticks', { symbol, from_ms, limit }),

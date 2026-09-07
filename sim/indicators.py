@@ -87,6 +87,54 @@ def atr(bars, length=14):
     return wilder(true_range(bars['high'], bars['low'], bars['close']), length)
 
 
+def adx(bars, length=14):
+    """
+    Wilder's ADX. Written because sim/strategies/adxfilter.py imports it and
+    it was never here -- that module has been dead since it was added.
+
+    Directional movement is the part people get wrong. +DM and -DM are
+    EXCLUSIVE: only the larger of the two moves counts on any bar, and neither
+    counts when the bar is an inside bar. Taking both, or taking a negative
+    value, quietly turns a trend gauge into a volatility gauge.
+
+    ADX is doubly smoothed -- a Wilder average of DX, which is itself built
+    from Wilder averages -- so it needs roughly 2x `length` before it means
+    anything, and it confirms a trend well after that trend began.
+    """
+    h, l, c = _arr(bars['high']), _arr(bars['low']), _arr(bars['close'])
+    n = len(h)
+    if n < 2:
+        return np.full(n, NAN)
+
+    up = np.zeros(n)
+    dn = np.zeros(n)
+    up_move = h[1:] - h[:-1]
+    dn_move = l[:-1] - l[1:]
+    up[1:] = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+    dn[1:] = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+
+    tr = true_range(h, l, c)
+    atr_s = wilder(tr, length)
+    up_s = wilder(up, length)
+    dn_s = wilder(dn, length)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        plus_di = 100.0 * up_s / atr_s
+        minus_di = 100.0 * dn_s / atr_s
+        total = plus_di + minus_di
+        dx = 100.0 * np.abs(plus_di - minus_di) / total
+    dx = np.where(np.isfinite(dx), dx, NAN)
+
+    # the second smoothing starts where DX first exists, not at bar 0
+    first = int(np.argmax(np.isfinite(dx))) if np.any(np.isfinite(dx)) else n
+    out = np.full(n, NAN)
+    if first >= n:
+        return out
+    tail = wilder(dx[first:], length)
+    out[first:] = tail
+    return out
+
+
 def rsi(bars, length=14, source='close'):
     """Wilder RSI. The JS drops the first bar before smoothing; so does this."""
     v = _arr(bars[source])
