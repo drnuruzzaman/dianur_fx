@@ -89,8 +89,9 @@ def atr(bars, length=14):
 
 def adx(bars, length=14):
     """
-    Wilder's ADX. Written because sim/strategies/adxfilter.py imports it and
-    it was never here -- that module has been dead since it was added.
+    Wilder's ADX. Added because sim/strategies/adxfilter.py imports it and it
+    was never here, so `WithADX` -- and tools/adx_sweep.py, which drives it --
+    could not be imported at all.
 
     Directional movement is the part people get wrong. +DM and -DM are
     EXCLUSIVE: only the larger of the two moves counts on any bar, and neither

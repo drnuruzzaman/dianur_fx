@@ -31,7 +31,6 @@ JS_ENTRY = {
     'donchian': ('js/chart/donchian.js', 'signalsAsOf'),
     'donchian_ema200': ('js/chart/donchian.js', 'donchianRule|emaLen=200'),
     'ema_cross': ('js/chart/emacross.js', 'emaCrossRule'),
-    'turtle_ea': ('js/chart/turtle_ea.js', 'turtleEaRule'),
 }
 
 
@@ -108,7 +107,7 @@ def js_trades(bars, strategy, tmp_path):
     return json.loads(res.stdout)['trades']
 
 
-def compare(want, got, label, check_stop=True):
+def compare(want, got, label):
     """
     Same entry bar, same side, same stop to 1e-9, same exit bar and reason.
 
@@ -116,31 +115,16 @@ def compare(want, got, label, check_stop=True):
     no opinion on sizing, so only entries both took are compared -- and at least
     90% of them must be shared, or the two are not running the same rule.
 
-    `check_stop=False` FOR MANAGED STOPS, and it does NOT mean "compare less".
-    The exit checks become tolerances with a stated floor rather than
-    equalities, because the divergence is structural rather than a concession. The engine fills at `open + spread + slippage` while the
-    JS walker fills at the raw open -- deliberate, and harmless for every rule
-    whose stop is derived from the SIGNAL CLOSE, because that value is identical
-    on both sides. A stop that is later moved to break-even or trailed is
-    derived from the FILL instead, so the two cost models put it in genuinely
-    different places, and `stop_price` records the final one.
-
-    The costs cannot simply be switched off for the comparison: the recorded
-    spread column is populated on 100% of bars for this cell, so
-    `_spread_price` charges whatever config says. And `Trade` carries no
-    `risk_price`, so the original stop cannot be reconstructed from the Python
-    side either.
-
-    A different stop price also means the stop is TOUCHED on a different bar, so
-    the divergence cascades into exit timing. Measured on turtle_ea: sides and
-    exit reasons agree on 100% of shared trades, and exit bars on 94% (2 of 34
-    on 4h, 2 of 38 on 1h), the stragglers landing 5 and 14 bars apart. So the
-    floor below is 90% -- above what the cost model explains, and low enough
-    that it cannot pass a rule that genuinely disagrees.
-
-    What is fully verified either way is the ENTRY: which bar, which way. For
-    this strategy that is the whole filter stack -- channels, regime MA, ADX,
-    the consensus vote and the ATR guard -- which is the part worth checking.
+    EXACT, with no tolerance anywhere, and that is only possible because every
+    rule here derives its stop from the SIGNAL CLOSE. The engine fills at
+    `open + spread + slippage` and the JS walker fills at the raw open, which is
+    deliberate and harmless while the stop does not depend on the fill: the
+    signal close is identical on both sides. A rule that MOVED its stop -- to
+    break-even, or trailing -- would derive it from the fill instead, the two
+    cost models would put it in different places, and the difference would
+    cascade into which bar the stop is touched on. Such a rule needs a measured
+    tolerance rather than this function, and there is deliberately no flag for
+    one: adding it back should be a visible act, not a keyword argument.
     """
     shared = {t['entry_i'] for t in want} & {t['entryI'] for t in got}
     assert len(shared) >= 0.9 * max(len(want), len(got)), (
@@ -154,15 +138,8 @@ def compare(want, got, label, check_stop=True):
         assert g[i]['reason'] == w[i]['reason'], (
             '%s: exit reason for entry %d: js %r python %r'
             % (label, i, g[i]['reason'], w[i]['reason']))
-        if check_stop:
-            assert g[i]['stop'] == pytest.approx(w[i]['stop'], rel=0, abs=1e-9), (
-                '%s: STOP at entry bar %d: js %.10f python %.10f'
-                % (label, i, g[i]['stop'], w[i]['stop']))
-            assert g[i]['exitI'] == w[i]['exit_i'], (
-                '%s: exit bar for entry %d' % (label, i))
-
-    if not check_stop:
-        agree = sum(1 for i in shared if g[i]['exitI'] == w[i]['exit_i'])
-        assert agree >= 0.9 * len(shared), (
-            '%s: exit bars agree on only %d of %d shared trades -- a managed '
-            'stop explains a few, not this many' % (label, agree, len(shared)))
+        assert g[i]['stop'] == pytest.approx(w[i]['stop'], rel=0, abs=1e-9), (
+            '%s: STOP at entry bar %d: js %.10f python %.10f'
+            % (label, i, g[i]['stop'], w[i]['stop']))
+        assert g[i]['exitI'] == w[i]['exit_i'], (
+            '%s: exit bar for entry %d' % (label, i))

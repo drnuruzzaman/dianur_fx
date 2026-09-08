@@ -5,7 +5,6 @@ are the candidates measured against them.
 
 from .donchian import Donchian
 from .emafilter import DonchianEmaFilter
-from .turtle_ea import TurtleEA
 from .ema_cross import EmaCross
 from .mean_revert import FADE, FOLLOW, MeanRevert
 from .mtf import DonchianMTF, EmaCrossMTF
@@ -74,7 +73,6 @@ _HORIZON_VARIANTS = {
 
 BASELINES = {'donchian': Donchian, 'donchian_high': _donchian_high,
              'donchian_ema200': DonchianEmaFilter,
-             'turtle_ea': TurtleEA,
              'donchian_trendlong': DonchianTrendLong,
              'donchian_retest': DonchianRetest,
              'rsi_ema_cross': RsiEmaCross,
