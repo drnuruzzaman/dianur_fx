@@ -3675,13 +3675,22 @@ export class Chart {
     ctx.fillStyle = COL.text;
     ctx.fillText(`${this.symbol}  ${TF_LABEL[this.tf] || this.tf}`, x, y + M + 12);
 
-    // --- capture time, bottom-right, above the time axis ---
+    /* --- capture time then the risk line, bottom-right ---
+       The stamp moves up a line to make room beneath it. Bottom-right is the
+       quietest corner of the plot -- the watermark sits bottom-LEFT and the
+       axis is below -- so two stacked lines fit without covering price.
+
+       The warning is burned into the pixels rather than left to whoever sends
+       the file, for the same reason the GROSS caveat is drawn into the replay
+       panel: an exported image outlives the conversation it was made in. */
     const off = -new Date().getTimezoneOffset() / 60;
     const tz = `UTC${off >= 0 ? '+' : ''}${off}`;
     ctx.font = '11px "Roboto Mono", monospace';
     ctx.fillStyle = COL.textFaint;
     ctx.textAlign = 'right';
-    ctx.fillText(`${stamp(Date.now())} ${zoneLabel()}`, r - 8, b - 10);
+    ctx.fillText(`${stamp(Date.now())} ${zoneLabel()}`, r - 8, b - 24);
+    ctx.font = '11px Inter, system-ui, sans-serif';
+    ctx.fillText('Trading is risky, you might lose your funds.', r - 8, b - 10);
     ctx.restore();
   }
 

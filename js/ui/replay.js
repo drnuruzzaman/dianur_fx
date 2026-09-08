@@ -754,6 +754,18 @@ export class ElliottReplay {
       ctx.translate(0, headH);
       this._drawPanel(ctx, cv.width - panelW, cv.height - headH, panelW, scale, true);
       ctx.restore();
+      /* THE SAME WARNING AS THE SNAPSHOT, bottom-right of the FRAME.
+         Drawn after the panel because the panel paints its own background
+         over this corner, and a recording is shared exactly like a PNG is. */
+      ctx.save();
+      ctx.font = '11px Inter, system-ui, sans-serif';
+      ctx.fillStyle = '#8fa6c0';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'alphabetic';
+      /* one line ABOVE the very bottom: kept level with the strategy replay's, which has a panel signature below it. */
+      ctx.fillText('Trading is risky, you might lose your funds.',
+                   cv.width - 12, cv.height - 26);
+      ctx.restore();
       this.rec.raf = requestAnimationFrame(paint);
     };
 

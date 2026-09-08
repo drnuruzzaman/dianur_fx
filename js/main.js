@@ -74,7 +74,7 @@ const app = {
      `cells` was the old name and held only the VISIBLE charts, so anything past
      the layout count was lost on save. Migrated here rather than dropped. */
   tabs: load('tabs', null)
-    || load('cells', [{ symbol: 'EURUSD', tf: '15m', type: 'candles', studies: [] }]),
+    || load('cells', [{ symbol: 'XAUUSD', tf: '15m', type: 'candles', studies: [] }]),
   slots: load('slots', [0]),
   charts: [],
   active: null,
@@ -304,7 +304,7 @@ function buildGrid() {
     const host = el('div', { class: 'cell' });
     grid.append(host);
     const chart = new Chart(host, {
-      symbol: state.symbol || 'EURUSD',
+      symbol: state.symbol || 'XAUUSD',
       tf: state.tf || '15m',
       type: state.type || 'candles',
       studies: state.studies,
