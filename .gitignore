@@ -7,3 +7,14 @@ __pycache__/
 
 # API keys. configs/secrets.env.example is the committed template.
 configs/secrets.env
+
+# Live MT5 credentials -- login, password and server for a real account.
+# bridge/mt5_config.example.json is the committed template to copy.
+bridge/mt5_config.json
+
+# Per-machine UI state. Tracked until 2026-09-08, which is how the account
+# panel's PIN hash reached a public repo: the file is written by the running
+# app and carries whatever the browser last held.
+configs/workspace.json
+configs/workspace.json.prev
+configs/workspace.json.bak
