@@ -57,6 +57,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -139,9 +140,21 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
                 return self._json(200, {})
             except Exception as exc:
                 return self._json(500, {'error': str(exc)})
+        if self.path.split('?')[0] == '/scheduler':
+            # GET is READ-ONLY. Installing is a POST, so nothing a page loads by
+            # accident can register a system task.
+            return self._json(200, {'tasks': _sched_status()})
         return SimpleHTTPRequestHandler.do_GET(self)
 
     def do_POST(self):
+        if self.path.split('?')[0] == '/scheduler/install':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                body = json.loads(self.rfile.read(n).decode() or '{}') if n else {}
+            except Exception as exc:                        # noqa: BLE001
+                return self._json(400, {'error': 'bad body: %s' % exc})
+            payload, code = _sched_install(body.get('task'))
+            return self._json(code, payload)
         if self.path.split('?')[0] != '/record':
             return self._json(404, {'error': 'not found'})
         try:
@@ -318,9 +331,140 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         SimpleHTTPRequestHandler.send_header(self, keyword, value)
 
 
+#: The Windows tasks the alerting depends on, and the installer for each. A
+#: FIXED MAP, not a name the client supplies: this endpoint runs a program, and
+#: the one rule that makes that acceptable is that the browser can only pick
+#: from this dict. Nothing here interpolates request data into a command.
+SCHED_TASKS = {
+    'signal_alert': ('DiaNurFx Signal Alert', 'signal_alert_install.cmd',
+                     'polls /signal for the watched cells and sends what fires'),
+    'event_alert': ('DiaNurFx Release Alert', 'event_alert_install.cmd',
+                    'warns before a macro release'),
+}
+
+
+def _sched_status():
+    """What Task Scheduler currently holds for each task. Read-only.
+
+    Reported per task rather than as one boolean, because the interesting
+    failure is PARTIAL -- the bot task was missing for a day while the two alert
+    tasks ran perfectly, and a single "scheduler ok" light would have hidden it.
+    """
+    out = {}
+    for key, (name, _cmd, why) in SCHED_TASKS.items():
+        row = {'task': name, 'why': why, 'registered': False}
+        try:
+            r = subprocess.run(['schtasks', '/Query', '/TN', name, '/FO', 'LIST', '/V'],
+                               capture_output=True, text=True, timeout=20)
+            if r.returncode == 0:
+                row['registered'] = True
+                for line in r.stdout.splitlines():
+                    if ':' not in line:
+                        continue
+                    k, v = line.split(':', 1)
+                    k, v = k.strip().lower(), v.strip()
+                    if k == 'status':
+                        row['status'] = v
+                    elif k == 'last run time':
+                        row['last_run'] = v
+                    elif k == 'last result':
+                        row['last_result'] = v
+        except (OSError, subprocess.SubprocessError) as exc:
+            row['error'] = str(exc)
+        out[key] = row
+    return out
+
+
+def _sched_install(key):
+    """Run one installer. `key` must be a key of SCHED_TASKS -- see the note there.
+
+    NOT idempotent in the harmless sense: the .cmd uses `schtasks /Create /F`,
+    which REPLACES an existing task. That is what makes it safe to re-run after
+    the XML changes, and also why it briefly stops the task it is replacing.
+    """
+    entry = SCHED_TASKS.get(key)
+    if entry is None:
+        return {'error': 'unknown task %r' % key}, 400
+    cmd = os.path.join(ROOT, 'configs', 'Scheduler', entry[1])
+    if not os.path.exists(cmd):
+        return {'error': 'installer missing: %s' % entry[1]}, 500
+    try:
+        r = subprocess.run(['cmd', '/c', cmd], capture_output=True, text=True,
+                           timeout=120, cwd=ROOT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {'error': str(exc)}, 500
+    ok = r.returncode == 0 and 'SUCCESS' in (r.stdout or '')
+    return {'ok': ok, 'code': r.returncode,
+            'out': (r.stdout or '')[-1200:], 'err': (r.stderr or '')[-600:]}, 200
+
+
+def start_bot():
+    """Start the Telegram command bot alongside the app. Returns the child.
+
+    ON BY DEFAULT, because /status and /profit answering only when someone
+    remembered to launch a second thing is a bot that is usually down -- which
+    is exactly how it was found: dead, with no task registered and no sign of
+    it. Set DNFX_BOT=0 to opt out.
+
+    SAFE TO CALL WHEN A BOT IS ALREADY RUNNING. Telegram allows one getUpdates
+    per token and two pollers fight rather than share, so this would once have
+    been a real hazard. The bot now takes an exclusive lock at startup and a
+    redundant copy exits immediately on its own. That check lives in the BOT
+    precisely so every launcher -- this, the scheduled task, alerts_daemon.py,
+    a terminal -- is safe without any of them coordinating.
+
+    A SEPARATE PROCESS, NOT A THREAD. An unhandled exception in a thread kills
+    the thread silently while the server keeps serving, so the bot would stop
+    with nothing on screen to say so. A dead child is visible, and it cannot
+    take the page server down with it.
+    """
+    if os.environ.get('DNFX_BOT') == '0':
+        print('* telegram bot: skipped (DNFX_BOT=0)')
+        return None
+    script = os.path.join(ROOT, 'tools', 'telegram_bot.py')
+    if not os.path.exists(script):
+        return None
+    try:
+        child = subprocess.Popen([sys.executable, script], cwd=ROOT)
+    except OSError as err:
+        # Serving the page is the point of this process; a bot that will not
+        # start must not stop the app from coming up.
+        print('* telegram bot: could not start (%s)' % err)
+        return None
+    print('* telegram bot: started (pid %d) -- DNFX_BOT=0 to skip' % child.pid)
+    return child
+
+
+def stop_bot(bot):
+    """Stopping the app stops the bot it started.
+
+    Leaving it behind orphans a poller holding the token, and the next launch
+    would find the lock held by a process nobody can see.
+    """
+    if bot is None or bot.poll() is not None:
+        return
+    bot.terminate()
+    try:
+        bot.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        bot.kill()
+    print('* telegram bot: stopped')
+
+
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5173
+    # PORT FIRST, then argv, then the default.
+    #
+    # The env var is what a launcher sets when it assigns a free port itself --
+    # .claude/launch.json's `autoPort`, which exists because two sessions on one
+    # machine cannot both hold 5173. argv still wins for a human typing
+    # `python serve.py 8080`, and 5173 remains the default so the bare command
+    # is unchanged.
+    port = int(os.environ.get('PORT') or 0) or (
+        int(sys.argv[1]) if len(sys.argv) > 1 else 5173)
     srv = ThreadingHTTPServer(('127.0.0.1', port), NoCacheHandler)
+    # AFTER the bind, so a second `serve.py` on a taken port fails before it
+    # spawns anything: the port is already the app's single-instance guard.
+    bot = start_bot()
     print('* Nur AI on http://127.0.0.1:%d (no-store; Ctrl+C to stop)' % port)
     try:
         srv.serve_forever()
@@ -328,6 +472,7 @@ def main():
         print('\n* stopping')
     finally:
         srv.server_close()
+        stop_bot(bot)
 
 
 if __name__ == '__main__':

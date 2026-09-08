@@ -95,6 +95,43 @@ def bridge(path, timeout=15):
         return json.loads(r.read().decode())
 
 
+#: Held for the life of a polling bot. Not a PID file: a PID can be recycled and
+#: a stale one has to be validated, whereas an OS lock is released by the kernel
+#: when the holder dies however it dies -- crash, kill, or power loss.
+LOCK = os.path.join(ROOT, 'data', 'telegram_bot.lock')
+
+#: Kept at module scope so the handle outlives _acquire_lock(); a garbage
+#: collected file object closes the file and drops the lock with it.
+_LOCK_FH = None
+
+
+def _acquire_lock():
+    """Take the single-poller lock, or return None if another bot holds it."""
+    global _LOCK_FH
+    try:
+        fh = open(LOCK, 'a+')
+    except OSError:
+        # An unwritable data/ should not stop the bot answering commands; the
+        # worst case is the old behaviour, which is what we had until now.
+        return True
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    _LOCK_FH = fh              # keep it open, and therefore locked
+    return fh
+
+
 def load_offset():
     try:
         with open(OFFSET_FILE, encoding='utf-8') as fh:
@@ -574,6 +611,27 @@ def main():
 
     if args.once:
         drain(token, allowed, 0)
+        return 0
+
+    # ONE POLLER PER TOKEN, ENFORCED HERE rather than in each launcher.
+    #
+    # Telegram allows a single getUpdates per token and answers 409 to whichever
+    # one gets displaced, so two bots do not share the work -- they fight, each
+    # knocking the other into its retry backoff, and commands go unanswered
+    # while both processes look healthy. That has now cost this project twice.
+    #
+    # The guard lives in the BOT because there are four ways to start one: the
+    # scheduled task, tools/alerts_daemon.py, serve.py, and a terminal. Checking
+    # in each of them is four chances to forget and no protection against a
+    # combination nobody thought of. Here, a redundant launch costs one process
+    # that exits immediately and nothing else.
+    #
+    # Exit 0, not an error: "someone else is already serving" is the desired
+    # state, and a non-zero exit would make serve.py and the scheduler report a
+    # failure for a system that is working correctly.
+    lock = _acquire_lock()
+    if lock is None:
+        print('another bot already holds the poll (%s) — exiting' % LOCK)
         return 0
 
     print('polling as the bot; answering %d chat(s): %s. Ctrl-C to stop.'

@@ -10,6 +10,7 @@ from .mean_revert import FADE, FOLLOW, MeanRevert
 from .mtf import DonchianMTF, EmaCrossMTF
 from .price_ema import PriceEma
 from .rsi_divergence import RsiDivergence
+from .rayo import RayoScalp
 from .tl_bounce import TrendlineBounce
 from .tl_breakout import TrendlineBreakout
 from .exits import DonchianExitEma, DonchianExitFixedR, DonchianExitTrail
@@ -82,6 +83,9 @@ BASELINES = {'donchian': Donchian, 'donchian_high': _donchian_high,
              'ema_cross': EmaCross, 'price_ema': PriceEma,
              'mean_revert': MeanRevert, 'stretch_follow': _follow}
 FEATURE_STRATEGIES = {
+    # A feature strategy, not a baseline: it reads the trendline/regime table,
+    # which the bridge does not build per poll. Research-only until that changes.
+    'rayo_scalp': RayoScalp,
     'tl_bounce': TrendlineBounce,
     'tl_breakout': TrendlineBreakout,
     'rsi_divergence': RsiDivergence,

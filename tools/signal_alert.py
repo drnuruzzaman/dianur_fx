@@ -54,9 +54,35 @@ for _s in (sys.stdout, sys.stderr):
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, 'configs', 'alerts.json')
 STATE = os.path.join(ROOT, 'data', 'signal_alerted.json')
+#: The TRACK RECORD, and a different thing from STATE above. STATE is a dedupe
+#: ledger: keys only, pruned to the newest 400, and its whole job is answering
+#: "have I already sent this?". This is append-only, never pruned, and keeps the
+#: full payload of every announced signal so it can be scored forward later.
+#: Two files because the two have opposite lifetimes -- pruning a dedupe ledger
+#: is correct and pruning a track record destroys it.
+JOURNAL = os.path.join(ROOT, 'data', 'signal_journal.jsonl')
 BRIDGE = os.environ.get('DNFX_BRIDGE', 'http://127.0.0.1:8765')
 
 ICON = {'buy': '\U0001F7E2', 'sell': '\U0001F534', 'exit': '\U0001F535'}
+
+#: THE CELL'S MEASURED STANDING, carried on every message.
+#:
+#: Six of the seven enabled cells are at or below their own friction floor
+#: (tools/friction_map.py), and the fast ones generate the most alerts while
+#: being the least likely to be worth acting on. Dropping them silently would
+#: make that judgement in code; leaving them unmarked lets a gold 1m alert
+#: arrive looking exactly like the one cell ever measured positive net of it.
+#: Marking them keeps the decision in the config -- visible, and yours -- while
+#: making the message tell the truth about itself.
+#:
+#: A cell with no grade is UNGRADED, not assumed fine: the Settings modal can
+#: add a cell nobody has measured, and silence there would read as approval.
+GRADE_MARK = {
+    'validated': '',
+    'marginal': '  ' + chr(183) + '  marginal',
+    'below': '  ' + chr(183) + '  below friction',
+}
+UNGRADED = '  ' + chr(183) + '  ungraded'
 
 
 def load_config():
@@ -100,6 +126,42 @@ def save_state(state):
     os.replace(tmp, STATE)
 
 
+def journal(sig, key):
+    """Append one announced signal, with everything a scorer needs later.
+
+    JSONL rather than JSON: an append is one line and one open, so a process
+    killed mid-write loses at most the line it was writing rather than the file.
+    The dedupe ledger can afford atomic-replace because it is small and
+    rewritable; a record that only grows cannot.
+
+    `params` IS RECORDED, and that is what makes honest scoring possible at all.
+    The rule's exit is a Donchian channel recomputed on every bar
+    (`exit_lo = low.rolling(exit).min().shift(1)`, long exits on a close below
+    it), so a snapshot of today's `channel_exit` would be the wrong level
+    tomorrow. With the parameters stored, the scorer can rebuild the channel
+    from bars and reproduce the rule instead of approximating it.
+    """
+    row = {
+        'key': key,
+        'sent_at': datetime.now(timezone.utc).isoformat(),
+        'symbol': sig.get('symbol'), 'tf': sig.get('tf'),
+        'bar_time': sig.get('bar_time'), 'action': (sig.get('action') or '').lower(),
+        'bar_close': sig.get('bar_close'), 'est_entry': sig.get('est_entry'),
+        'stop': sig.get('stop'), 'channel_exit': sig.get('channel_exit'),
+        'ref_targets': sig.get('ref_targets'), 'atr': sig.get('atr'),
+        'lots': sig.get('lots'), 'digits': sig.get('digits'),
+        'strategy': sig.get('strategy'), 'params': sig.get('params'),
+    }
+    try:
+        with open(JOURNAL, 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(row, sort_keys=True) + chr(10))
+    except OSError as err:
+        # NEVER fatal. A signal that went out and was not journalled is a gap in
+        # the record; a signal that was not sent because the record could not be
+        # written is a gap in the alerting, which is worse.
+        print('journal write failed: %s' % err, file=sys.stderr)
+
+
 def prune(state, keep=400):
     """Keep the newest `keep` keys. The file is a dedupe ledger, not a record."""
     if len(state) <= keep:
@@ -108,8 +170,30 @@ def prune(state, keep=400):
     return dict(newest)
 
 
-def poll(symbol, tf, timeout=90):
-    q = urllib.parse.urlencode({'symbol': symbol, 'tf': tf})
+def poll(symbol, tf, strategy=None, timeout=90):
+    """Ask the bridge what the rule says for one cell.
+
+    `strategy` IS PER CELL AND OPTIONAL. Omitted, the bridge picks the
+    timeframe's own validated rule (sim.strategies.strategy_for_tf). Named, that
+    cell runs that rule instead.
+
+    THE POINT IS THE INSTRUMENT. The default is chosen per TIMEFRAME and applies
+    to every symbol, so USDJPY 4h was handed the rule validated on XAUUSD 4h --
+    and USDJPY 4h measured clearly negative under it. An edge belongs to a CELL,
+    a (symbol, timeframe) pair, which is how configs/alerts.json is keyed and
+    was the one thing the rule choice did not follow.
+
+    Only strategies in sim.strategies.BASELINES can be served: the bridge
+    rejects the rest, and `tl_breakout` needs a trendline/regime table it does
+    not build live. A bad name comes back as an `error` payload, which is
+    reported rather than silently falling through to the default -- a cell that
+    quietly ran a different rule than its config says is worse than one that
+    does not run.
+    """
+    args = {'symbol': symbol, 'tf': tf}
+    if strategy:
+        args['strategy'] = strategy
+    q = urllib.parse.urlencode(args)
     with urllib.request.urlopen(BRIDGE + '/signal?' + q, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
@@ -126,7 +210,25 @@ def pretty(symbol):
     return PRETTY.get(base, base)
 
 
-def compose(sig):
+def md_escape(text):
+    """Neutralise Telegram Markdown in text WE DID NOT WRITE.
+
+    The rule's `instruction` is quoted verbatim, and it contains tags like
+    `channel_exit` and `breakout_up`. A single underscore opens italics in
+    Telegram's legacy Markdown, so one tag made the message's delimiters odd and
+    the API answered 400 "can't parse entities" -- every EXIT alert failed this
+    way for a day while the task reported success, because a buy body happens to
+    contain no underscore and an exit body always does.
+
+    Only DYNAMIC text is escaped. The bold symbol and the italic bar stamp are
+    formatting this file chose and must survive.
+    """
+    for ch in ('_', '*', '`', '['):
+        text = text.replace(ch, chr(92) + ch)
+    return text
+
+
+def compose(sig, grade=None):
     """The signal in the shape a reader wants it, from fields the rule computed.
 
     NOTHING HERE IS INVENTED. Signal is the close that triggered, Entry is the
@@ -154,17 +256,21 @@ def compose(sig):
     act = (sig.get('action') or '').lower()
     icon = ICON.get(act, '⚪')
     name = '%s %s' % (pretty(sig.get('symbol')), sig.get('tf'))
+    # On the header line rather than a row of its own: this is a property of
+    # the CELL, not another price, and the message was deliberately trimmed
+    # to the numbers you act on.
+    mark = '' if grade == 'validated' else GRADE_MARK.get(grade, UNGRADED)
 
     if act == 'exit':
-        bits = ['%s *%s*  EXIT' % (icon, name)]
+        bits = ['%s *%s*  EXIT%s' % (icon, name, mark)]
         if sig.get('instruction'):
-            bits.append(sig['instruction'])
+            bits.append(md_escape(sig['instruction']))
         return '\n'.join(bits + [_bar_line(sig)])
 
     d = int(sig.get('digits') or 2)
     px = lambda v: ('%.*f' % (d, v)) if isinstance(v, (int, float)) else str(v)
 
-    bits = ['*%s*  %s' % (name, act.upper())]
+    bits = ['*%s*  %s%s' % (name, act.upper(), mark)]
     # THE TRIGGER CLOSE IS NOT SHOWN, by request. It was there to make the gap
     # between the price that DECIDED and the price you GET visible: the rule
     # fires on a close and fills at the next open, so `est_entry` carries
@@ -214,7 +320,7 @@ def cells(cfg):
             continue
         sym, tf = w.get('symbol'), str(w.get('tf') or '')
         if sym and tf:
-            yield sym, tf, w.get('note') or ''
+            yield sym, tf, w.get('grade'), w.get('strategy')
 
 
 def main():
@@ -236,9 +342,10 @@ def main():
         for w in cfg.get('watch') or []:
             on = w.get('enabled', True)
             any_on = any_on or on
-            print('    [%s] %-10s %-4s  %s' % ('x' if on else ' ',
-                                               w.get('symbol'), w.get('tf'),
-                                               w.get('note') or ''))
+            print('    [%s] %-10s %-4s %-10s %-14s %s'
+                  % ('x' if on else ' ', w.get('symbol'), w.get('tf'),
+                     w.get('grade') or 'UNGRADED',
+                     w.get('strategy') or '(tf default)', w.get('note') or ''))
         if not any_on:
             print('  NOTHING ENABLED -- every cell is switched off')
         return 0
@@ -248,14 +355,21 @@ def main():
     chat = os.environ.get('TELEGRAM_CHAT_ID')
 
     state = load_state()
-    fired = 0
-    for sym, tf, _note in cells(cfg):
+    fired = failed = 0
+    for sym, tf, grade, strat in cells(cfg):
         try:
-            sig = poll(sym, tf)
+            sig = poll(sym, tf, strat)
         except (urllib.error.URLError, OSError, ValueError) as err:
             # One unreachable cell must not stop the rest: a 4h signal is worth
             # more than a tidy exit.
             print('%s %s: bridge failed (%s)' % (sym, tf, err), file=sys.stderr)
+            continue
+        if sig.get('error'):
+            # Reported, never swallowed. See poll(): a cell that silently ran a
+            # different rule than its config names is worse than one that did
+            # not run at all.
+            print('%s %s: %s' % (sym, tf, sig['error']), file=sys.stderr)
+            failed += 1
             continue
         act = (sig.get('action') or '').lower()
         if act not in cfg['alert_on']:
@@ -265,7 +379,7 @@ def main():
         if key in state:
             print('%s %s: %s already sent' % (sym, tf, act))
             continue
-        text = compose(sig)
+        text = compose(sig, grade)
         if args.dry_run:
             print('WOULD SEND:\n%s\n' % text)
             continue
@@ -278,6 +392,7 @@ def main():
             send(token, chat, text)
         except Exception as err:                               # noqa: BLE001
             print('%s %s: send failed (%s)' % (sym, tf, err), file=sys.stderr)
+            failed += 1
             continue
         # recorded only after a successful send, so a network failure retries
         state[key] = datetime.now(timezone.utc).isoformat()
@@ -298,12 +413,22 @@ def main():
         # and `hold` is the answer on almost every bar of every cell, so in
         # practice this writes only when something actually happened.
         save_state(prune(state))
+        journal(sig, key)
         print('sent: %s' % key)
 
     # `fired` no longer gates the save -- each send writes its own -- so it is
     # only worth printing, and a run that sent nothing says so rather than
     # ending in silence that reads the same as a crash.
     print('%d sent' % fired if fired else 'nothing to send')
+    # A FAILED SEND MUST REACH THE SCHEDULER. This returned 0 no matter what,
+    # so Task Scheduler showed LastTaskResult 0 for a full day while every exit
+    # alert was being rejected by Telegram. "It ran fine" and "it delivered
+    # nothing" looked identical from outside, which is the worst property an
+    # alerting job can have.
+    if failed:
+        print('%d send(s) FAILED — not recorded, will retry next run' % failed,
+              file=sys.stderr)
+        return 1
     return 0
 
 

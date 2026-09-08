@@ -229,6 +229,394 @@ configs\Scheduler\event_alert_install.cmd 10               # register the alerte
 configs\Scheduler\telegram_bot_install.cmd                 # register the bot
 ```
 
+### The bot starts with the app, and only one ever polls
+
+`serve.py` starts `tools/telegram_bot.py` as a child process on boot. ON BY
+DEFAULT -- `/status` and `/profit` answering only when someone remembered to
+launch a second thing is a bot that is usually down, which is exactly how it was
+found. `DNFX_BOT=0 python serve.py` opts out.
+
+    * telegram bot: started (pid 2236) -- DNFX_BOT=0 to skip
+    * Nur AI on http://127.0.0.1:5173 (no-store; Ctrl+C to stop)
+
+Started AFTER the socket bind, so a second `serve.py` on a taken port fails
+before it spawns anything: the port is already the app's single-instance guard.
+Stopping the app stops the bot it started, or an orphaned poller would keep the
+token and the next launch would find the lock held by a process nobody can see.
+
+A CHILD PROCESS, NOT A THREAD, for the reason given under "what's suitable":
+an unhandled exception in a thread kills the thread silently while the server
+keeps serving, so the bot would stop with nothing on screen to say so.
+
+#### One poller per token, enforced in the bot
+
+Telegram allows a single `getUpdates` per token and answers 409 to whichever
+poller gets DISPLACED, so two bots do not share the work -- they fight, each
+knocking the other into its retry backoff while both processes look healthy.
+That has cost this project twice.
+
+There are now four ways to start a bot: the scheduled task, `alerts_daemon.py`,
+`serve.py`, and a terminal. Checking in each of them is four chances to forget
+and no protection against a combination nobody anticipated, so the guard lives
+in the BOT: it takes an exclusive OS lock on `data/telegram_bot.lock` at
+startup, and a redundant copy prints and exits.
+
+    another bot already holds the poll (...telegram_bot.lock) -- exiting
+
+**Exit 0, not an error.** "Someone else is already serving" is the desired
+state; a non-zero exit would make `serve.py` and the scheduler report a failure
+for a system working exactly as intended.
+
+**An OS lock, not a PID file.** A PID can be recycled and a stale one has to be
+validated; a kernel lock is released when the holder dies however it dies --
+crash, kill, or power loss. The PID is written into the file for humans, but
+nothing reads it back.
+
+### The bot answers nothing if its task was never registered
+
+`/profit` and `/status` stopped answering because **no `telegram_bot` process was
+running and no task existed to restart it**. The handler was fine the whole time
+-- `telegram_bot.py --check` printed the correct reply -- but nothing was
+listening. The bot had been started by hand once and was never supervised, so it
+died and stayed dead. `configs/Scheduler/telegram_bot_install.cmd` registers it
+with `StartWhenAvailable`, `RestartOnFailure` 999 and no execution time limit,
+which is what keeps a long-poller alive.
+
+TWO THINGS THAT MAKE THIS HARD TO DIAGNOSE, both worth knowing before chasing it
+again:
+
+  - **`pythonw.exe` has no console.** The task runs the bot windowless, so every
+    `print` and traceback goes nowhere. A bot that crashes on startup looks
+    exactly like a bot that is running fine. Run it with `python` in a terminal
+    to see anything at all.
+  - **Probing `getUpdates` STEALS THE POLL.** Telegram allows one long-poll per
+    token and answers 409 to whichever poller gets displaced -- so a diagnostic
+    `getUpdates` does not observe the bot, it interrupts it, and the bot then
+    backs off 5s. Repeating the probe produces a convincing but entirely
+    self-inflicted picture of a bot that is not polling.
+
+The honest check is `data/calendar/tg_offset.json`: it only advances when the
+bot actually consumes updates, and it costs nothing to look at. A mtime a few
+seconds after process start means the bot came up and drained the backlog.
+
+### Two bugs that made alerts vanish silently
+
+**Every EXIT alert failed for a day, and the scheduler reported success.**
+
+The rule's `instruction` is quoted verbatim, and it contains tags like
+`channel_exit`. Messages go with `parse_mode: Markdown`, where a single `_`
+opens italics -- so the exit body carried THREE underscores (one from the tag,
+two from the italic bar stamp), Telegram answered 400 `can't parse entities`,
+and the send raised. A buy body happens to contain no underscore, which is why
+the one signal that ever arrived was a buy and no exit ever did.
+
+`md_escape()` now escapes `_ * ` [` in text this file did not write. Only
+dynamic text: the bold symbol and the italic bar stamp are formatting we chose
+and must survive.
+
+**The second bug is why the first one lasted a day.** The send was wrapped in
+`except Exception: print(...); continue`, and `main()` returned 0 regardless. So
+Task Scheduler showed `LastTaskResult 0` every minute while nothing was being
+delivered -- "it ran fine" and "it delivered nothing" were indistinguishable
+from outside, which is the worst property an alerting job can have. `main()` now
+returns 1 if any send failed.
+
+Diagnosis worth repeating, because guessing would have gone to the wrong place:
+the task WAS running (18s since last fire, result 0), the token and both chat
+ids WERE valid (`getMe` + `getChat`, no message sent), a full poll took 4.1s
+against a 10 minute limit, and no instance was stuck. Monkeypatching `send()` to
+intercept rather than deliver proved the code reached it twice with the right
+text -- which located the fault past every candidate that looked more likely.
+Counting unescaped delimiters then named it exactly.
+
+Confirmed fixed by delivery, not by inspection: two real USDJPY exits went out
+on the next scheduled run and the ledger moved from 1 key to 3.
+
+### Compression then expansion does not predict direction
+
+The one component of the "Rayo Scalping Strategy" proposal this project had
+never measured: volatility contracts (`ATR_short / ATR_long < 1`), then a bar
+expands, and you follow that bar's direction.
+
+Tested WITHOUT an exit choice, using a width-free symmetric barrier race -- from
+the next open, does +0.5 ATR or -0.5 ATR come first? -- so no take-profit or
+stop assumption is smuggled in.
+
+| tf | era | events | event win% | baseline win% | edge |
+|---|---|---|---|---|---|
+| 5m | 2017-19 | 5,945 | 49.0% | 48.6% | +0.41 pp |
+| 5m | 2020-22 | 6,889 | 46.3% | 48.3% | **-2.01 pp** |
+| 5m | 2023-26 | 7,636 | 48.6% | 49.6% | -0.97 pp |
+| 15m | 2017-19 | 2,791 | 49.4% | 49.1% | +0.31 pp |
+| 15m | 2020-22 | 3,120 | 47.6% | 48.6% | -0.95 pp |
+| 15m | 2023-26 | 3,623 | 49.2% | 49.4% | -0.12 pp |
+
+Not knife-edge on the thresholds. Pooled over all years on 5m, across
+compression quantile (0.20, 0.33), expansion multiple (1.2, 1.5, 2.0) and
+horizon (24, 96 bars) -- **twelve settings out of twelve are negative**, from
+-0.84 to -1.39 pp, several outside their 95% interval at up to 45,008 events.
+
+So the answer is not "no edge" but a small NEGATIVE one: after a volatility
+squeeze, following the expansion bar is slightly worse than following any bar.
+In the proposal's 100-point Rayo Score, this component is worth 0.
+
+A note on the horizon columns: 24 and 96 bars give identical numbers, because a
+0.5 ATR barrier is essentially always hit inside 24 bars on gold 5m. Anything
+claiming to hold a 5m position for a longer "expansion" is describing a trade
+the barrier already resolved.
+
+### Breakout on fast gold timeframes loses, however it is defined
+
+Three signal families, same cells, same three eras. Net R per trade for the
+Donchian variants is gross minus that cell's friction floor; `tl_breakout` is
+`head_to_head` expectancy.
+
+| tf | Donchian, duration-matched | Donchian N=20 | tl_breakout |
+|---|---|---|---|
+| 5m | +0.018 / **-0.130** / +0.356 | -0.134 / -0.194 / -0.117 | **-0.168 / -0.178 / -0.158** |
+| 15m | **-0.200 / -0.030** / +0.498 | +0.005 / -0.104 / -0.034 | **-0.136 / -0.115 / -0.083** |
+| 30m | - | - | **-0.081 / -0.043 / -0.028** |
+| 1h | **-0.108** / +0.178 / +0.238 | -0.022 / +0.029 / +0.094 | **-0.109 / -0.067** / +0.015 |
+| 4h | +0.038 / +0.249 / +0.240 | same | -0.056 / +0.100 / +0.266 |
+
+Eras are 2017-19, 2020-22, 2023-26. Gold moved +31%, +20% and **+151%**.
+
+**THE THIRD ERA FLATTERS EVERYTHING.** A duration-matched breakout rule inside a
+151% bull run looks excellent for reasons that have nothing to do with the rule,
+which is why a single-era number was worth so little here: measured on 2023-26
+alone the duration design appeared to beat N=20 decisively, and split by era it
+is negative in two of three on 15m.
+
+**`tl_breakout` is negative in all three eras on all four fast frames**, with
+32-36% win rates, profit factors of 0.76-0.95 and drawdowns to -80%. Its
+gradient is monotonic in every era -- 5m worse than 15m worse than 30m worse
+than 1h worse than 4h -- which is what makes it convincing rather than noise.
+
+Three unrelated definitions of "breakout" agreeing means the fast cells do not
+fail because the signal is wrong. They fail because friction at that speed eats
+anything put there. It is the same conclusion as "the edge is the cell, not the
+signal", arriving from a direction that had never been tried.
+
+#### The HOLD half of the same question, and mean reversion
+
+`tl_bounce` is the deliberate mirror of `tl_breakout` -- its docstring says
+running both over the same lines answers "whether the detector finds levels that
+HOLD or levels that BREAK". Running only the BREAK half left the obvious
+objection open: the fast frames are full of price TURNING at levels, and a
+breakout rule cannot trade a turn by construction. So both were run, plus
+`mean_revert`.
+
+Expectancy R by era (2017-19 / 2020-22 / 2023-26):
+
+| tf | tl_bounce | mean_revert |
+|---|---|---|
+| 5m | -0.266 / -0.217 / -0.165 | -0.198 / -0.084 / -0.109 |
+| 15m | -0.207 / -0.132 / -0.078 | -0.169 / -0.062 / -0.089 |
+| 30m | -0.179 / -0.191 / -0.072 | -0.129 / -0.084 / -0.081 |
+| 1h | -0.177 / -0.096 / -0.139 | -0.103 / -0.102 / -0.105 |
+| 4h | -0.144 / **+0.166** / **+0.364** | -0.043 / -0.021 / -0.227 |
+
+**`mean_revert` is negative in all fifteen cells** and fails the gate at 4h
+(-0.105 over 759 trades). **`tl_bounce` is negative on every fast frame in every
+era**, and positive at 4h in the same two eras `tl_breakout` was.
+
+That is now FIVE signal families -- Donchian duration-matched, Donchian N=20,
+breakout, bounce, mean reversion -- all negative on 5m/15m/30m/1h. Breaks fail
+there and so do holds, which is the answer to "but the swings are obviously
+there": they are there, and trading them does not clear the friction floor.
+
+#### 4h: three edges, gated, and not the same edge
+
+Full span, 60-shift time-shift control:
+
+    XAUUSD.a 4h  2017-2026  (9.0 y)
+      donchian      n=381  E=+0.178 R  PF=1.338  DD=-8.8%  GATED pct=100.0 PASS
+      tl_breakout   n=425  E=+0.120 R  PF=1.187  DD=-7.8%  GATED pct=100.0 PASS
+
+Both beat all sixty placebos. The nine-year numbers are lower than the 2023-26
+ones (`tl_breakout` showed +0.266 there) and they are the ones to believe.
+
+They are NOT the same edge counted twice:
+
+| tolerance | tl_breakout entries near a donchian entry |
+|---|---|
+| +/- 4h | 22% |
+| +/-12h | 30% |
+| +/-24h | 40% |
+| +/-48h | 52% |
+
+`tl_bounce` passes the same gate: **+0.144 R, 236 trades, PF 1.206, DD -9.5%,
+placebo percentile 100**. Three gated edges on one cell.
+
+Monthly PnL correlation, 108 months:
+
+|  | donchian | tl_breakout | tl_bounce |
+|---|---|---|---|
+| donchian | 1.000 | +0.245 | **-0.137** |
+| tl_breakout | +0.245 | 1.000 | **+0.011** |
+| tl_bounce | -0.137 | +0.011 | 1.000 |
+
+Entry overlap at +/-4h is 22-24% between donchian and tl_breakout, and only
+**2-4% between tl_breakout and tl_bounce** -- which is what the mirror design
+predicts, since a level cannot both break and hold on the same bar.
+
+`tl_bounce` is NEGATIVELY correlated with donchian and UNCORRELATED with
+tl_breakout, while carrying the largest total (+2569 vs +2030 and +1409) on the
+fewest trades (236, 26/yr). Compare the fast cells, which were 51-67% re-reports
+of 4h at +/-12h. This is genuine diversification, not duplication.
+
+#### The three combined, sharing capital
+
+Compounding, 0.5% of equity risked per trade per strategy, no cap on concurrent
+positions, 2017-2026:
+
+| portfolio | return | maxDD | return/DD |
+|---|---|---|---|
+| donchian | +37.9% | -8.2% | 4.62 |
+| tl_breakout | +27.7% | -8.0% | 3.48 |
+| tl_bounce | +17.8% | -9.8% | 1.82 |
+| **all three** | **+103.5%** | **-14.2%** | **7.27** |
+
+**The diversification is real and it shows up in the drawdown.** Returns are
+roughly additive, but the combined drawdown is -14.2% against a worst single of
+-9.8% and an additive -26%. Risk-adjusted return improves from the best single
+4.62 to **7.27**, a 57% gain -- and return/DD is the honest comparison here
+because it is scale-invariant: running three strategies at 0.5% each is three
+times the risk budget of one, so the raw return triple is arithmetic, not skill.
+The drawdown NOT tripling is the skill.
+
+Concurrency: flat 18% of the time, one position 45%, two 32%, three only 5%.
+
+PARITY WAS CHECKED FIRST, and it mattered. The first attempt ran
+`Simulator(sp, fx=None, config=None)` and produced mean R of +0.054 against the
+gated +0.178 -- a third of the real figure, because `head_to_head` passes
+`Config(risk_pct=0.5)` and a built `FX`. `expectancy_R` IS `mean(r_multiple)`;
+the gap was entirely the missing config. Any portfolio built on those numbers
+would have been quietly wrong, so the run now asserts all three expectancies
+against the gated values before combining them.
+
+What this does NOT model: margin, exposure limits, and the fact that all three
+are long-biased on ONE instrument. A gold collapse hits all three at once, and
+the -14.2% is measured over a period gold spent mostly rising.
+
+### Every cell carries its measured standing
+
+Six of the seven enabled cells sit at or below their own friction floor, and the
+fast ones produce the most alerts while being the least worth acting on. Each
+cell now has a `grade` in `configs/alerts.json`, taken from
+`tools/friction_map.py`:
+
+| cell | floor R | grade | why |
+|---|---|---|---|
+| XAUUSD 4h | 0.034 | **validated** | the only cell ever measured positive net of friction |
+| USDJPY 4h | 0.039 | below | clearly negative at `pct 60` in both eras it appears in |
+| XAUUSD 1h | 0.049 | below | negative net, but the closest of the fast cells |
+| USDJPY 1h | 0.060 | below | no measurement puts it above its own costs |
+| XAUUSD 15m | 0.077 | marginal | clears its own spread as-is, nothing beyond it |
+| XAUUSD 5m | 0.125 | below | needs a raw account to clear its spread |
+| XAUUSD 1m | 0.276 | below | **exceeds the best frictionless edge ever measured** |
+
+That last row is the one worth stopping on. Gold 1m costs **0.2761 R** per trade,
+and the best signal ANY strategy family has produced frictionless is
+**+0.2412 R** (gold 4h donchian, from the same tool). The cell cannot clear its
+own costs against the best edge this project has ever found, on any rule. It is
+not a marginal call.
+
+THE CELLS WERE NOT SILENTLY DROPPED. Turning them off in code would make that
+judgement for you and hide it; leaving them unmarked let a gold 1m alert arrive
+looking exactly like the one validated cell. Instead the grade rides on the
+message header:
+
+    *XAU/USD 4h*   BUY                        <- validated, unmarked
+    *XAU/USD 15m*  BUY  ·  marginal
+    *XAU/USD 1m*   BUY  ·  below friction
+    *XAU/USD 30m*  BUY  ·  ungraded
+
+`validated` prints nothing, because the good case should not shout. A cell with
+no grade prints `ungraded` rather than nothing: the Settings modal can add a
+cell nobody has measured, and silence there would read as approval.
+
+#### `strategy` is per cell, because an edge belongs to a cell
+
+`configs/alerts.json` keys everything on (symbol, timeframe) -- which cells
+alert, and each one's grade. The RULE did not follow: it was chosen per
+TIMEFRAME by `sim.strategies.strategy_for_tf(tf)` and applied to every symbol,
+so USDJPY 4h was handed the rule validated on XAUUSD 4h, and USDJPY 4h measures
+clearly negative under it.
+
+A cell may now name its own `strategy`. Omitted, it runs the timeframe's
+default, and the field is left out of every cell today because that is what they
+all want -- writing the default in explicitly would freeze a derived choice into
+a copy that stops tracking `sim/`.
+
+Only `sim.strategies.BASELINES` can be served live. `tl_breakout` is in
+`FEATURE_STRATEGIES` because it needs a trendline/regime table the bridge does
+not build per poll, so it stays research-only despite passing its gate. A name
+the bridge rejects is REPORTED and counted as a failure, never silently fallen
+back to the default: a cell quietly running a different rule than its config
+names is worse than a cell that does not run.
+
+One wrinkle worth knowing: the payload's `strategy` field reads `donchian` for
+every `donchian_nNN` variant, because the class derives its name from `trigger`
+rather than from N. The channel really does change, and the journal records
+exact `params`, so the record is unambiguous even though the label is coarse.
+
+The same grade shows on the timeframe chips in the Settings modal as a coloured
+top edge, since that panel is where the choice is actually made and the message
+is only read afterwards. **The panel never writes `grade`** -- it is a
+measurement, not a preference, and a control that let you promote a cell to
+`validated` would be a way to lie to yourself. It survives a save because the
+modal round-trips whole cell objects and only touches `enabled`.
+
+### The announced signals are recorded and scored
+
+Two files, because they have opposite lifetimes:
+
+    data/signal_alerted.json    dedupe ledger — keys only, pruned to 400
+    data/signal_journal.jsonl   track record — full payload, append-only, never pruned
+
+Until this existed, the dedupe ledger was the ONLY record of live alerting, and
+nothing read it except `signal_alert.py` itself. It answers "have I sent this?"
+and no other question, so "is the live alerting worth anything?" was
+unanswerable no matter how long the system ran. Pruning a dedupe ledger is
+correct; pruning a track record destroys it, which is why they are not one file.
+
+`tools/score_signals.py` walks each announced signal forward and reports R, MFE
+and MAE:
+
+```bash
+python tools/score_signals.py            # the table
+python tools/score_signals.py --open     # only what is still running
+python tools/score_signals.py --csv out.csv
+```
+
+IT REPRODUCES THE RULE RATHER THAN APPROXIMATING IT. The journal stores each
+signal's `params`, so the scorer rebuilds the exit channel from bars
+(`exit_lo = low.rolling(exit).min().shift(1)`, long exits on a close below it,
+straight out of `sim/strategies/donchian.py`) instead of freezing the
+`channel_exit` that was true at signal time and would be the wrong level one bar
+later. The stop is checked first and INTRABAR, because that is what `sim`
+measured; scoring it as if it waited for a close flatters every loser by however
+far price came back.
+
+Validated against an independent `pandas` recomputation on a real 4h breakout
+(2026-06-15): exit reason, bars held, exit price, R, MFE and MAE all matched to
+the digit — `channel`, 16 bars, 4257.98, -0.600 R, +0.463 MFE, -0.934 MAE.
+
+**The bridge ignores `n` and always returns 1000 bars.** Measured: 500, 1000,
+2000 and 5000 all come back as 1000. That window is months on 4h and about
+**17 hours on 1m**, so a fast-cell signal not scored within the day cannot be
+scored at all. Scoring therefore runs hourly in `alerts_daemon.py`, and a signal
+that fell out of the window is reported as `aged out` rather than silently
+dropped or counted as unresolved.
+
+**This is not a backtest.** No placebo, no era split, no matched control — `sim/`
+exists because none of those can be skipped when the question is whether an edge
+is real. What this answers is narrower: did the live path do what the measured
+path said it would? A disagreement means something between the rule and the
+message is broken. Below n=30 the summary says so in as many words, because a
+table of R values is exactly the shape that invites being read as a result.
+
 ### Reliability settings on the scheduled tasks
 
 The two tasks that actually send signals were the two least protected ones, and

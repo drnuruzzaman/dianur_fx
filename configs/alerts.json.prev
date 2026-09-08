@@ -1,5 +1,5 @@
 {
-  "_note": "Written by the Settings modal (live pill -> Settings) and read by tools/signal_alert.py and tools/event_alert.py on every poll. Safe to hand-edit; the UI rewrites the whole file, so a comment added here will not survive a save -- put explanations in the per-cell `note` field, which does.",
+  "_note": "Written by the Settings modal (live pill -> Settings) and read by tools/signal_alert.py and tools/event_alert.py on every poll. Safe to hand-edit; the UI rewrites the whole file, so a comment added here will not survive a save -- put explanations in the per-cell `note` field, which does. `grade` is the cell's measured standing against its own friction floor (tools/friction_map.py + the three-era table in the README): validated | marginal | below, shown on every message so a sub-friction alert never reads like a validated one; cells added from the UI are ungraded, the honest state for a cell nobody has measured. `strategy` is OPTIONAL and PER CELL: omit it and the cell runs its timeframe's default (sim.strategies.strategy_for_tf), name one and that cell runs that rule instead. It exists because the rule was previously chosen per TIMEFRAME globally, so USDJPY 4h was handed the rule validated on XAUUSD 4h -- and USDJPY 4h measured clearly negative under it. Only strategies in sim.strategies.BASELINES can be served live; tl_breakout needs a trendline/regime table and is research-only for now.",
   "news": {
     "enabled": true,
     "lead_minutes": 10,
@@ -16,60 +16,92 @@
         "symbol": "XAUUSD.a",
         "tf": "4h",
         "enabled": true,
-        "note": "the only cell ever measured positive net of friction"
+        "note": "GATED 2017-2026: +0.178 R, 381 trades, PF 1.338, beat 60/60 placebos",
+        "grade": "validated"
       },
       {
         "symbol": "XAUUSD.a",
         "tf": "1h",
         "enabled": true,
-        "note": "negative net but the closest of the fast cells"
+        "note": "net R by era -0.108 / +0.178 / +0.238 - negative in the first, floor 0.049 R",
+        "grade": "below"
       },
       {
         "symbol": "XAUUSD.a",
         "tf": "15m",
         "enabled": true,
-        "note": "clears its own spread, but nothing beyond it"
+        "note": "net R by era -0.200 / -0.030 / +0.498 - negative in TWO of three eras",
+        "grade": "below"
       },
       {
         "symbol": "XAUUSD.a",
         "tf": "5m",
         "enabled": true,
-        "note": "clears its own spread, but nothing beyond it"
+        "note": "net R by era +0.018 / -0.130 / +0.356 - positive only in the gold bull run",
+        "grade": "below"
       },
       {
         "symbol": "XAUUSD.a",
         "tf": "1m",
         "enabled": true,
-        "note": "clears its own spread, but nothing beyond it"
+        "note": "floor 0.276 R exceeds the best frictionless edge ever measured (0.241 R)",
+        "grade": "below"
       },
       {
         "symbol": "USDJPY.a",
         "tf": "4h",
         "enabled": true,
-        "note": "enable if you want the yen leg watched too"
-      },
-      {
-        "symbol": "EURUSD.a",
-        "tf": "4h",
-        "enabled": false,
-        "note": ""
+        "note": "floor 0.039 R - clearly negative at pct 60 in both eras it appears in",
+        "grade": "below"
       },
       {
         "symbol": "USDJPY.a",
         "tf": "1m",
         "enabled": false,
-        "note": ""
+        "note": "floor 0.174 R - off, and should stay off",
+        "grade": "below"
       },
       {
         "symbol": "USDJPY.a",
         "tf": "1h",
         "enabled": true,
+        "note": "floor 0.060 R - no measurement puts this cell above its own costs",
+        "grade": "below"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "30m",
+        "enabled": true,
         "note": ""
       },
       {
-        "symbol": "EURUSD.a",
-        "tf": "1m",
+        "symbol": "XAUUSD.a",
+        "tf": "1d",
         "enabled": true,
+        "note": ""
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "5m",
+        "enabled": false,
+        "note": ""
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "15m",
+        "enabled": false,
+        "note": ""
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "30m",
+        "enabled": false,
+        "note": ""
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1d",
+        "enabled": false,
         "note": ""
       }
     ]

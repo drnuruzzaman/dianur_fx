@@ -55,6 +55,18 @@ export class AlertSettings {
     this.status = $('#alStatus');
     this.cfg = null;
 
+    /* TABS ARE VIEW ONLY. Both panes edit the same `this.cfg` and share one
+       Save, so switching tabs never commits, discards or reloads anything --
+       it decides what is on screen and nothing else. A tab that saved on
+       switch would make Cancel a lie on the pane you had just left. */
+    this.tabs = [
+      [$('#alTabSignal'), $('#alPaneSignal')],
+      [$('#alTabNews'), $('#alPaneNews')],
+    ];
+    for (const [tab] of this.tabs) {
+      if (tab) tab.addEventListener('click', () => this.showTab(tab));
+    }
+
     $('#alAdd').addEventListener('click', () => this.addInstrument());
     /* Touching anything else in the panel disarms. Arming is a statement about
        the NEXT click, so a click that goes somewhere else has answered it. */
@@ -75,9 +87,26 @@ export class AlertSettings {
     });
   }
 
+  /** Show one tab. `hidden` rather than a class: the CSS reset makes
+      `[hidden]` win over any display rule, so a pane cannot half-show. */
+  showTab(which) {
+    for (const [tab, pane] of this.tabs) {
+      if (!tab || !pane) continue;
+      const on = tab === which;
+      tab.classList.toggle('on', on);
+      tab.setAttribute('aria-selected', String(on));
+      pane.hidden = !on;
+    }
+  }
+
   async open() {
     this.say('loading…');
     this.modal.hidden = false;
+    /* Always opens on Signal alerts. The modal is reached from the live pill
+       to change what is announced; news and the scheduler are the things you
+       check occasionally, so they do not get the first screen. */
+    this.showTab($('#alTabSignal'));
+    this.paintSched();                    // independent of the /alerts fetch
     try {
       const r = await fetch('/alerts', { cache: 'no-store' });
       this.cfg = await r.json();
@@ -97,6 +126,88 @@ export class AlertSettings {
     this.paintNews();
     this.paint();
     this.say('');
+  }
+
+  /* THE SCHEDULER PANEL IS SEPARATE FROM THE CONFIG, deliberately.
+     `configs/alerts.json` says what SHOULD be announced; the scheduled tasks
+     decide whether anything runs at all. Editing the first while the second is
+     unregistered produces a settings panel that looks completely healthy and
+     sends nothing -- which is exactly what happened for a day when the bot task
+     was missing and nobody could see it from here.
+
+     STATUS IS READ ON EVERY OPEN and never cached: a task can be removed or
+     disabled from outside this app, and a stale green light is worse than none.
+     It is also painted BEFORE the /alerts fetch and independently of it, so a
+     dead dev server or a broken config still shows the scheduler truth. */
+  async paintSched() {
+    const box = $('#alSched');
+    if (!box) return;
+    box.replaceChildren(el('div', { class: 'alerts-hint', text: 'checking…' }));
+    let tasks;
+    try {
+      const r = await fetch('/scheduler', { cache: 'no-store' });
+      tasks = (await r.json()).tasks || {};
+    } catch (err) {
+      box.replaceChildren(el('div', { class: 'alerts-hint',
+                                      text: 'cannot reach the server' }));
+      return;
+    }
+    box.replaceChildren();
+    for (const [key, t] of Object.entries(tasks)) {
+      const on = !!t.registered && !/disabled/i.test(t.status || '');
+      /* `Last Result` 0 is success; 267009 is 0x41301, "currently running",
+         which is the NORMAL state for a task that never exits. Neither is a
+         fault, and showing the raw number invites reading 267009 as an error. */
+      const res = t.last_result;
+      const bad = t.registered && res !== undefined
+                  && !['0', '267009'].includes(String(res).trim());
+      const bits = [];
+      if (!t.registered) bits.push('not registered');
+      else {
+        bits.push(t.status || 'registered');
+        if (t.last_run) bits.push('last run ' + t.last_run);
+        if (bad) bits.push('last result ' + res);
+      }
+      const btn = el('button', { class: 'btn alerts-schedbtn',
+                                 text: t.registered ? 'Reinstall' : 'Install' });
+      btn.addEventListener('click', () => this.installSched(key, btn));
+      box.append(el('div', { class: 'alerts-sched-row' },
+        el('span', { class: 'dot ' + (on && !bad ? 'ok' : 'off') }),
+        el('div', { class: 'alerts-sched-txt' },
+          el('div', { class: 'sym', text: t.task || key }),
+          el('div', { class: 'alerts-note', text: bits.join(' · ') }),
+          el('div', { class: 'alerts-note', text: t.why || '' })),
+        btn));
+    }
+  }
+
+  async installSched(key, btn) {
+    /* No confirm(): a native dialog steals focus from a modal that is itself
+       mid-edit, the same reason the row remove uses an inline arm. The button
+       disables itself instead, which also stops a double click registering the
+       task twice while the first call is still running. */
+    const was = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'installing…';
+    this.say(`registering ${key}…`);
+    try {
+      const r = await fetch('/scheduler/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: key }),
+      });
+      const body = await r.json();
+      if (!r.ok || body.error) throw new Error(body.error || `HTTP ${r.status}`);
+      this.say(body.ok ? `${key} registered`
+                       : `${key}: installer exited ${body.code} — see the console`);
+      if (!body.ok) console.warn('[scheduler]', body.out, body.err);
+    } catch (err) {
+      this.say(`install failed: ${err.message || err}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = was;
+      this.paintSched();                  // re-read rather than assume it worked
+    }
   }
 
   close() { this.modal.hidden = true; }
@@ -174,8 +285,28 @@ export class AlertSettings {
       for (const tf of TFS) {
         const cell = rows.find((w) => String(w.tf) === tf);
         const on = !!cell && cell.enabled !== false;
-        const chip = el('div', { class: 'tf-chip' + (on ? ' on' : ''), text: tf,
-                                 title: on ? 'announcing' : 'not announced' });
+        /* THE GRADE IS SHOWN WHERE THE CHOICE IS MADE. `grade` is written by
+           hand in configs/alerts.json from the friction floor measurement, and
+           it already rides on every Telegram message -- but the message is read
+           after the decision, and this panel is where the decision happens. A
+           chip that is announcing from a cell measured below its own costs
+           should not look identical to the one cell that was ever measured
+           above them.
+
+           This panel never WRITES grade. It is a measurement, not a preference,
+           and a checkbox that let you promote a cell to `validated` would be a
+           way to lie to yourself. It survives a save because the modal
+           round-trips whole cell objects and only touches `enabled`. */
+        const grade = cell && cell.grade;
+        const why = grade === 'below' ? ' — below its friction floor'
+                  : grade === 'marginal' ? ' — marginal against friction'
+                  : grade === 'validated' ? ' — measured above friction'
+                  : cell ? ' — ungraded, nobody has measured this cell' : '';
+        const chip = el('div', {
+          class: 'tf-chip' + (on ? ' on' : '') + (grade ? ' g-' + grade : (cell ? ' g-none' : '')),
+          text: tf,
+          title: (on ? 'announcing' : 'not announced') + why,
+        });
         chip.addEventListener('click', () => this.toggle(symbol, tf));
         chips.append(chip);
       }

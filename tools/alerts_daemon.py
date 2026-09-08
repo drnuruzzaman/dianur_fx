@@ -66,6 +66,12 @@ JOBS = [
      'args': ['tools/event_alert.py', '--lead', '10', '--local']},
     {'name': 'calendar', 'every': 30 * 60,
      'args': ['tools/refresh_calendar.py']},
+    # SCORING IS ON A TIMER because the bridge only serves 1000 bars, which is
+    # months on 4h but about 17 hours on 1m -- a fast-cell signal that is not
+    # scored within the day cannot be scored at all. Hourly is well inside that
+    # and costs one bars fetch per cell that has ever fired.
+    {'name': 'score', 'every': 60 * 60,
+     'args': ['tools/score_signals.py', '--quiet']},
 ]
 
 #: The bot is not on this list because it is not timed -- it is kept alive.
