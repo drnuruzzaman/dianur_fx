@@ -80,10 +80,10 @@
        title="Hover to peek, click to pin open (])"><span>Trend read · Signal engine</span></div>
   <aside class="rightbar" id="rightbar">
     <div class="side-head">
-      <span>Donchian rule</span>
-      <button class="rail-tf" id="rpSym" title="Rule timeframe &mdash; changes the chart too">&mdash;</button>
+      <span>Rayo Scalper</span>
+      <button class="rail-tf" id="scMode" title="Click to switch break / fade">BREAK</button>
     </div>
-    <div class="rulepanel" id="rulepanel"></div>
+    <div class="scalperpanel" id="scalperpanel"></div>
     <div class="side-head">
       <span>Trend read</span>
       <button class="rail-tf" id="trSym" title="Read timeframe — changes the chart too">—</button>
@@ -104,6 +104,7 @@
     <button class="tab" data-tab="deals">History</button>
     <button class="tab" data-tab="calendar">Calendar</button>
     <button class="tab" data-tab="backtest">Backtest</button>
+    <button class="tab" data-tab="signals">Signal Board</button>
     <div class="spacer"></div>
     <!-- Where the account cells land while the panel is collapsed. -->
     <div class="tabs-acct" id="tabsAcct"></div>
@@ -178,10 +179,21 @@
         <span class="alerts-badge" id="alCount"></span></button>
       <button class="alerts-tab" id="alTabNews" role="tab"
               aria-selected="false" aria-controls="alPaneNews">News &amp; scheduler</button>
+      <button class="alerts-tab" id="alTabDest" role="tab"
+              aria-selected="false" aria-controls="alPaneDest">Destinations
+        <span class="alerts-badge" id="alDestCount"></span></button>
     </div>
     <div class="alerts-body">
       <div id="alPaneSignal" role="tabpanel" aria-labelledby="alTabSignal">
         <div class="alerts-hint">Click a timeframe to switch it on or off.</div>
+        <!-- THE RULE, ONCE. It is the same sentence for every instrument, so
+             repeating it under each one was five copies of a constant pushing
+             the per-symbol figures -- the only lines that actually differ --
+             further apart. -->
+        <div class="alerts-hint alerts-rule">Rayo Scalper &mdash; swing break, EMA 20/50,
+          stop 4&nbsp;ATR, exit TP1, session 07:00&ndash;21:00 broker clock
+          (London local 05:00&ndash;19:00). Swap included. Hover a timeframe for its
+          own numbers.</div>
         <div id="alCells" class="alerts-cells"></div>
         <button id="alAdd" class="btn alerts-addbtn">+ Add instrument…</button>
       </div>
@@ -195,11 +207,46 @@
         <div class="alerts-sub">
           <label>warn <input type="number" id="alNewsLead" min="1" max="240" step="1"> min before</label>
           <label>impact
-            <select id="alNewsImpact">
-              <option value="any">any</option>
+            <!-- A MINIMUM, not an exact match: each level includes the ones
+                 above it. `any` is the absence of a filter and also passes the
+                 vendor's bank-holiday markers, which are not releases. -->
+            <select id="alNewsImpact" title="A minimum: each level includes everything above it">
+              <option value="any">any (incl. bank holidays)</option>
+              <option value="low">low and above</option>
+              <option value="medium">medium and above</option>
               <option value="high">high only</option>
             </select>
           </label>
+        </div>
+
+        <!-- THE NEWS FEED IS A FILE, and the rail on the left reads it. The
+             button is here rather than on the rail because refreshing it is a
+             settings action, not a chart action, and because the key that
+             fetches it lives on the server -- the page never sees it. -->
+        <div class="alerts-head2">News feed</div>
+        <div class="alerts-news">
+          <button id="alNewsFetch" class="btn">Fetch news now</button>
+          <span id="alNewsAge" class="alerts-note">checking…</span>
+        </div>
+        <!-- HOW OFTEN, and until this existed the answer was "never": nothing
+             fetched the feed automatically, so the rail only changed when
+             somebody pressed the button above. The interval is honoured by
+             whichever supervisor is up (serve.py while the app is open,
+             alerts_daemon.py otherwise) and takes effect on the next minute
+             with nothing restarted. -->
+        <div class="alerts-sub">
+          <label>fetch automatically
+            <select id="alNewsEvery">
+              <option value="0">off — manual only</option>
+              <option value="15">every 15 min</option>
+              <option value="30">every 30 min</option>
+              <option value="60">every hour</option>
+              <option value="180">every 3 hours</option>
+              <option value="360">every 6 hours</option>
+              <option value="1440">once a day</option>
+            </select>
+          </label>
+          <span id="alNewsEveryNote" class="alerts-note"></span>
         </div>
 
         <div class="alerts-head2">Scheduler</div>
@@ -207,6 +254,30 @@
           registered and running. Installing replaces an existing task and
           restarts it.</div>
         <div id="alSched" class="alerts-sched"></div>
+      </div>
+
+      <!-- WHERE the alerts go, as opposed to WHAT is announced (Signal alerts)
+           and WHEN (News). It is its own tab because it is the one thing here
+           that is not about the market at all: a chat id is plumbing, and it
+           was previously a comma-separated list in a gitignored file that only
+           existed on this machine.
+
+           THE ADDRESS IS HERE, THE CREDENTIAL IS NOT. Chat ids and phone
+           numbers are written to configs/alerts.json by Save; the bot token
+           and the WhatsApp token stay in configs/secrets.env and never reach
+           this page -- the line below reports only whether they are present. -->
+      <div id="alPaneDest" role="tabpanel" aria-labelledby="alTabDest" hidden>
+        <div class="alerts-hint">Tick what each destination receives.</div>
+        <!-- Empty and hidden unless a channel actually IN USE has no token.
+             A line that says everything is fine on every open is a line the
+             reader stops seeing, which is the one state where it needs to be
+             read. See paintCreds(). -->
+        <div id="alDestCreds" class="alerts-note" hidden></div>
+        <div id="alDests" class="alerts-dests"></div>
+        <div class="alerts-destadd">
+          <button id="alDestAdd" class="btn alerts-addbtn">+ Add destination…</button>
+          <button id="alDestImport" class="btn" hidden>Import from secrets.env</button>
+        </div>
       </div>
     </div>
     <div class="modal-foot">

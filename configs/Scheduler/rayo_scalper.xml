@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>DiaNurFx: the Rayo Scalper, this project's only signal source. Runs every 5 minutes, scores every enabled cell in configs/alerts.json (scalper.watch), journals all of them and sends a Telegram message with a chart for the TRADEABLE ones only. Replaced the horizon-matched Donchian on 2026-09-10.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <Duration>P1D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+      <Enabled>true</Enabled>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>TASK_USER</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <!-- PT10M. The run walks every ENABLED cell, which is 25 of them, fetching
+         400 bars each over the bridge and rendering a chart for the ones that
+         message. That is minutes, not seconds, and the limit has to clear the
+         work or it terminates healthy runs. IgnoreNew means an overrun skips
+         the next five-minute slot rather than stacking a second copy. -->
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>PYTHONW_EXE</Command>
+      <Arguments>tools\_run_quiet.py tools\scalper.py --live --registered --journal --notify</Arguments>
+      <WorkingDirectory>PROJECT_DIR</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

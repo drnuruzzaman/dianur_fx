@@ -10,6 +10,14 @@ server sends no-store on everything instead.
     python serve.py            # http://127.0.0.1:5173
     python serve.py 8080
 
+IT STARTS THE BRIDGE AND THE BOT. `python serve.py` is the whole app: the MT5
+bridge (bridge/mt5_bridge.py, the source of every price, position and signal)
+and the Telegram command bot come up with it, and stop with it. A bridge that
+is ALREADY running is attached to rather than replaced, and if that one is in
+--mock mode this says so in red letters, because a fabricated account that
+looks exactly like a real one is the most expensive thing a startup log can
+fail to mention. DNFX_MT5=0 and DNFX_BOT=0 opt out of each.
+
 WORKSPACE PERSISTENCE. localStorage is scoped to the browser profile: clear the
 site data, switch browser, or open the app from a different host and every
 setting is gone. The workspace belongs to the PROJECT, so it lives in the
@@ -19,6 +27,9 @@ project folder:
     PUT  /workspace   <-  {set: {...}, del: [...]}, merged into the file
     GET  /alerts      ->  configs/alerts.json, or {} when there is none
     PUT  /alerts      <-  the whole object, REPLACED not merged
+    GET  /notify/status -> which alert channels have credentials (booleans)
+    GET  /notify/resolve -> what a pasted chat link/@name becomes; sends nothing
+    POST /alerts/test <-  {destination, text?}, sends ONE real test message
 
 WHY ONE MERGES AND THE OTHER DOES NOT. The workspace is a scatter of
 independent keys and a client must never assert what it lacks -- a browser with
@@ -59,7 +70,10 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.parse
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +85,19 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.join(ROOT, 'configs', 'workspace.json')
 ALERTS = os.path.join(ROOT, 'configs', 'alerts.json')
 REPLAYS = os.path.join(ROOT, 'data', 'replays')
+NEWS = os.path.join(ROOT, 'data', 'news', 'quantgist.json')
+NEWS_FETCH = os.path.join(ROOT, 'tools', 'fetch_quantgist_news.py')
+
+#: Where the MT5 bridge lives. ONE VARIABLE for the whole project -- the same
+#: name tools/telegram_bot.py and tools/score_signals.py read -- so pointing the
+#: app at a bridge on another port means setting it once.
+BRIDGE_URL = os.environ.get('DNFX_BRIDGE', 'http://127.0.0.1:8765')
+
+#: One news fetch at a time. The tool rewrites `quantgist.json` with a temp file
+#: and a replace, so two of them racing cannot corrupt it -- but they can burn
+#: two API calls for one result, and a button that fires on every impatient
+#: click would do exactly that.
+_NEWS_JOB = {'running': False, 'started': 0.0, 'last': None}
 # Soundtracks a replay recording can be muxed with. Files go in BY HAND -- there
 # is no upload endpoint and there is not going to be one. Whatever sits here
 # ends up inside a video that gets shared, so putting a track in this folder is
@@ -135,11 +162,92 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         if self.path.split('?')[0] == '/alerts':
             try:
                 with io.open(ALERTS, encoding='utf-8') as fh:
-                    return self._json(200, json.load(fh))
+                    body = json.load(fh)
+                # THE VERSION THE CLIENT IS EDITING, so a Save can tell whether
+                # the file moved underneath it. See _put_alerts.
+                body['_version'] = self._alerts_version_impl()
+                return self._json(200, body)
             except FileNotFoundError:
                 return self._json(200, {})
             except Exception as exc:
                 return self._json(500, {'error': str(exc)})
+        if self.path.split('?')[0] == '/notify/resolve':
+            """What a pasted address BECOMES, without sending anything.
+
+            ONE IMPLEMENTATION, ASKED OVER HTTP, rather than a copy of the
+            rules in JavaScript. `notify.normalize_target` is what the
+            scheduled tools actually send through, so a second copy in the
+            browser would be a second set of rules that agree until one of them
+            is edited -- and the disagreement would surface as a message going
+            somewhere nobody chose. The panel asks when a field is committed,
+            not per keystroke, so this costs one request per edit.
+            """
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            channel = (q.get('channel') or ['telegram'])[0]
+            target = (q.get('target') or [''])[0]
+            try:
+                from tools import notify
+                try:
+                    out = {'ok': True,
+                           'target': notify.normalize_target(channel, target)}
+                    # THE CHAT'S OWN NAME, in the same round trip. The panel
+                    # asks this once per row when it opens, so a second
+                    # endpoint for the name would double that for one fact the
+                    # first call already had the address for. A failed lookup
+                    # is reported, never fatal: a destination with no readable
+                    # name is still a destination.
+                    who = notify.describe(channel, target)
+                    if who.get('ok'):
+                        out['title'] = who.get('title')
+                        out['type'] = who.get('type')
+                    else:
+                        out['title_error'] = who.get('error')
+                    return self._json(200, out)
+                except Exception as exc:                # noqa: BLE001
+                    # 200 with ok:false -- an unusable address is a normal
+                    # answer to this question, and the reason is the payload.
+                    return self._json(200, {'ok': False, 'error': str(exc)})
+            except Exception as exc:                    # noqa: BLE001
+                return self._json(500, {'error': str(exc)})
+        if self.path.split('?')[0] == '/notify/status':
+            """Which alert channels have credentials -- as booleans, never values.
+
+            THE PAGE MUST NEVER SEE A TOKEN. Destinations are managed in the
+            browser, so the panel has to say "WhatsApp has no token yet"
+            without the token ever crossing the wire -- otherwise a settings
+            panel becomes a way to read configs/secrets.env from any tab that
+            can reach this port. `notify.credentials()` returns presence flags
+            for exactly that reason, and this endpoint returns them verbatim.
+            """
+            try:
+                from tools import notify
+                return self._json(200, notify.credentials())
+            except Exception as exc:                        # noqa: BLE001
+                return self._json(500, {'error': str(exc)})
+        if self.path.split('?')[0] == '/news/status':
+            """How old the news file is, and whether a fetch is in flight.
+
+            THE FILE'S OWN `fetchedAt` IS THE ANSWER, not the mtime. mtime moves
+            when the file is copied, restored from a backup or touched by a sync;
+            `fetchedAt` is written by the tool at the moment it spoke to the API,
+            which is the thing a reader wants to know before trusting a headline.
+            mtime is reported alongside it as a fallback and nothing more.
+            """
+            out = {'running': _NEWS_JOB['running'], 'last': _NEWS_JOB['last']}
+            try:
+                st = os.stat(NEWS)
+                out['mtime_ms'] = int(st.st_mtime * 1000)
+                out['bytes'] = st.st_size
+                with io.open(NEWS, encoding='utf-8') as fh:
+                    doc = json.load(fh)
+                out['fetched_at'] = doc.get('fetchedAt')
+                out['clusters'] = len(doc.get('clusters') or [])
+                out['headlines'] = len(doc.get('headlines') or [])
+            except FileNotFoundError:
+                out['error'] = 'no news file yet'
+            except Exception as exc:                        # noqa: BLE001
+                out['error'] = str(exc)
+            return self._json(200, out)
         if self.path.split('?')[0] == '/scheduler':
             # GET is READ-ONLY. Installing is a POST, so nothing a page loads by
             # accident can register a system task.
@@ -155,6 +263,94 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
                 return self._json(400, {'error': 'bad body: %s' % exc})
             payload, code = _sched_install(body.get('task'))
             return self._json(code, payload)
+        if self.path.split('?')[0] == '/alerts/test':
+            """Send one test message to ONE destination, described in the body.
+
+            THE DESTINATION COMES FROM THE REQUEST, NOT FROM DISK, and that is
+            the point: the Test button sits next to a row that has not been
+            saved yet, and a test that read the file would have quietly tested
+            the OLD address while the reader watched the new one. Testing what
+            is on screen is the only version of this button that answers the
+            question it appears to answer.
+
+            IT SENDS A REAL MESSAGE. Deliberately -- a dry run proves nothing
+            about a chat id, a bot that was removed from a group, or a WhatsApp
+            24-hour window. It is one message, only ever on an explicit click,
+            and the text says what it is.
+            """
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > MAX_BODY:
+                    return self._json(400, {'error': 'bad length'})
+                body = json.loads(self.rfile.read(n).decode('utf-8'))
+                dest = body.get('destination') if isinstance(body, dict) else None
+                if not isinstance(dest, dict) or not dest.get('target'):
+                    return self._json(400, {'error': 'destination.target required'})
+                from tools import notify
+                text = body.get('text') or (
+                    'DiaNurFx test - if you can read this, "%s" is wired up '
+                    'correctly.' % (dest.get('label') or dest.get('target')))
+                try:
+                    notify.send_one(dest, text)
+                except Exception as exc:                    # noqa: BLE001
+                    # 200 WITH ok:false, not a 5xx. The send failing is a normal
+                    # answer to this question -- wrong id, bot removed, window
+                    # closed -- and the UI needs the API's own words for it,
+                    # which an HTTP error status would reduce to a number.
+                    return self._json(200, {'ok': False, 'error': str(exc)})
+                return self._json(200, {'ok': True})
+            except Exception as exc:                        # noqa: BLE001
+                return self._json(500, {'error': str(exc)})
+        if self.path.split('?')[0] == '/news/fetch':
+            """Run the fetcher and answer with what the file says afterwards.
+
+            SYNCHRONOUS, unlike the bridge's job runner. The whole call is one
+            API round trip and takes a few seconds; a job id, a status endpoint
+            and a polling loop would be more machinery than the thing being
+            machined. The button waits, which is also the honest UI -- the news
+            is either refreshed when it re-enables or it is not.
+
+            THE KEY NEVER REACHES THE BROWSER. That is the entire reason this
+            endpoint exists rather than the page calling QuantGist directly: the
+            tool reads QUANTGIST_API_KEY from configs/secrets.env, server side,
+            and the page only ever sees the file that comes out.
+            """
+            if _NEWS_JOB['running']:
+                return self._json(409, {'error': 'a news fetch is already running'})
+            _NEWS_JOB['running'] = True
+            _NEWS_JOB['started'] = time.time()
+            try:
+                proc = subprocess.run(
+                    [sys.executable, NEWS_FETCH], cwd=ROOT, timeout=180,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                tail = (proc.stdout or b'').decode('utf-8', 'replace').strip()
+                ok = proc.returncode == 0
+                _NEWS_JOB['last'] = {
+                    'ok': ok, 'code': proc.returncode,
+                    'ms': int((time.time() - _NEWS_JOB['started']) * 1000),
+                    # the tail only: a fetcher that printed a stack trace should
+                    # not push the useful last line off the top of a toast
+                    'log': tail[-800:],
+                }
+            except subprocess.TimeoutExpired:
+                _NEWS_JOB['last'] = {'ok': False, 'code': None, 'ms': 180000,
+                                     'log': 'timed out after 180s'}
+            except Exception as exc:                        # noqa: BLE001
+                _NEWS_JOB['last'] = {'ok': False, 'code': None, 'ms': 0,
+                                     'log': str(exc)}
+            finally:
+                _NEWS_JOB['running'] = False
+
+            out = dict(_NEWS_JOB['last'])
+            try:
+                with io.open(NEWS, encoding='utf-8') as fh:
+                    doc = json.load(fh)
+                out['fetched_at'] = doc.get('fetchedAt')
+                out['clusters'] = len(doc.get('clusters') or [])
+                out['headlines'] = len(doc.get('headlines') or [])
+            except Exception:                               # noqa: BLE001
+                pass
+            return self._json(200 if out.get('ok') else 500, out)
         if self.path.split('?')[0] != '/record':
             return self._json(404, {'error': 'not found'})
         try:
@@ -208,6 +404,14 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             return self._json(500, {'error': str(exc)})
 
+    @staticmethod
+    def _alerts_version_impl():
+        try:
+            st = os.stat(ALERTS)
+            return '%d-%d' % (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return 'absent'
+
     def _put_alerts(self):
         """Replace configs/alerts.json wholesale.
 
@@ -218,11 +422,17 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         inventing a `del` protocol for array elements.
 
         The safety that matters here is different, so it is enforced instead:
-        the body must contain a `signals.watch` ARRAY, so a half-built or empty
+        the body must contain a `scalper.watch` ARRAY, so a half-built or empty
         request cannot blank the file. And the previous version is kept as
         `.prev` before the replace, because the UI is the only writer and a bad
         save would otherwise be unrecoverable -- the same guard `/workspace`
         earned the hard way.
+
+        IT GUARDS `scalper`, NOT `signals`, SINCE 2026-09-10. `signals` is the
+        retired Donchian forward test -- still in the file, every cell disabled,
+        kept for its pre-registered record -- and guarding it would have meant
+        the check passed while the LIVE cell list went out empty. The guard has
+        to name whichever list would actually stop the alerts if it vanished.
         """
         try:
             n = int(self.headers.get('Content-Length') or 0)
@@ -231,9 +441,32 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(n).decode('utf-8'))
             if not isinstance(body, dict):
                 return self._json(400, {'error': 'expected an object'})
-            watch = (body.get('signals') or {}).get('watch')
+            watch = (body.get('scalper') or {}).get('watch')
             if not isinstance(watch, list):
-                return self._json(400, {'error': 'signals.watch must be an array'})
+                return self._json(400, {'error': 'scalper.watch must be an array'})
+
+            # ---- LOST UPDATE, and it cost 18 measured cells. ----
+            # This is a WHOLESALE replace of a file the panel loaded when it
+            # opened. On 2026-09-10 a measurement script rewrote alerts.json
+            # from 20 cells to 35 while the Settings modal was sitting open on
+            # the older copy; the next Save posted that copy back and three
+            # instruments lost every measured cell they had, replaced by the
+            # stub `toggle()` creates for a frame it has never seen. Nothing
+            # errored -- a wholesale write cannot tell a deletion from a stale
+            # snapshot, which is exactly why it needs to be told.
+            #
+            # So GET stamps `_version` (mtime + size) and a PUT carrying a
+            # stale one is refused with the current file, for the client to
+            # reload and reapply. A PUT with no `_version` at all is still
+            # accepted: a hand-rolled curl is a deliberate act, and the .prev
+            # copy below is its safety net.
+            sent = body.pop('_version', None)
+            now = self._alerts_version_impl()
+            if sent is not None and sent != now:
+                return self._json(409, {
+                    'error': 'configs/alerts.json changed since this panel '
+                             'loaded it -- reopen Settings and redo the edit',
+                    'version': now, 'yours': sent})
 
             try:
                 if os.path.exists(ALERTS):
@@ -336,10 +569,23 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
 #: the one rule that makes that acceptable is that the browser can only pick
 #: from this dict. Nothing here interpolates request data into a command.
 SCHED_TASKS = {
-    'signal_alert': ('DiaNurFx Signal Alert', 'signal_alert_install.cmd',
-                     'polls /signal for the watched cells and sends what fires'),
-    'event_alert': ('DiaNurFx Release Alert', 'event_alert_install.cmd',
-                    'warns before a macro release'),
+    # THE LIVE SIGNAL SOURCE, and it was missing from this map until
+    # 2026-09-10. The panel managed the retired Donchian alerter and the news
+    # alerter and had no idea the Rayo Scalper existed -- so the one task that
+    # actually sends signals could not be seen, checked or reinstalled from the
+    # UI, while the retired one sat at the top of the list with a working
+    # Reinstall button.
+    'rayo_scalper': ('DiaNurFx-Rayo-Scalper', 'rayo_scalper_install.cmd',
+                     'the Rayo Scalper: scores every enabled cell every 5 min, '
+                     'journals all, messages the tradeable ones with a chart'),
+    # 'Financial News Release Alert', with no DiaNurFx prefix: it warns about
+    # the market's news, not about anything this project emits, and the old
+    # 'Release Alert' read as a release of something we ship while sitting one
+    # row from a trade-signal task it has nothing to do with. Nothing
+    # enumerates tasks by the DiaNurFx prefix -- each is queried by the exact
+    # name in this map -- so dropping it costs nothing.
+    'event_alert': ('Financial News Release Alert', 'event_alert_install.cmd',
+                    'warns before a macro news release (not trade signals)'),
 }
 
 
@@ -396,6 +642,212 @@ def _sched_install(key):
     ok = r.returncode == 0 and 'SUCCESS' in (r.stdout or '')
     return {'ok': ok, 'code': r.returncode,
             'out': (r.stdout or '')[-1200:], 'err': (r.stderr or '')[-600:]}, 200
+
+
+def news_interval_minutes():
+    """`news.fetch_minutes` from configs/alerts.json, FOR THE BOOT LINE ONLY.
+
+    The timer does not consult this and must not: the fetcher reads the same
+    setting itself under --scheduled, and a second copy of the rule here would
+    be a second place to change it. This exists so the server can say, once, on
+    startup, what it is going to do -- a line that would otherwise only be
+    discoverable by waiting to see whether anything happened.
+    """
+    try:
+        with io.open(ALERTS, encoding='utf-8') as fh:
+            news = (json.load(fh) or {}).get('news') or {}
+        n = int(news.get('fetch_minutes') or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+    # A floor, because this spends somebody's API quota. Below 5 minutes the
+    # only thing that changes is the bill: the radar re-clusters in hours, and
+    # the rail drops anything older than two days, so a one-minute poll would
+    # fetch the same document sixty times an hour.
+    return max(5, n) if n > 0 else 0
+
+
+def news_timer():
+    """Fetch the news on a schedule, while the app is open.
+
+    WHY HERE RATHER THAN A SCHEDULED TASK. Until now nothing fetched the news
+    automatically at all -- the file only changed when somebody pressed Fetch
+    news now, so a rail that looked stale usually WAS stale, by days. This
+    server is the process that is always up when the rail is being read, so it
+    is the honest place for the timer.
+
+    THE FETCHER DECIDES WHETHER IT IS DUE, via --if-older-than, and this loop
+    only decides how often to ASK. That keeps one definition of "due" in one
+    file, and it means this timer and alerts_daemon.py can both be running
+    without pulling the feed twice as often as configured: whoever asks first
+    satisfies the interval for both, because the question is about the age of
+    the file rather than about either process's own clock.
+
+    IT SHARES THE MANUAL FETCH'S FLAG so a timed run and a button press cannot
+    overlap. Two fetchers writing one file through os.replace would not corrupt
+    it, but they would spend two calls of quota to write the same document, and
+    the second would clobber the `.prev` that the first had just made -- losing
+    the one generation back that exists to recover a bad fetch.
+
+    A DAEMON THREAD, so Ctrl+C on the server does not wait for it, and every
+    exception is swallowed: a failed news fetch must never take down the page
+    server. The tool reports its own failures into the log the panel reads.
+    """
+    while True:
+        time.sleep(60)
+        try:
+            if _NEWS_JOB['running']:
+                continue
+            _NEWS_JOB['running'] = True
+            started = time.time()
+            try:
+                proc = subprocess.run(
+                    [sys.executable, NEWS_FETCH, '--scheduled'],
+                    cwd=ROOT, timeout=180,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                tail = (proc.stdout or b'').decode('utf-8', 'replace').strip()
+                # A "not due" run is not a fetch and must not be recorded as
+                # one: `last` is what the Settings panel shows about the most
+                # recent FETCH, and overwriting it every minute with "not due"
+                # would erase the error from a fetch that actually failed.
+                if not tail.startswith('not due') and not tail.startswith('automatic'):
+                    _NEWS_JOB['last'] = {
+                        'ok': proc.returncode == 0, 'code': proc.returncode,
+                        'ms': int((time.time() - started) * 1000),
+                        'log': tail[-800:], 'timed': True,
+                    }
+                    print('* news: timed fetch -> %s'
+                          % ('ok' if proc.returncode == 0 else
+                             'exit %d' % proc.returncode))
+            finally:
+                _NEWS_JOB['running'] = False
+        except Exception as exc:                            # noqa: BLE001
+            print('* news timer: %s' % exc)
+
+
+def bridge_health(timeout=1.5):
+    """What the bridge says about itself, or None when nothing answers.
+
+    A PROBE, NOT A PORT CHECK. "Is 8765 taken" and "is a bridge there" are
+    different questions, and the answer to the second carries the thing that
+    actually matters: whether it is MOCK. Today this machine had a --mock
+    bridge holding the port and the real one sitting beside it unable to bind,
+    so the app was reading fabricated prices while looking perfectly healthy.
+    """
+    try:
+        with urllib.request.urlopen(BRIDGE_URL.rstrip('/') + '/health',
+                                    timeout=timeout) as r:
+            return json.loads(r.read().decode() or '{}')
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def _bridge_line(h):
+    """One sentence about a /health payload, for the startup log."""
+    if h.get('mock'):
+        return 'MOCK MODE — fabricated data, no terminal touched'
+    if h.get('connected'):
+        return 'connected: account %s on %s' % (h.get('login'), h.get('server'))
+    return 'not connected: %s' % (h.get('error') or 'terminal not attached')
+
+
+def start_bridge():
+    """Start the MT5 bridge alongside the app, unless one is already up.
+
+    WHY IT IS HERE. The bridge is the app's data: no bridge, no prices, no
+    account, no signal. It was a second thing to remember to launch, and
+    forgetting it produced a page that loaded perfectly and showed nothing --
+    the same argument that put the Telegram bot in this file.
+
+    PROBE FIRST, AND NEVER START A SECOND ONE. A bridge already running is
+    ATTACHED TO, not replaced: it may be one the user started deliberately with
+    --mock or a different account, and taking it over from a page server would
+    be the wrong kind of helpful. It also avoids the failure this machine was
+    in when the feature was written -- two bridge processes, the first holding
+    8765 in mock mode and the second alive with no port at all, the app quietly
+    reading fabricated data. The port bind alone does not prevent that; the
+    probe does, and it says which one you have.
+
+    IT IS SAID OUT LOUD WHEN THE ANSWER IS MOCK. A fabricated account that
+    looks exactly like a real one is the single most expensive thing this
+    process can fail to mention.
+
+    OPT OUT WITH DNFX_MT5=0. Not DNFX_BRIDGE -- that name is already the bridge
+    URL in three tools, and overloading it to also mean a boolean would make
+    `DNFX_BRIDGE=0` silently point them at a URL called "0".
+    """
+    if os.environ.get('DNFX_MT5') == '0':
+        print('* mt5 bridge: skipped (DNFX_MT5=0)')
+        return None
+
+    here = bridge_health()
+    if here is not None:
+        print('* mt5 bridge: already running at %s -- %s'
+              % (BRIDGE_URL, _bridge_line(here)))
+        if here.get('mock'):
+            print('  ! the page will show FABRICATED data. Stop that process '
+                  'and restart to attach to the terminal.')
+        return None                       # not ours; not ours to stop, either
+
+    script = os.path.join(ROOT, 'bridge', 'mt5_bridge.py')
+    if not os.path.exists(script):
+        print('* mt5 bridge: %s is missing' % script)
+        return None
+
+    args = [sys.executable, script]
+    # The port comes from DNFX_BRIDGE so one variable still decides where the
+    # bridge lives for every part of this project.
+    port = urllib.parse.urlparse(BRIDGE_URL).port or 8765
+    if port != 8765:
+        args += ['--port', str(port)]
+    extra = (os.environ.get('DNFX_MT5_ARGS') or '').split()
+    if extra:
+        args += extra                     # e.g. DNFX_MT5_ARGS=--mock
+
+    try:
+        child = subprocess.Popen(args, cwd=ROOT)
+    except OSError as err:
+        # Serving the page is this process's job; a bridge that will not start
+        # must not stop the app from coming up. The pill will show it as down.
+        print('* mt5 bridge: could not start (%s)' % err)
+        return None
+    print('* mt5 bridge: starting (pid %d)%s -- DNFX_MT5=0 to skip'
+          % (child.pid, (' ' + ' '.join(extra)) if extra else ''))
+
+    def report():
+        """Say how it went, once, without holding up the page.
+
+        MetaTrader5 import plus login takes seconds, and blocking here would
+        delay the server for a result nobody is waiting on -- the page polls
+        /health on its own and the pill turns over when it turns over. This
+        thread exists so the CONSOLE says what happened, because "starting" is
+        not an outcome and a bridge that failed to attach otherwise says so
+        only in a colour on a pill.
+        """
+        for _ in range(40):                            # up to ~20s
+            time.sleep(0.5)
+            if child.poll() is not None:
+                print('* mt5 bridge: exited %d before answering' % child.returncode)
+                return
+            h = bridge_health(timeout=1.0)
+            if h is not None:
+                print('* mt5 bridge: %s' % _bridge_line(h))
+                return
+        print('* mt5 bridge: no answer after 20s -- see the window it printed to')
+
+    threading.Thread(target=report, daemon=True, name='bridge-report').start()
+    return child
+
+
+def stop_bridge(child):
+    """Stop only a bridge THIS process started. See start_bridge."""
+    if child is None or child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+    print('* mt5 bridge: stopped')
 
 
 def start_bot():
@@ -464,6 +916,20 @@ def main():
     srv = ThreadingHTTPServer(('127.0.0.1', port), NoCacheHandler)
     # AFTER the bind, so a second `serve.py` on a taken port fails before it
     # spawns anything: the port is already the app's single-instance guard.
+    # THE NEWS TIMER, started with the server for the same reason the bot is:
+    # a refresh that only happens when somebody remembers to press a button is
+    # a refresh that mostly does not happen. Off unless `news.fetch_minutes` is
+    # set in configs/alerts.json -- Settings -> News.
+    threading.Thread(target=news_timer, daemon=True, name='news').start()
+    _iv = news_interval_minutes()
+    print('* news fetch: %s'
+          % ('every %d min' % _iv if _iv else 'manual only (Settings -> News)'))
+
+    # THE BRIDGE BEFORE THE BOT, because it is slower to come up and the page
+    # is useless without it: starting it first gives it a head start on the
+    # seconds MetaTrader5 takes to attach, which is time the page spends
+    # loading anyway.
+    bridge = start_bridge()
     bot = start_bot()
     print('* Nur AI on http://127.0.0.1:%d (no-store; Ctrl+C to stop)' % port)
     try:
@@ -473,6 +939,7 @@ def main():
     finally:
         srv.server_close()
         stop_bot(bot)
+        stop_bridge(bridge)
 
 
 if __name__ == '__main__':

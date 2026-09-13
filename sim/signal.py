@@ -96,6 +96,14 @@ class Signal:
     upper: Optional[float] = None
     lower: Optional[float] = None
 
+    #: BOTH exit levels, always, whatever is held. `channel_exit` above answers
+    #: "where does THIS position end" and is therefore silent when flat -- which
+    #: is right for an instruction and wrong for a board, where the reader is
+    #: deciding whether to take a trade and wants to see where it would be given
+    #: back before entering it. Reference levels, not instructions.
+    exit_long: Optional[float] = None
+    exit_short: Optional[float] = None
+
     def is_entry(self):
         return self.action in ('buy', 'sell')
 
@@ -218,6 +226,11 @@ def evaluate(bars, strategy, spec, *, equity=None, risk_pct=0.5, fx=None,
         state=state, action='hold',
         upper=at('hi'), lower=at('lo'),
     )
+
+    # Both sides of the shorter channel, unconditionally -- see the field
+    # comments. Cheap: they are already in `series`.
+    sig.exit_long = at('exit_lo')
+    sig.exit_short = at('exit_hi')
 
     # The level that would close an open trade. Only meaningful for the side
     # actually held: exit_lo closes a long, exit_hi closes a short.

@@ -10,6 +10,7 @@
  */
 
 import { findDivergences, rsiSeries } from './divergence.js';
+import { signals, ticket } from './scalper.js';
 import { rollingShifted } from './rules.js';
 import { zigzag } from './structure.js';
 
@@ -169,6 +170,71 @@ export const INDICATORS = {
         { type: 'line', label: `exit ${o.exit} hi`, color: C.grey, data: fin(xu), width: 1, dash: [3, 3] },
         { type: 'line', label: `exit ${o.exit} lo`, color: C.grey, data: fin(xd), width: 1, dash: [3, 3] },
       ];
+    },
+  },
+  tpbands: {
+    label: 'Rayo TP bands', pane: 'main',
+    /* `fade` is 0/1 because study inputs are numeric. `show` is how many past
+       trades to draw -- FIVE LINES EACH, so the default is deliberately small;
+       six trades was thirty plots and unreadable. `live` also draws the current
+       pending ticket, which has not filled and may never. */
+    inputs: { fade: 0, show: 2, live: 1 },
+    calc: (bars, o) => {
+      /* THE SAME MODULE THE RAIL PANEL USES, imported rather than
+         reimplemented -- this is the third place the rule could have been
+         retyped (Python, panel, chart) and a band disagreeing with the panel
+         beside it is worse than no band. */
+      const mode = o.fade ? 'fade' : 'break';
+      const took = signals(bars, { mode, max: Math.max(1, o.show) });
+      const n = bars.length;
+      const plots = [];
+      const seg = (from, to, v) => {
+        const a = new Array(n).fill(null);
+        for (let i = Math.max(0, from); i <= Math.min(n - 1, to); i++) a[i] = v;
+        return a;
+      };
+
+      /* THE WHOLE LADDER ON EVERY SIGNAL -- entry, stop and all three targets.
+         An earlier pass drew only entry/SL/TP3 to cut clutter, which quietly
+         removed two of the levels the panel lists and the trade is placed on.
+         Clutter is what `show` is for.
+
+         BANDS ONLY WHILE THE TRADE WAS LIVE: fill to exit, not a line running
+         to the right edge for something that closed hours ago. */
+      took.forEach((t, k) => {
+        const last = k === took.length - 1;
+        const won = t.outcome === 'tp3';
+        const L = (v, color, width, dash, label) => plots.push({
+          type: 'line', label: last ? label : '', color, width, dash,
+          data: seg(t.fillIndex, t.endIndex, v),
+        });
+        L(t.entry, C.white, 1.5, null, `${t.side.toUpperCase()} ${t.outcome}`);
+        L(t.stop, C.pink, 1, [4, 3], 'SL');
+        L(t.tp[0], C.grey, 1, [2, 3], 'TP1');
+        L(t.tp[1], C.grey, 1, [2, 3], 'TP2');
+        /* TP3 is the only one the backtest exits on, so it carries the outcome:
+           solid green when it was reached, dashed when the stop got there first. */
+        L(t.tp[2], won ? C.green : C.grey, won ? 1.4 : 1, won ? null : [2, 3], 'TP3');
+      });
+
+      /* The pending ticket, its full ladder dotted from the bar that proposed
+         it, so a resting order is never mistaken for a trade that happened. */
+      if (o.live) {
+        const t = ticket(bars, { mode });
+        if (t) {
+          const from = t.barIndex ?? n - 2;
+          const P = (v, color, label) => plots.push({
+            type: 'line', label, color, width: 1, dash: [1, 4],
+            data: seg(from, n - 1, v),
+          });
+          P(t.entry, C.orange, `pending ${t.side} ${t.order}`);
+          P(t.stop, C.pink, '');
+          P(t.tp[0], C.grey, '');
+          P(t.tp[1], C.grey, '');
+          P(t.tp[2], C.green, '');
+        }
+      }
+      return plots;
     },
   },
   zigzag: {

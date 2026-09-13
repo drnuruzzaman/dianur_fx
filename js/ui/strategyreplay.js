@@ -45,7 +45,7 @@
 
 import { api } from '../api.js';
 import { Chart } from '../chart/engine.js';
-import { AUTO_DEFAULTS, BAR_COUNT, TF, TF_MS, resolveAuto, el, hhmm, px, seekBar, ymd, ymdToMs } from '../util.js';
+import { RISK_TEXT, AUTO_DEFAULTS, BAR_COUNT, TF, TF_MS, resolveAuto, el, hhmm, px, seekBar, ymd, ymdToMs } from '../util.js';
 import { replayAuto, openReplayAutoMenu } from './replayauto.js';
 import { toast } from './menu.js';
 import { tip } from './tips.js';
@@ -1223,12 +1223,12 @@ export class StrategyReplay {
          Drawn after the panel because the panel paints its own background
          over this corner, and a recording is shared exactly like a PNG is. */
       ctx.save();
-      ctx.font = '11px Inter, system-ui, sans-serif';
+      ctx.font = '11px "Roboto Mono", monospace';   // matches the header's timestamp
       ctx.fillStyle = '#8fa6c0';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'alphabetic';
       /* one line ABOVE the very bottom: the panel already signs itself on the bottom line. */
-      ctx.fillText('Trading is risky, you might lose your funds.',
+      ctx.fillText(RISK_TEXT,
                    cv.width - 12, cv.height - 26);
       ctx.restore();
       this.rec.raf = requestAnimationFrame(paint);

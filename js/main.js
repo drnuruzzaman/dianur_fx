@@ -32,7 +32,7 @@ import { Watchlist } from './ui/watchlist.js';
 import { Panels } from './ui/panels.js';
 import { TrendRead, readTfs } from './ui/trendread.js';
 import { SignalPanel } from './ui/signalpanel.js';
-import { RulePanel } from './ui/rulepanel.js';
+import { ScalperPanel } from './ui/scalperpanel.js';
 import { structuralTrail } from './chart/exittrail.js';
 import { installTips } from './ui/tips.js';
 import { installChat } from './ui/chat.js';
@@ -580,9 +580,7 @@ const trendRead = new TrendRead($('#trendread'), $('#trSym'));
 /* The signal engine reads the EXECUTION frame only — it is a statement
    about the next few bars of the chart you are on, not about context. */
 const signalPanel = new SignalPanel($('#signalpanel'), $('#sigSym'));
-const rulePanel = new RulePanel($('#rulepanel'), $('#rpSym'));
-/* A debug handle, the same convenience window.dnfx gives the live app. */
-window.dnfxRule = rulePanel;
+const scalperPanel = new ScalperPanel($('#scalperpanel'), $('#scMode'));
 let panelTick = 0;
 let panelReadTimer = null;
 
@@ -655,18 +653,11 @@ async function loadTrendRead(chart) {
      engine on a series the user is not looking at. */
   signalPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf),
                      scrolled ? asOfT : null);
-  /* Same frame as the signal engine, for the same reason: the rule was
-     validated on 4h gold and running it on a series the user is not looking at
-     would show levels that belong to a different chart. */
-  rulePanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf), {
-    tf,                                  // the bridge's vocabulary, not the label
-    live: !scrolled,                     // so the forming bar is dropped
-    asOf: scrolled ? asOfT : null,
-    digits: (app.spec && app.spec.digits != null) ? app.spec.digits : 2,
-  });
-  /* AFTER the update, not before: rulePanel.sig is what update() recomputes, so
-     drawing first paints the previous bar's signal onto the current chart. */
-  paintRuleSignal(app.active, rulePanel.sig);
+  /* Same frame as the signal engine. The scalper needs no FX rate and no
+     equity, so it computes from the bars already in hand -- see
+     js/chart/scalper.js for why that is a mirror of the Python and not a
+     second rule. */
+  scalperPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf), app.spec, tf);
   app.active.draw();
 }
 
@@ -677,11 +668,6 @@ async function loadSpec(symbol) {
        shows 1.16 where the instrument quotes 1.16393. */
     app.spec = await api.spec(symbol);
   } catch { app.spec = null; }
-  /* The rule panel prices its levels at 0.01 lots and needs the contract to do
-     it. Attached rather than fetched there: the panel redraws on every tick and
-     should not be making network calls to label a row. */
-  rulePanel.spec = app.spec;
-  if (rulePanel.sig) rulePanel.render();
 }
 
 /* The stock watchlist ships plain names, but a broker serves its own tickers
@@ -1226,126 +1212,6 @@ async function runAuto(chart) {
    and on a chart whose forward marks are structural it could only ever
    disagree with them. The levels ahead are marked on the price scale by
    setRuleTargets; the exit is one line from setTrail. */
-function paintRuleSignal(chart, sig) {
-  if (!sig || !sig.series) {
-    chart.setRuleZone(null); chart.setTrail(null); chart.setRuleTargets(null);
-    return;
-  }
-  const held = sig.position;
-  const pend = (!held && sig.pending && sig.pending.side !== 0) ? sig.pending : null;
-  if (!held && !pend) {
-    chart.setRuleZone(null); chart.setTrail(null); chart.setRuleTargets(null);
-    return;
-  }
-
-  const long = (held ? held.side : pend.side) > 0;
-  /* A pending signal has no fill yet: the rule decided on THIS close and the
-     order goes in at the next open, which does not exist. The signal close is
-     the only price known, and it is what the stop was measured from. */
-  const entry = held ? held.entryPrice : pend.signalPrice;
-  const stop = held ? held.stop : pend.stop;
-  const risk = Math.abs(entry - stop);
-
-  /* THE LEVELS COME FROM THE PANEL, which computed them from the same closed
-     bars it walked the rule over. Read BEFORE the zone is set, because the
-     zone's green block is drawn to the first of them. */
-  const levels = rulePanel.levels || [];
-
-  chart.setRuleZone({
-    entry,
-    stop,
-    /* THE FAR EDGE OF THE GREEN BLOCK IS TP1 ITSELF -- the same price the scale
-       is marked at and the panel lists, so the block and the tag can never
-       disagree. It was a fixed 2R once and could only ever miss. Zero when
-       nothing is ahead, and the block is simply not drawn: clear air is drawn
-       as clear air rather than as a band of arbitrary depth. */
-    ref: levels.length ? levels[0].price : 0,
-    atrMult: (sig.params && sig.params.atrMult) || 2,
-    i0: held ? held.entryI : pend.signalI,
-    label: held ? (long ? 'RULE holding LONG' : 'RULE holding SHORT')
-                : (long ? 'RULE would BUY' : 'RULE would SELL'),
-  });
-
-  /* THE MOVING EXIT, TRACED -- ONE LINE, AND IT IS THE ONE THAT WILL FIRE.
-   *
-   * The trade has two moving exits now: the rule's own channel and the
-   * structural trail. This draws the EFFECTIVE one, the tighter of the two at
-   * every bar, which is by definition the level that closes the trade. Violet
-   * and dashed because it is the trail most of the time; where the channel is
-   * tighter the same line traces the channel instead.
-   *
-   * NOT JUST THE TRAIL. The channel still takes roughly a quarter of the exits,
-   * usually early on before any structure has formed behind the trade -- so a
-   * line showing only the trail would sit at a level the trade sometimes does
-   * not exit at, and draw nothing at the level it does.
-   *
-   * No label: the Donchian panel names all three levels and marks which binds,
-   * and a tag floating over price is the thing that made the zone labels worth
-   * removing. The strategy replay still passes one -- there the line has no
-   * panel beside it to explain what it is. */
-  if (held) {
-    const lvl = long ? sig.series.exitLo : sig.series.exitHi;
-    const closes = rulePanel.bars ? rulePanel.bars.map((b) => b.c) : [];
-    const pts = [];
-    let trail = null;
-    for (let k = held.entryI; k < sig.bars; k++) {
-      if (closes.length) {
-        const cand = structuralTrail({
-          side: held.side, i: k, view: rulePanel.bars,
-          series: sig.series, close: closes,
-          /* As in the replay: the break-even floor is measured from the fill,
-             so the drawn line must be told which fill it belongs to. */
-          entryPrice: held.entryPrice,
-        }, { tf: rulePanel.rawTf, cell: `${chart.symbol}|${rulePanel.rawTf}` });
-        if (Number.isFinite(cand)) {
-          const better = trail === null || (long ? cand > trail : cand < trail);
-          if (better) trail = cand;
-        }
-      }
-      const ch = lvl[k];
-      let eff = null;
-      if (Number.isFinite(ch) && Number.isFinite(trail)) {
-        eff = long ? Math.max(ch, trail) : Math.min(ch, trail);
-      } else if (Number.isFinite(ch)) eff = ch;
-      else if (Number.isFinite(trail)) eff = trail;
-      if (Number.isFinite(eff)) pts.push({ i: k, price: eff });
-    }
-    chart.setTrail(pts.length > 1
-      ? { points: pts, color: '#c07cf0', width: 1.4, dash: [4, 3] } : null);
-  } else {
-    chart.setTrail(null);
-  }
-
-  /* THE LEVELS AHEAD, from the bar the rule decided on -- not from the last
-     bar. A trade opened 700 bars ago was planned against the structure visible
-     THEN, and re-deriving it from today's chart would silently rewrite the plan
-     every time a new high printed. */
-  /* THE MONEY. Two sources and they mean different things, so the label says
-     which: `/signal` gives the lots Python would actually take, and when it has
-     not answered -- it returns no size for a position already held -- the value
-     falls back to ONE LOT and is marked `/lot`.
-   *
-   * PER LOT IS NOT A GUESS. It is a property of the CONTRACT: tick value over
-   * tick size is what one lot is worth per unit of price, and it needs no
-   * equity and no FX rate. That is the whole reason it is a safe fallback,
-   * where inventing a position size would not be. */
-  /* THE LEVELS, PLUS WHAT THE TAG NEEDS TO PRICE THEM. `entry` is the rule's
-     own fill -- both the distance and the money on a tag are measured from it,
-     never from the current price -- and the contract decides the money. The
-     panel lists the same three numbers from the same two sources, so the tag
-     and the row can never disagree. */
-  const spec = app.spec;
-  chart.setRuleTargets({
-    levels,
-    entry,
-    /* THE STOP TRAVELS WITH THE LEVELS because it is what sizes them: money on
-       a tag is now the level's R multiple against a stated account, so a tag
-       without a stop distance has no money to print. */
-    stop,
-    tickSize: spec ? (spec.tick_size || spec.point || 0) : 0,
-    tickValue: spec ? (spec.tick_value || 0) : 0,
-  });
-}
 
 /* THE TARGETS ARE STRUCTURE, NOT R MULTIPLES.
  *
@@ -1425,7 +1291,6 @@ function paintAccount(a) {
   panels.currency = c;
   /* The rule panel names the unit its money figures are quoted in, and the
      account is the only place that knows it. */
-  rulePanel.currency = c;
 }
 
 /* REALISED profit for the broker's current day and month.
@@ -1876,7 +1741,7 @@ function wireToolbar() {
     const c = app.active;
     const items = [
       { kind: 'cap', label: 'Overlays' },
-      ...['ema', 'sma', 'bb', 'vwap', 'donchian', 'zigzag'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
+      ...['ema', 'sma', 'bb', 'vwap', 'donchian', 'tpbands', 'zigzag'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
       { kind: 'cap', label: 'Panes' },
       ...['volume', 'rsidiv', 'macd', 'atr', 'stoch'].map((k) => ({ label: INDICATORS[k].label, value: k, checked: c.hasStudy(k) })),
     ];
@@ -2273,12 +2138,21 @@ function download(url, name) {
    same context every time -- re-ticking three boxes per share would guarantee
    they eventually go out inconsistent. */
 const SNAP_PANELS = [
-  { id: 'rulepanel', label: 'Donchian rule' },
+  /* Order follows the rail, top to bottom, so the exported image reads the way
+     the screen does. */
+  { id: 'scalperpanel', label: 'Rayo Scalper' },
   { id: 'trendread', label: 'Trend read' },
   { id: 'signalpanel', label: 'Signal engine' },
+  { id: 'rulepanel', label: 'Donchian rule' },
 ];
 const SNAP_KEY = 'ui.snapPanels';
-const snapSel = () => new Set(load(SNAP_KEY, ['rulepanel', 'trendread', 'signalpanel']));
+/* SCALPER IS IN THE DEFAULT SET, but only for someone who has never chosen.
+   `load` returns the SAVED list once one exists, so anybody who has already
+   ticked boxes keeps exactly what they picked -- a new panel silently adding
+   itself to a saved selection is how a shared image grows a section the sender
+   did not know it had. */
+const snapSel = () => new Set(load(SNAP_KEY,
+  ['scalperpanel', 'trendread', 'signalpanel', 'rulepanel']));
 
 /* The panels are HTML, the chart is a canvas, and the export has to be ONE
    image. Rather than pull in a DOM-rasteriser, the text is read out of the
@@ -2288,20 +2162,65 @@ const snapSel = () => new Set(load(SNAP_KEY, ['rulepanel', 'trendread', 'signalp
 function panelLines(id) {
   const host = $('#' + id);
   if (!host) return [];
-  const out = [];
+  const clean = (n) => (n.textContent || '').replace(/\s+/g, ' ').trim();
+  const items = [];
+  const claimed = new Set();
   for (const node of host.querySelectorAll('*')) {
+    if (claimed.has(node) || node.closest('button')) continue;
+    /* `snap-line` MARKS PROSE. The leaves-only walk below is right for the
+       label/value panels and wrong for a sentence: the scalper's rationale
+       wraps its levels in <b>, so the walk skipped the sentence (it has element
+       children) and exported the bold fragments on their own -- "Trend up",
+       "4412.10" -- with the words between them missing. */
+    if (node.classList.contains('snap-line')) {
+      const t = clean(node);
+      if (t) items.push({ t, prose: true });
+      for (const kid of node.querySelectorAll('*')) claimed.add(kid);
+      continue;
+    }
     if (node.children.length) continue;                 // leaves only
-    if (node.closest('button')) continue;               // controls do not export
-    const t = (node.textContent || '').replace(/\s+/g, ' ').trim();
-    if (t) out.push(t);
+    const t = clean(node);
+    if (t) items.push({ t, prose: false });
   }
   /* the panels render label/value as adjacent leaves; pair them back up so the
-     caption reads as rows rather than a column of orphaned words */
+     caption reads as rows rather than a column of orphaned words. Prose never
+     pairs -- two sentences welded together read as neither. */
   const rows = [];
-  for (let i = 0; i < out.length; i += 2) {
-    rows.push(out[i + 1] ? `${out[i]}   ${out[i + 1]}` : out[i]);
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].prose) { rows.push(items[i]); continue; }
+    const nxt = items[i + 1];
+    if (nxt && !nxt.prose) { rows.push({ t: `${items[i].t}   ${nxt.t}`, prose: false }); i++; }
+    else rows.push(items[i]);
   }
   return rows;
+}
+
+/**
+ * Fit the rows to the caption column: clip a label/value row, WRAP a sentence.
+ *
+ * Clipping was the right call for two-word rows and is the wrong one for the
+ * rationale -- an explanation that ends in an ellipsis explains nothing. Done
+ * here rather than at draw time so the image is sized for the wrapped height
+ * and the panels cannot run off the bottom.
+ */
+function layoutLines(rows, ctx, maxW) {
+  const out = [];
+  for (const r of rows) {
+    if (!r.prose) {
+      let t = r.t;
+      while (t.length && ctx.measureText(t).width > maxW) t = t.slice(0, -1);
+      out.push(t === r.t ? t : t.slice(0, -1) + '…');
+      continue;
+    }
+    let line = '';
+    for (const word of r.t.split(' ')) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && ctx.measureText(next).width > maxW) { out.push(line); line = word; }
+      else line = next;
+    }
+    if (line) out.push(line);
+  }
+  return out;
 }
 
 /**
@@ -2318,7 +2237,14 @@ function snapshotWithInfo(c, chosen) {
     const img = new Image();
     img.onload = () => {
       const PAD = 28, COLW = 460, TITLE = 30, LINE = 26;
-      const blocks = wanted.map((p) => ({ label: p.label, lines: panelLines(p.id) }));
+      /* Measured with the SAME font the draw loop uses, or the wrap decided
+         here and the pixels drawn below would disagree. */
+      const meas = el('canvas').getContext('2d');
+      meas.font = '15px "Roboto Mono", ui-monospace, monospace';
+      const blocks = wanted.map((p) => ({
+        label: p.label,
+        lines: layoutLines(panelLines(p.id), meas, COLW - PAD * 2),
+      }));
       const needed = blocks.reduce((a, b) => a + TITLE + b.lines.length * LINE + PAD, PAD);
       const w = img.width + COLW;
       const h = Math.max(img.height, needed);
@@ -2344,11 +2270,7 @@ function snapshotWithInfo(c, chosen) {
         x.font = '15px "Roboto Mono", ui-monospace, monospace';
         for (const line of b.lines) {
           x.fillStyle = '#33475b';
-          /* clip rather than wrap: a caption column that reflows turns a
-             two-line panel into a page and pushes the chart out of shape */
-          let t = line;
-          while (t.length && x.measureText(t).width > COLW - PAD * 2) t = t.slice(0, -1);
-          x.fillText(t === line ? t : t.slice(0, -1) + '…', left, y + 14);
+          x.fillText(line, left, y + 14);      // already fitted by layoutLines
           y += LINE;
         }
         y += PAD;
@@ -2583,8 +2505,6 @@ const tick = {
       trendRead.repaint(app.active.bars);
       panelTick = (panelTick + 1) % 4;
       if (panelTick === 0) signalPanel.repaint(app.active.bars);
-      rulePanel.repaint(app.active.bars);
-      paintRuleSignal(app.active, rulePanel.sig);
     }
   },
 

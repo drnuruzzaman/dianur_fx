@@ -58,6 +58,7 @@ BNE = timezone(timedelta(hours=10), 'AEST')
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import _secrets                                    # noqa: E402
+from tools import notify                                      # noqa: E402
 
 # The message carries an emoji and Windows consoles default to cp1252, which
 # raises on it. The MESSAGE is fine -- Telegram takes UTF-8 -- so a console that
@@ -93,6 +94,98 @@ MEANING = {
 #: impact label calls CPI, FOMC, GDP and NFP all "high" while the measured
 #: expansion spans 4.05x to 1.58x -- the alert should say the measured thing.
 EXPANSION = {'FOMC': 4.05, 'NFP': 2.57, 'CPI': 2.02, 'GDP': 1.58, 'BOJ': 0.77}
+
+
+#: Bridge titles -> the curated kinds above, so an event that arrives from the
+#: broker's calendar still gets its plain-English meaning and, where one was
+#: measured, its volatility expansion. Matched on a lowercased substring of the
+#: title, longest first, so "core ppi m/m" does not become CPI.
+TITLE_KIND = [
+    ('non-farm employment', 'NFP'), ('nonfarm payroll', 'NFP'),
+    ('unemployment rate', 'UNEMPLOYMENT'),
+    ('federal funds rate', 'FOMC'), ('fomc', 'FOMC'),
+    ('main refinancing rate', 'ECB'), ('ecb', 'ECB'),
+    ('official bank rate', 'BOE'), ('boe', 'BOE'),
+    ('boj policy rate', 'BOJ'), ('boj', 'BOJ'),
+    ('core ppi', 'PPI'), ('ppi', 'PPI'),
+    ('core cpi', 'CPI'), ('cpi', 'CPI'),
+    ('gdp', 'GDP'),
+]
+
+
+def _kind_for(title):
+    t = (title or '').lower()
+    for needle, kind in sorted(TITLE_KIND, key=lambda r: -len(r[0])):
+        if needle in t:
+            return kind
+    return None
+
+
+def load_events(base):
+    """The broker's economic calendar, falling back to the local markers.
+
+    WHY THE BRIDGE AND NOT data/calendar/history.json. That file is not a
+    calendar -- it is 801 rows of NINE curated kinds (NFP, CPI, PPI, GDP,
+    FOMC, ECB, BOE, BOJ, UNEMPLOYMENT) used to draw event lines on charts, with
+    only about thirty entries still in the future. The Calendar tab has always
+    read the bridge's /calendar instead, so the panel showed an ECB rate
+    decision and a press conference that this alerter had never heard of. Two
+    views of "what is coming" that disagree is the failure this closes.
+
+    FALLING BACK, NOT FAILING. If the bridge is down the markers are still
+    better than silence before a payrolls print, so the local file is used and
+    the caller is told which source answered.
+
+    The local rows carry `kind`; the bridge rows carry `title`, `currency` and
+    `impact`. `_kind_for` maps a bridge title onto a curated kind where one
+    exists, so MEANING and the measured EXPANSION still attach.
+    """
+    try:
+        with urllib.request.urlopen(base.rstrip('/') + '/calendar',
+                                    timeout=20) as r:
+            rows = (json.loads(r.read().decode()) or {}).get('events') or []
+        out = []
+        for e in rows:
+            # `ts`, and `t` only as a courtesy. The bridge names this field
+            # `ts`; reading `t` (the local markers' name) matched nothing, so
+            # every row was dropped and the loader fell back to the markers
+            # while reporting the bridge as unavailable -- it had answered
+            # perfectly. Hence the explicit complaint below.
+            t = e.get('ts', e.get('t'))
+            if not isinstance(t, (int, float)):
+                continue
+            title = e.get('title') or e.get('label') or ''
+            out.append({'t': int(t), 'label': title,
+                        'kind': _kind_for(title) or (e.get('currency') or ''),
+                        'impact': (e.get('impact') or '').lower(),
+                        'currency': e.get('currency') or '',
+                        # ForexFactory supplies both on most numeric releases
+                        # and the message used to drop them, leaving a time
+                        # with no sense of what would count as a surprise.
+                        'forecast': e.get('forecast') or '',
+                        'previous': e.get('previous') or ''})
+        if out:
+            return out, 'bridge /calendar'
+        # ANSWERED, BUT WITH NOTHING USABLE. Silently falling back here hid a
+        # field-name bug for a whole session; a source that replies and yields
+        # zero rows is a different fault from one that will not reply, and it
+        # has to say so.
+        print('calendar: bridge returned %d event(s) but none had a usable '
+              'timestamp -- falling back to %s'
+              % (len(rows), os.path.relpath(CAL, ROOT)), file=sys.stderr)
+    except Exception as exc:                                   # noqa: BLE001
+        print('calendar: bridge unreachable (%s) -- falling back to %s'
+              % (exc, os.path.relpath(CAL, ROOT)), file=sys.stderr)
+    with open(CAL, encoding='utf-8') as fh:
+        return json.load(fh), 'local markers (bridge unavailable)'
+
+
+#: Impact as a THRESHOLD, not an exact match. The filter used to compare the
+#: strings, so `impact: high` silently dropped every medium event and, worse,
+#: `impact: medium` would have dropped every HIGH one -- the setting that reads
+#: like "at least medium" excluded exactly the releases it exists to catch.
+#: A holiday ranks below low: it is a market-closed marker, not a release.
+RANK = {'holiday': 0, '': 0, 'low': 1, 'medium': 2, 'high': 3}
 
 
 SETTINGS = os.path.join(ROOT, 'configs', 'alerts.json')
@@ -140,59 +233,73 @@ def prune(state, now_ms, keep_days=30):
 
 def compose(ev, mins, local_tz):
     when = datetime.fromtimestamp(ev['t'] / 1000, timezone.utc)
-    kind = ev.get('kind') or ev.get('label') or 'release'
-    bits = ['⚠️  *%s* in %d min' % (kind, mins)]
+    kind = ev.get('kind') or 'release'
+    label = ev.get('label') or ''
     meaning = MEANING.get(kind)
+
+    # THE HEADLINE IS THE EVENT, NOT THE CURRENCY. `kind` falls back to the
+    # currency code for anything outside the nine curated kinds, so a bridge
+    # event with no match announced itself as "*EUR* in 266 min" -- a warning
+    # naming neither what is coming nor why anyone should care. The title
+    # leads whenever it says more than the kind does.
+    if label and label.upper() != kind.upper():
+        head = ('%s - %s' % (kind, label)) if meaning else label
+    else:
+        head = kind
+    bits = [u'⚠️  *%s* in %d min' % (head, mins)]
     if meaning:
         bits.append('_%s_' % meaning)
+    if ev.get('currency') and ev['currency'] not in head:
+        bits.append(ev['currency'])
     bits.append('%s UTC' % when.strftime('%a %d %b %H:%M'))
     if local_tz:
         bits.append('%s Brisbane' % when.astimezone(BNE).strftime('%a %d %b %H:%M'))
+
+    # FORECAST AND PREVIOUS, when the calendar carries them. The bridge has
+    # had both all along and the message dropped them, leaving the reader a
+    # time and no idea what number would count as a surprise.
+    fc = str(ev.get('forecast') or '').strip()
+    pv = str(ev.get('previous') or '').strip()
+    if fc or pv:
+        bits.append('forecast %s  |  previous %s' % (fc or '--', pv or '--'))
+
     exp = EXPANSION.get(kind)
     if exp:
         bits.append('measured volatility after: %.2fx the hour before' % exp)
     elif ev.get('impact'):
         bits.append('vendor impact: %s (not measured here)' % ev['impact'])
-    return '\n'.join(bits)
-
-
+    return chr(10).join(bits)
 def send(token, chat, text):
-    """Send to every configured chat. `chat` may be a comma-separated list.
+    """Telegram-only send to a comma-separated chat list. KEPT FOR CALLERS.
 
-    ONE FAILURE MUST NOT SILENCE THE REST. If a group has removed the bot, the
-    private chat should still get its release warning, so each destination is
-    attempted independently and the errors are collected rather than raised on
-    the first one. It raises only if EVERY destination failed -- that is a real
-    outage and the caller must not record the alert as sent.
+    THE ROUTING MOVED to tools/notify.py, which fans one message out across
+    every configured destination and channel -- this now delegates to it and
+    exists only so an older call site or a one-off script that imports `send`
+    still works. New code should call `notify.deliver(kind, text)` instead,
+    because this signature cannot express a WhatsApp destination or a
+    destination that only wants one kind of alert.
+
+    ONE FAILURE MUST NOT SILENCE THE REST, unchanged: each chat is attempted
+    independently and this raises only if EVERY one failed -- a real outage,
+    where the caller must not record the alert as sent.
     """
-    chats = [c.strip() for c in str(chat).split(',') if c.strip()]
-    ok, errs = 0, []
-    for c in chats:
-        data = urllib.parse.urlencode({
-            'chat_id': c, 'text': text, 'parse_mode': 'Markdown',
-            'disable_web_page_preview': 'true',
-        }).encode()
-        try:
-            req = urllib.request.Request(API % token, data=data)
-            with urllib.request.urlopen(req, timeout=20) as r:
-                body = json.loads(r.read().decode())
-            if body.get('ok'):
-                ok += 1
-            else:
-                errs.append('%s: %s' % (c, body))
-        except Exception as err:                              # noqa: BLE001
-            errs.append('%s: %s' % (c, err))
-    if errs:
-        print('telegram: %d of %d failed -- %s'
-              % (len(errs), len(chats), '; '.join(errs)), file=sys.stderr)
-    if not ok:
-        raise RuntimeError('every destination failed: %s' % '; '.join(errs))
-    return ok
+    dests = [{'id': 'arg-%d' % n, 'channel': 'telegram', 'target': c,
+              'label': c, 'enabled': True}
+             for n, c in enumerate([x.strip() for x in str(chat).split(',')
+                                    if x.strip()], 1)]
+    res = notify.deliver('news', text, dests=dests)
+    if not res['sent']:
+        raise RuntimeError('every destination failed: %s'
+                           % '; '.join(r.get('error', '?')
+                                       for r in res['results']))
+    return res['sent']
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--base', default='http://127.0.0.1:8765',
+                    help='the bridge, whose /calendar is the event source')
     ap.add_argument('--lead', type=int, default=10,
                     help='minutes before the release to alert (default 10)')
     ap.add_argument('--impact', default=None,
@@ -235,17 +342,32 @@ def main():
     if args.whoami:
         return whoami(token)
 
+    # WHERE IT GOES is now a list in configs/alerts.json, resolved per KIND --
+    # so one group can take the calendar and not the entries. Read once here
+    # rather than per event: a destination list that changed mid-run would
+    # announce two events to two different sets of chats, which is the kind of
+    # inconsistency nobody would think to look for.
+    dests = notify.destinations(cfg, 'news')
+    if not dests:
+        print('no destination wants news alerts -- Settings -> Destinations',
+              file=sys.stderr)
+
+    def announce(text):
+        res = notify.deliver('news', text, dests=dests)
+        if not res['sent']:
+            raise RuntimeError('no destination accepted the message')
+        return res
+
     if args.test:
         text = 'DiaNurFx alert wiring works. Lead is %d min.' % args.lead
-        if args.dry_run or not (token and chat):
+        if args.dry_run or not (token and dests):
             print('WOULD SEND:\n%s' % text)
             return 0 if args.dry_run else missing(token, chat)
-        send(token, chat, text)
-        print('sent')
+        res = announce(text)
+        print('sent to %d of %d destination(s)' % (res['sent'], res['total']))
         return 0
 
-    with open(CAL, encoding='utf-8') as fh:
-        events = json.load(fh)
+    events, src = load_events(args.base)
 
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     hi = now_ms + args.lead * 60_000
@@ -257,7 +379,7 @@ def main():
         if not isinstance(t, (int, float)) or not (now_ms <= t <= hi):
             continue
         kind = (ev.get('kind') or ev.get('label') or '').upper()
-        if args.impact and (ev.get('impact') or '').lower() != args.impact.lower():
+        if args.impact and RANK.get((ev.get('impact') or '').lower(), 0)                 < RANK.get(args.impact.lower(), 0):
             continue
         if kinds and kind not in kinds:
             continue
@@ -266,7 +388,8 @@ def main():
     if not due:
         print('nothing due in the next %d min (checked %d events, %s UTC)'
               % (args.lead, len(events),
-                 datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')))
+                 datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M'))
+              + ' [%s]' % src)
         return 0
 
     state = prune(load_state(), now_ms)
@@ -280,10 +403,10 @@ def main():
         if args.dry_run:
             print('WOULD SEND:\n%s\n' % text)
             continue
-        if not (token and chat):
+        if not (token and dests):
             print('WOULD SEND:\n%s\n' % text)
             return missing(token, chat)
-        send(token, chat, text)
+        announce(text)
         # recorded only AFTER a successful send, so a network failure retries
         # on the next run instead of being silently swallowed
         state[key] = datetime.now(timezone.utc).isoformat()

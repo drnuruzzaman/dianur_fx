@@ -36,10 +36,12 @@ release surprise still cannot be computed from any source wired up here.
 
 import argparse
 import datetime
+import shutil
 import json
 import os
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -101,12 +103,100 @@ def ms(iso):
         return None
 
 
+#: The smallest automatic interval that will be honoured, in minutes. This
+#: spends somebody's API quota, and below five minutes the only thing that
+#: changes is the bill: the radar re-clusters in hours and the rail drops
+#: anything older than two days, so a one-minute poll fetches one document sixty
+#: times an hour. The Settings panel offers nothing lower; this is the floor for
+#: a hand-edited config.
+MIN_INTERVAL = 5
+
+
+def configured_interval(path=None):
+    """`news.fetch_minutes` from configs/alerts.json, or 0 for manual only.
+
+    ONE DEFINITION OF THE INTERVAL, READ HERE. Both supervisors -- the timer in
+    serve.py while the app is open, and alerts_daemon.py when it is not -- call
+    this tool with --scheduled and nothing else, so neither of them carries a
+    copy of this rule and neither needs restarting when the number changes.
+    Read on every run for the same reason: the point of putting it in Settings
+    is that it takes effect without one.
+    """
+    path = path or os.path.join(ROOT, 'configs', 'alerts.json')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            news = (json.load(fh) or {}).get('news') or {}
+        n = int(news.get('fetch_minutes') or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+    return max(MIN_INTERVAL, n) if n > 0 else 0
+
+
+def file_age_minutes(path):
+    """Minutes since the feed was FETCHED, or None when there is no file.
+
+    `fetchedAt` FROM INSIDE THE FILE, not the mtime, for the same reason the
+    Settings panel reads it: the tool writes that field at the moment it spoke
+    to the API, while mtime moves when a file is copied, restored or touched by
+    a sync -- and an mtime bumped by a backup would silently suppress a fetch
+    that was genuinely due. mtime is the fallback and nothing more.
+    """
+    if not os.path.exists(path):
+        return None
+    stamp = None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            stamp = (json.load(fh) or {}).get('fetchedAt')
+    except (OSError, ValueError):
+        pass
+    if not isinstance(stamp, (int, float)):
+        try:
+            stamp = os.path.getmtime(path) * 1000
+        except OSError:
+            return None
+    return (time.time() * 1000 - stamp) / 60000.0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--limit', type=int, default=60)
     ap.add_argument('--out', default=OUT)
+    # THE FILE'S OWN AGE IS THE CLOCK, which is what makes this safe to call
+    # from more than one place. serve.py runs a timer while the app is open and
+    # alerts_daemon.py runs one when it is not; without this they would both
+    # fetch on their own schedule and the feed would be pulled twice as often
+    # as anybody asked for. Asking "is what is on disk older than N minutes"
+    # has no such problem: whoever gets there first satisfies the interval for
+    # everyone, and a restart does not reset a countdown, because there is no
+    # countdown to reset.
+    ap.add_argument('--if-older-than', type=int, default=0, metavar='MIN',
+                    help='fetch only when the existing file is older than this '
+                         'many minutes; 0 (default) always fetches')
+    ap.add_argument('--scheduled', action='store_true',
+                    help='take the interval from news.fetch_minutes in '
+                         'configs/alerts.json, and do nothing when it is 0')
     args = ap.parse_args()
+
+    due = args.if_older_than
+    if args.scheduled:
+        due = configured_interval()
+        if not due:
+            # OFF IS A SETTING, NOT A FAILURE. Exit 0, so a supervisor calling
+            # this every minute does not log an error a minute for honouring
+            # the configuration it was given.
+            print('automatic news fetch is off (news.fetch_minutes = 0)')
+            return 0
+
+    if due > 0:
+        age = file_age_minutes(args.out)
+        if age is not None and age < due:
+            # Exit 0 -- NOT fetching because it is not due is success, and a
+            # non-zero exit here would make every supervisor log an error a
+            # minute for doing exactly what it was told.
+            print('not due: %s is %.1f min old, interval is %d min'
+                  % (args.out, age, due))
+            return 0
 
     key = _secrets.get('QUANTGIST_API_KEY')
     if not key:
@@ -162,7 +252,40 @@ def main():
         'headlines': heads,
         'notes': notes,
     }
+    # ---------------------------------------------------------------- #
+    # A TOTAL FAILURE MUST NOT OVERWRITE A GOOD FILE.                    #
+    # ---------------------------------------------------------------- #
+    # This cost real data once. Both endpoints answered 401 -- the API key had
+    # been revoked -- and this function cheerfully wrote a document with zero
+    # clusters and zero headlines over two days of perfectly good news, then
+    # exited 0 so every caller believed it had worked. The panel went blank and
+    # nothing on screen said why.
+    #
+    # An empty result is only ever legitimate as a QUIET FEED, and a quiet feed
+    # does not come with an error note attached. So: nothing came back AND
+    # something failed means the fetch failed, full stop -- leave the previous
+    # file where it is and exit non-zero. An empty result with no errors is
+    # still written, because that genuinely is the news.
+    if not clusters and not heads and notes:
+        print('NOT WRITING %s -- every endpoint failed and there is nothing to '
+              'write. The existing file is left untouched.' % args.out,
+              file=sys.stderr)
+        for n in notes:
+            print('  ! %s' % n, file=sys.stderr)
+        return 3
+
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
+
+    # KEEP ONE GENERATION BACK, the same way the alerts writer does. A fetch
+    # that returns a THINNER but non-empty document is not an error and is
+    # written -- and `.prev` is then the only way back if it turns out to have
+    # been a bad hour on the feed rather than a quiet one.
+    if os.path.exists(args.out):
+        try:
+            shutil.copyfile(args.out, args.out + '.prev')
+        except OSError as exc:
+            print('  ! could not keep a .prev: %s' % exc, file=sys.stderr)
+
     tmp = args.out + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as fh:
         json.dump(doc, fh, indent=1)

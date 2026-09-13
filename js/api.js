@@ -91,8 +91,21 @@ export const api = {
      by enough to move a lot step (see the /signal comment in the bridge). No
      demo fallback -- a fabricated trading instruction is worse than none, so
      without a bridge this simply reports unavailable. */
+  /* A LONG TIMEOUT, for the same reason /bars gets one. A 5m cell runs a
+     950-bar channel, so the bridge asks MetaTrader for ~1250 bars before it can
+     answer, and the FIRST such request for a symbol blocks while the terminal
+     downloads them. The CLI board allows 60s; 12s here would have reported the
+     slowest cells as errors while they were merely warming up. */
   signalNow: (symbol, tf, opts = {}) =>
-    get('/signal', { symbol, tf, ...opts }),
+    get('/signal', { symbol, tf, ...opts }, { timeout: 90000 }),
+  /* THE SAME RULE OVER A WINDOW. /signal answers about one bar, and a Donchian
+     entry lives for exactly that bar -- measured on gold, the median gap
+     between signals is 1.6 days on 5m and 7.2 on 4h, so the chance a cell is
+     signalling at the instant you open the board is small. This is what turns
+     a wall of dashes into "5m SELL, 3h ago". Server picks the window from the
+     timeframe unless `lookback` says otherwise. */
+  signalsRecent: (symbol, tf, opts = {}) =>
+    get('/signal/recent', { symbol, tf, ...opts }, { timeout: 90000 }),
   quotes:    guarded('quotes', async (symbols) => (await get('/quotes', { symbols: symbols.join(',') })).quotes || {},
                      (s) => DEMO.quotes(s)),
   ticks:     guarded('ticks', (symbol, from_ms, limit = 500) => get('/ticks', { symbol, from_ms, limit }),

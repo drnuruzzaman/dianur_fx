@@ -43,7 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sim.fx import FX
 from sim.instruments import account_currency, spec
 from sim.signal import evaluate
-from sim.strategies import BASELINES
+from sim.strategies import BASELINES, strategy_for_tf
+from sim.strategies.horizon import HORIZON_TFS as TF_NAMES
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, 'runs', 'paper')
@@ -260,7 +261,9 @@ def main():
     ap.add_argument('--base', default='http://127.0.0.1:8765')
     ap.add_argument('--symbol', default='XAUUSD.a')
     ap.add_argument('--tf', default='4h')
-    ap.add_argument('--strategy', default='donchian', choices=sorted(BASELINES))
+    # DEFAULTS TO THE TIMEFRAME'S OWN RULE, resolved below -- not to a flat
+    # 'donchian'. See the block after parse_args() for why this mattered.
+    ap.add_argument('--strategy', default=None, choices=sorted(BASELINES))
     ap.add_argument('--risk', type=float, default=0.5, help='%% of equity')
     ap.add_argument('--once', action='store_true')
     ap.add_argument('--watch', type=int, default=0, help='seconds between polls')
@@ -273,6 +276,22 @@ def main():
     ap.add_argument('--always', action='store_true',
                     help='print even when the bar was already reported')
     args = ap.parse_args()
+
+    # ------------------------------------------------------------------ #
+    # THE RULE BELONGS TO THE TIMEFRAME.                                  #
+    # ------------------------------------------------------------------ #
+    # `--strategy` used to default to 'donchian', the flat 20/10, on every
+    # frame. On 4h and 1d that IS the timeframe's rule, so the default looked
+    # right for as long as anyone only ran it there -- and it silently ran a
+    # DIFFERENT rule everywhere else. Pointed at 15m it announced a BUY off a
+    # 20-bar channel while the graded, forward-tested cell (317/158) was
+    # holding: a desktop toast for a trade the measured rule never asked for.
+    #
+    # The bridge already resolves this per timeframe and says so in /signal's
+    # docstring; this is the same fix on the CLI side, so the two cannot
+    # disagree about which rule a cell runs.
+    if not args.strategy:
+        args.strategy = strategy_for_tf(args.tf) if args.tf in TF_NAMES else 'donchian'
 
     tag = '%s_%s_%s' % (args.symbol.replace('.', ''), args.tf, args.strategy)
     args.state = 'signal_state_%s.json' % tag

@@ -1,0 +1,108 @@
+{
+  "retired": "2026-09-10",
+  "what": "The horizon-matched Donchian forward test, opened 2026-09-08 and this project's signal source until the Rayo Scalper replaced it. Removed from configs/alerts.json because nothing reads it; kept here because it is a PRE-REGISTERED record of what was predicted before the fact, and that is the one kind of number that cannot be regenerated later.",
+  "signals": {
+    "alert_on": [],
+    "watch": [
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "4h",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.2082 / IS +0.1896. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "validated"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1h",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0741 / IS +0.1719. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "15m",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.1285 / IS +0.1154. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "5m",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.2662 / IS +0.1155. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1m",
+        "enabled": false,
+        "note": "floor 0.276 R exceeds the best frictionless edge ever measured (0.241 R)",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "4h",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0079 / IS -0.0186. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1m",
+        "enabled": false,
+        "note": "floor 0.174 R - off, and should stay off",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1h",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS -0.0481 / IS -0.0309. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "below"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "30m",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0052 (302 trades) / IS +0.1621 (434 trades). Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1d",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0554 (39 trades) / IS +0.1649 (35 trades). Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "5m",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0780 / IS +0.1198. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "15m",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0956 / IS +0.1225. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "30m",
+        "enabled": false,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS -0.0242 (426 trades) / IS +0.0011 (521 trades). Horizon-matched Donchian, params frozen at registration.",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1d",
+        "enabled": false,
+        "note": "not in the 2026-09-08 forward test"
+      }
+    ],
+    "retired": "2026-09-10",
+    "retired_note": "RETIRED, NOT DELETED. The horizon-matched Donchian was this project's signal source until 2026-09-10, when the Rayo Scalper replaced it everywhere: live alerts, the Signal Board, the side panel and the settings modal all read `scalper` now, and the two Windows tasks that polled this rule (DiaNurFx Signal Alert, DiaNurFx-Signal-XAUUSD-15m) are disabled. Every cell below is kept with its grade and its pre-registered OOS/IS numbers intact because this was a live forward test opened 2026-09-08 -- deleting a registration two days into it would destroy the only record of what was predicted before the fact. Nothing reads these cells; they are here to be scored, not traded."
+  }
+}

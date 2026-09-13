@@ -1,2 +1,2 @@
 @echo off
-schtasks /Delete /TN "DiaNurFx Release Alert" /F
+schtasks /Delete /TN "Financial News Release Alert" /F

@@ -49,8 +49,8 @@
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>PYTHON_EXE</Command>
-      <Arguments>tools\event_alert.py --lead 10 --local</Arguments>
+      <Command>PYTHONW_EXE</Command>
+      <Arguments>tools\_run_quiet.py tools\event_alert.py --lead 10 --local</Arguments>
       <WorkingDirectory>PROJECT_DIR</WorkingDirectory>
     </Exec>
   </Actions>
