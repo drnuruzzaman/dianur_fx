@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>DiaNurFx: Telegram alert 10 minutes before a macro release. Polls every minute; tools/event_alert.py is idempotent, so a poll that finds nothing due sends nothing and a release is announced exactly once.</Description>
+    <Description>DiaNurFx: announces rule signals to Telegram for the cells in configs-signals.yaml. Polls every minute; signal_alert.py keys each send on symbol, timeframe, bar time and action, so a signal is announced exactly once.</Description>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
@@ -50,7 +50,7 @@
   <Actions Context="Author">
     <Exec>
       <Command>PYTHONW_EXE</Command>
-      <Arguments>tools\_run_quiet.py tools\event_alert.py --lead 10 --local</Arguments>
+      <Arguments>tools\_run_quiet.py tools\signal_alert.py</Arguments>
       <WorkingDirectory>PROJECT_DIR</WorkingDirectory>
     </Exec>
   </Actions>

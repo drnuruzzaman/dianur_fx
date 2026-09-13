@@ -94,3 +94,36 @@ prints the chat id of anyone who writes and answers nobody.
 `TELEGRAM_CHAT_ID` is a comma-separated list, so one bot serves a private
 chat and a group. Group ids are negative. Adding a group grants `/profit` to
 everyone in it, now and later.
+
+## No console windows: pythonw + tools/_run_quiet.py
+
+THE ALERT TASKS POLL EVERY MINUTE, and every poll used to open a console window
+on the desktop. Task Scheduler has no switch that fixes this for an interactive
+task: `<Hidden>` hides the task from the task LIST, not the window, and "run
+whether the user is logged on or not" hides the window but demands a stored
+password -- a worse trade than a flashing window.
+
+`pythonw.exe` is the switch that works. It is the same interpreter built as a
+GUI binary, so Windows never gives it a console. The catch is that it also
+discards output: with no console `sys.stdout` is None and the first `print()`
+in the tool dies with AttributeError, so the task would be silent AND broken.
+
+`tools/_run_quiet.py` is the missing piece. It points stdout and stderr at
+`logs/<tool>.log` and then runs the target with runpy under `__main__`, so:
+
+  * the tools are NOT modified -- they print exactly as they do from a terminal
+  * nothing is lost; `logs/signal_alert.log` is the window you used to see
+  * the exit code survives, which is what `schtasks /Query /V` reports as Last
+    Result and what the Settings modal reads. A wrapper that swallowed a failure
+    would make a dead alerter look healthy -- this project has had that once.
+
+runpy rather than subprocess ON PURPOSE: a child process launched from a GUI
+parent gets its own console, which would put the window straight back.
+
+    <Command>PYTHONW_EXE</Command>
+    <Arguments>tools\_run_quiet.py tools\signal_alert.py</Arguments>
+
+A TASK REGISTERED BY HAND NEEDS AN ABSOLUTE PATH to the wrapper. `schtasks
+/Change /TR` leaves `Start In` empty, so a relative script path resolves against
+System32 and the task fails silently. The wrapper chdirs to the project root as
+soon as it starts, so only its own path has to be absolute.

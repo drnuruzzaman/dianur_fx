@@ -14,7 +14,7 @@
 
 import { INDICATORS, runStudy, studyTitle, heikinAshi } from './indicators.js';
 import { sentimentOf } from './newsevents.js';
-import { TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp, withZone, zoneLabel } from '../util.js';
+import { RISK_TEXT, TF_LABEL, TF_MS, axisTime, clamp, compact, inferDigits, stamp, withZone, zoneLabel } from '../util.js';
 
 /* Right-hand price axis. Sized from the widest label it must actually hold,
    measured at the axis font: a 7-character price ("4659.58", "1.16637") is
@@ -2679,6 +2679,11 @@ export class Chart {
       const p1 = d.p1 ? { x: this.x(this.idxOfTime(d.p1.t)), y: this.y(pane, d.p1.price) } : null;
       const p2 = d.p2 ? { x: this.x(this.idxOfTime(d.p2.t)), y: this.y(pane, d.p2.price) } : null;
 
+      /* HANDLES ON THE SELECTED DRAWING, so the endpoints are visibly
+         grabbable rather than a hidden hot-spot. Drawn after the shape below,
+         via this flag, so they sit on top of their own line. */
+      const handles = sel && d.type !== 'hline' && p1 && p2;
+
       if (d.type === 'hline' && p1) {
         ctx.beginPath(); ctx.moveTo(pane.x, p1.y); ctx.lineTo(pane.x + pane.w, p1.y); ctx.stroke();
         ctx.font = '10px "Roboto Mono", monospace';
@@ -2708,6 +2713,20 @@ export class Chart {
           ctx.setLineDash([]);
           ctx.fillText(`${(f * 100).toFixed(1)}%  ${v.toFixed(this.digits)}`, xa + 4, y - 3);
         });
+      }
+
+      if (handles) {
+        // filled so they read as grabbable, ringed in the chart background so
+        // they stay visible where the line runs over a candle
+        for (const q of [p1, p2]) {
+          ctx.beginPath();
+          ctx.arc(q.x, q.y, 4, 0, Math.PI * 2);
+          ctx.fillStyle = col;
+          ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = COL.bg || '#02101f';
+          ctx.stroke();
+        }
       }
       ctx.restore();
     }
@@ -3460,6 +3479,32 @@ export class Chart {
       if (p.x > this.plot.r) { drag = { mode: 'scaleY', y: p.y, min: this.main.min, max: this.main.max }; return; }
       if (p.y > this.plot.b) { drag = { mode: 'scaleX', x: p.x, span: this.view.span }; return; }
       if (this.tool !== 'cursor') { this._toolClick(p); return; }
+
+      /* GRABBING A DRAWING BEATS PANNING. Tested before the pan branch: the
+         two gestures are the same gesture, and a drag that starts on a line
+         the reader deliberately put there almost certainly means that line.
+         An empty patch of chart still pans, which is the common case. */
+      const grab = this._hitDrawing(p);
+      if (grab) {
+        this.selectedDrawing = grab;
+        drag = {
+          mode: 'move', x: p.x, y: p.y, d: grab, moved: false,
+          /* THE POINTS AS THEY WERE AT GRAB TIME. Every frame recomputes from
+             this snapshot and the total delta, never from the previous frame:
+             accumulating a per-frame delta lets rounding to whole bars pile up
+             and the line creeps away from the cursor. */
+          orig: { p1: grab.p1 ? { ...grab.p1 } : null,
+                  p2: grab.p2 ? { ...grab.p2 } : null },
+          /* Which end, if the grab was on one. An endpoint reshapes; anywhere
+             else on the line moves the whole thing. */
+          end: this._hitEnd(grab, p),
+          i0: this.idxAt(p.x), price0: this.valAt(this.main, p.y),
+        };
+        this.draw();
+        return;
+      }
+      this.selectedDrawing = null;
+
       /* The price range is captured too, so a drag can move the chart UP and
          DOWN as well as left and right. Taken from `this.main` at grab time
          rather than read live, or each frame would pan relative to the range
@@ -3472,6 +3517,21 @@ export class Chart {
 
     c.addEventListener('pointermove', (e) => {
       const p = local(e);
+      if (drag && drag.mode === 'move') {
+        drag.moved = true;
+        const di = this.idxAt(p.x) - drag.i0;
+        const dp = this.valAt(this.main, p.y) - drag.price0;
+        const shift = (o) => (o ? {
+          ...o,
+          t: this.tAt(Math.round(this.idxOfTime(o.t) + di)),
+          price: o.price + dp,
+        } : o);
+        if (drag.end === 1) drag.d.p1 = shift(drag.orig.p1);
+        else if (drag.end === 2) drag.d.p2 = shift(drag.orig.p2);
+        else { drag.d.p1 = shift(drag.orig.p1); drag.d.p2 = shift(drag.orig.p2); }
+        this.draw();
+        return;
+      }
       if (drag && drag.mode === 'pan') {
         drag.moved = true;
         this.view.right = this._clampRight(drag.right - (p.x - drag.x) / this.barW);
@@ -3523,7 +3583,13 @@ export class Chart {
       }
       this.hoverDrawing = this._hitDrawing(p);
       this._zoneTip(p);
-      c.style.cursor = this.tool !== 'cursor' ? 'copy' : this.hoverDrawing ? 'pointer' : 'crosshair';
+      /* THE CURSOR NAMES THE GESTURE. `pointer` said "clickable" when the
+         drag was the point, and said the same thing over an endpoint as over
+         the middle of the line -- two different edits behind one shape. */
+      const overEnd = this.hoverDrawing && this._hitEnd(this.hoverDrawing, p);
+      c.style.cursor = this.tool !== 'cursor' ? 'copy'
+        : overEnd ? (overEnd === 1 || overEnd === 2 ? 'nwse-resize' : 'move')
+        : this.hoverDrawing ? 'move' : 'crosshair';
       this.draw();
     });
 
@@ -3533,6 +3599,9 @@ export class Chart {
       // also the only place that has to remember one
       // a vertical pan sets a price lock, and a price lock is a saved setting
       if (drag && (drag.mode === 'scaleY' || drag.movedY)) this._persist();
+      // a moved drawing is a saved drawing, but only if it actually moved --
+      // a plain click to select must not rewrite the workspace
+      if (drag && drag.mode === 'move' && drag.moved) this._persist();
       drag = null;
     };
     c.addEventListener('pointerup', endDrag);
@@ -3689,8 +3758,11 @@ export class Chart {
     ctx.fillStyle = COL.textFaint;
     ctx.textAlign = 'right';
     ctx.fillText(`${stamp(Date.now())} ${zoneLabel()}`, r - 8, b - 24);
-    ctx.font = '11px Inter, system-ui, sans-serif';
-    ctx.fillText('Trading is risky, you might lose your funds.', r - 8, b - 10);
+    /* the SAME face and size as the capture time above it -- 11px in a
+       proportional font reads visibly smaller than 11px in a monospace, so
+       matching the number alone left the two lines looking mismatched. */
+    ctx.font = '11px "Roboto Mono", monospace';
+    ctx.fillText(RISK_TEXT, r - 8, b - 10);
     ctx.restore();
   }
 
@@ -3771,6 +3843,27 @@ export class Chart {
   }
 
   cancelTool() { this.pending = null; this.setTool('cursor'); this.draw(); }
+
+  /**
+   * Which end of `d` the point is on: 1, 2, or 0 for "the line itself".
+   *
+   * A LARGER RADIUS THAN THE LINE TEST, deliberately. Grabbing an endpoint is
+   * the finer of the two gestures and the harder to aim, so it gets the bigger
+   * target; the body of the line is easy to hit anywhere along its length.
+   *
+   * An hline has no meaningful ends -- it spans the pane -- so it always
+   * reports 0 and moves as a whole.
+   */
+  _hitEnd(d, p) {
+    if (!d || d.type === 'hline' || !d.p1 || !d.p2) return 0;
+    const pane = this.main;
+    const near = 8;
+    const at = (q) => ({ x: this.x(this.idxOfTime(q.t)), y: this.y(pane, q.price) });
+    const a = at(d.p1), b = at(d.p2);
+    if (Math.hypot(p.x - a.x, p.y - a.y) <= near) return 1;
+    if (Math.hypot(p.x - b.x, p.y - b.y) <= near) return 2;
+    return 0;
+  }
 
   _hitDrawing(p) {
     const pane = this.main;

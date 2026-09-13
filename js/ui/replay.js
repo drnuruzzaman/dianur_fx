@@ -33,7 +33,7 @@
  * was right, is what can settle whether Elliott carries information here.
  */
 
-import { TF_MS as UTIL_TF_MS, el, hhmm, seekBar, ymd, ymdToMs } from '../util.js';
+import { RISK_TEXT, TF_MS as UTIL_TF_MS, el, hhmm, seekBar, ymd, ymdToMs } from '../util.js';
 import { openSymbolSearch } from './search.js';
 import { toast } from './menu.js';
 import { openAudio, pickMime } from './recaudio.js';
@@ -758,12 +758,12 @@ export class ElliottReplay {
          Drawn after the panel because the panel paints its own background
          over this corner, and a recording is shared exactly like a PNG is. */
       ctx.save();
-      ctx.font = '11px Inter, system-ui, sans-serif';
+      ctx.font = '11px "Roboto Mono", monospace';   // matches the header's timestamp
       ctx.fillStyle = '#8fa6c0';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'alphabetic';
       /* one line ABOVE the very bottom: kept level with the strategy replay's, which has a panel signature below it. */
-      ctx.fillText('Trading is risky, you might lose your funds.',
+      ctx.fillText(RISK_TEXT,
                    cv.width - 12, cv.height - 26);
       ctx.restore();
       this.rec.raf = requestAnimationFrame(paint);

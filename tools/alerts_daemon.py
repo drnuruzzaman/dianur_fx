@@ -60,8 +60,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: seconds; the arguments are copied from each task's <Arguments>, so a change
 #: there is a change here and the two are meant to be read side by side.
 JOBS = [
-    {'name': 'signal_alert', 'every': 60,
-     'args': ['tools/signal_alert.py']},
+    # The Rayo Scalper, matching configs/Scheduler/rayo_scalper.xml. It replaced
+    # `signal_alert` here on 2026-09-10 when the horizon-matched Donchian was
+    # retired and removed -- the daemon is the app-is-open twin of the Windows
+    # task, so leaving the old job would have kept polling a deleted tool.
+    {'name': 'rayo_scalper', 'every': 5 * 60,
+     'args': ['tools/scalper.py', '--live', '--registered', '--journal',
+              '--notify']},
     {'name': 'event_alert', 'every': 60,
      'args': ['tools/event_alert.py', '--lead', '10', '--local']},
     {'name': 'calendar', 'every': 30 * 60,
@@ -72,6 +77,20 @@ JOBS = [
     # and costs one bars fetch per cell that has ever fired.
     {'name': 'score', 'every': 60 * 60,
      'args': ['tools/score_signals.py', '--quiet']},
+    # THE NEWS FETCH ASKS EVERY MINUTE AND ALMOST ALWAYS DOES NOTHING. The
+    # interval is not here -- it is `news.fetch_minutes` in configs/alerts.json,
+    # editable from Settings, and the fetcher itself decides whether it is due
+    # by looking at how old the file on disk is. So this entry only has to ask
+    # often enough to honour the smallest interval the panel allows (5 min),
+    # and a change in Settings takes effect on the next tick with nothing
+    # restarted.
+    #
+    # `--scheduled` CARRIES NO INTERVAL because the tool reads the configured
+    # one itself. serve.py runs the same timer while the app is open; both are
+    # safe together because the question is the age of the FILE, so whoever
+    # asks first satisfies the interval for both.
+    {'name': 'news', 'every': 60,
+     'args': ['tools/fetch_quantgist_news.py', '--scheduled']},
 ]
 
 #: The bot is not on this list because it is not timed -- it is kept alive.

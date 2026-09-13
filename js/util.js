@@ -436,6 +436,17 @@ export function sessionClock(hourUtc, now = new Date()) {
 export const TZ_MODES = ['local', 'utc', 'broker'];
 
 /** Minutes to add to UTC for the chosen mode. */
+/**
+ * THE RISK WARNING, defined once.
+ *
+ * It was the same sentence written out four times -- the chart snapshot, both
+ * replay canvases and the Telegram chart renderer -- which meant changing the
+ * wording was a grep across two languages and a chance to miss one. The Python
+ * side has its own copy in tools/chartshot.py, which is unavoidable across the
+ * language boundary and is marked as the twin of this one.
+ */
+export const RISK_TEXT = 'Trading is risky, Do not over trade, You might lose your funds.';
+
 export function tzOffsetMin(mode, brokerOffsetMs = 0) {
   if (mode === 'utc') return 0;
   if (mode === 'broker') return Math.round(brokerOffsetMs / 60000);

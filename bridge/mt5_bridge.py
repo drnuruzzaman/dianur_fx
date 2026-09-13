@@ -133,6 +133,12 @@ def log_event(kind, message):
 # Only these fixed commands can be launched. There is no shell and no path from
 # a query parameter to an executable: the kind selects an argv template and the
 # remaining parameters are appended as validated flags.
+#: How far back /signal/recent looks when the caller does not say. Sixty days
+#: covers several signals on every horizon-matched cell -- the slowest, 4h, has
+#: a measured median gap of 7.2 days -- while staying inside what MT5 serves
+#: promptly. The per-timeframe bar count is derived from this, never hardcoded.
+DEFAULT_SCAN_DAYS = 60
+
 JOB_KINDS = {
     'backtest': ['-m', 'sim.run'],
     'backtest_tl': ['-m', 'sim.run_tl'],
@@ -1162,6 +1168,229 @@ def signal_now(symbol, tf, strategy=None, position=None):
     return out
 
 
+def signals_recent(symbol, tf, strategy=None, lookback=400, limit=12):
+    """Every entry the rule WOULD have taken over the last `lookback` bars.
+
+    WHY THIS EXISTS. /signal answers about one bar -- the last closed one -- and
+    a Donchian entry lives for exactly that one bar. Measured on gold, the fast
+    cells fire 127 times a year on 5m and 42 on 4h, with a median gap of 1.6 and
+    7.2 DAYS. So the chance that any given cell is signalling at the instant you
+    happen to open the board is small, and a board of six gold cells showing six
+    dashes was reporting that correctly and uselessly: "nothing this minute" read
+    as "this thing never fires".
+
+    THE STATE MACHINE IS THE RULE'S OWN, not a scan for bars that satisfy the
+    entry test. Those are different lists. Price can sit above the channel for
+    thirty bars and only the FIRST is an entry -- after that the rule is holding
+    a position and the remaining twenty-nine are not signals at all. Running
+    flat -> in -> flat through the same channels the rule uses is the only way
+    the list means "times you would have been asked to trade".
+
+    CAUSALITY IS INHERITED, not re-implemented: `hi`/`lo`/`exit_hi`/`exit_lo`
+    come from Donchian.prepare, which already shifts by one so a channel never
+    contains the bar being decided on.
+    """
+    import importlib
+
+    try:
+        from sim import signal as sig_mod                 # noqa: F401
+        sig_mod = importlib.reload(sig_mod)
+        from sim.instruments import spec as spec_of       # noqa: F401
+        from sim.strategies import BASELINES, params_for_tf, strategy_for_tf
+        from sim.strategies.horizon import BARS_PER_DAY
+    except Exception as exc:                              # noqa: BLE001
+        return {'error': 'sim import failed: %s' % exc}
+
+    if not strategy:
+        strategy = strategy_for_tf(tf) if tf in TF_NAMES else 'donchian'
+    if strategy not in BASELINES:
+        return {'error': 'unknown strategy %r' % strategy}
+
+    entry = int(params_for_tf(tf)['entry']) if tf in TF_NAMES else 20
+
+    # A WINDOW IN DAYS, NOT IN BARS, when the caller does not say otherwise.
+    # 400 bars is 33 hours on 5m and 66 days on 4h, and the measured median gap
+    # between gold signals is 1.6 days on 5m against 7.2 on 4h -- so a flat bar
+    # count asks the fast cells about a window shorter than their own quiet
+    # period and reports "nothing lately" for a cell that fires 127 times a
+    # year. `DEFAULT_SCAN_DAYS` of calendar time is the same question on every
+    # frame; the 2000-bar cap is what MT5 will serve without a long stall.
+    if not lookback:
+        per_day = BARS_PER_DAY.get(tf, 24)
+        lookback = int(round(DEFAULT_SCAN_DAYS * per_day))
+    lookback = max(120, min(int(lookback), 2000))
+    # the channel needs its own warmup ON TOP of the window being scanned, or
+    # the oldest bars in the window would be decided on a half-formed channel
+    want = entry + lookback + 50
+    payload = (MOCK.bars(symbol, tf, want) if STATE['mock']
+               else read_bars(symbol, tf, want, 0))
+    rows = payload.get('bars') or []
+    if len(rows) < entry + 20:
+        return {'error': 'only %d bars, %s needs %d' % (len(rows), strategy,
+                                                        entry + 20),
+                'bars': len(rows)}
+
+    import numpy as np
+    import pandas as pd
+
+    df = pd.DataFrame(rows)
+    df['ts'] = pd.to_datetime(df['t'], unit='ms')
+    df = df.set_index('ts')[['o', 'h', 'l', 'c']].rename(
+        columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close'})
+    closed = df.iloc[:-1]                     # the forming bar decides nothing
+    if len(closed) < entry + 20:
+        return {'error': 'no closed bars'}
+
+    strat = BASELINES[strategy]()
+    series = strat.prepare(closed)
+    o = closed['open'].to_numpy(float)
+    hi = np.asarray(series['hi'], float)
+    lo = np.asarray(series['lo'], float)
+    xhi = np.asarray(series['exit_hi'], float)
+    xlo = np.asarray(series['exit_lo'], float)
+    atr = np.asarray(series['atr'], float)
+    c = closed['close'].to_numpy(float)
+    idx = closed.index
+
+    h = closed['high'].to_numpy(float)
+    l = closed['low'].to_numpy(float)
+    offset = int(STATE.get('time_offset_ms') or 0)
+    start = max(entry + 1, len(c) - lookback)
+
+    # THE CELL'S OWN COST FLOOR, in R: spread plus 0.02 ATR of slippage a side,
+    # over the 2 ATR the rule risks. Computed from these bars and this spec, so
+    # it follows the instrument rather than being a constant someone forgets.
+    med_atr = float(np.nanmedian(atr[np.isfinite(atr)])) if np.isfinite(atr).any() else 0.0
+    floor_r = 0.0
+    try:
+        sp_ = spec_of(symbol, tf)
+        # THE FIELD IS `spread_points_now`. Two plausible-sounding names that do
+        # not exist were tried first, `or 0` swallowed both, and the floor came
+        # out at exactly 0.020 R -- the slippage term alone, with the spread
+        # silently costing nothing. It looked like a number rather than like a
+        # bug, which is the only reason it survived a read-through. The fallback
+        # below exists so a renamed field can never again mean free trading.
+        pts = (sp_.get('spread_points_now') or sp_.get('spread_floor_points')
+               or sp_.get('spread_current'))
+        if not pts:
+            pts = 30.0 if 'XAU' in symbol.upper() else 10.0
+        spread_px = sp_['point'] * float(pts)
+        if med_atr > 0:
+            floor_r = (spread_px + 2 * 0.02 * med_atr) / (2.0 * med_atr)
+    except Exception:                                     # noqa: BLE001
+        floor_r = 0.0
+
+    # ---------------------------------------------------------------- #
+    # THE ORDER OF THESE FOUR STEPS IS THE WHOLE CORRECTNESS ARGUMENT.  #
+    # ---------------------------------------------------------------- #
+    # Checked against sim/core.py's own loop over 2024-2026 on six gold cells:
+    # identical trade counts and every simulator entry matched, 5m through 1d.
+    # Three earlier versions did not, each for its own reason, and all three
+    # failure modes are worth naming because they are invisible in the output:
+    #
+    #   NO STOP        a scan that knows only the channel exit stays 'in'
+    #                  through every stop-out and swallows the entry behind it.
+    #                  The simulator took roughly TWICE as many trades.
+    #   EXIT TOO EARLY the channel exit is an ORDER, filled at the next bar's
+    #                  open. Leaving on the close that triggered it let the scan
+    #                  re-enter a bar early and desynchronised the rest of the run.
+    #   SIZING         the simulator SKIPS an entry whose lots round to zero, so
+    #                  its trade list is the rule filtered by what the account
+    #                  could afford. This list is the RULE, deliberately -- what
+    #                  it asked for, not what a particular balance could take.
+    # HOW EACH SIGNAL ENDED, not just when it started. The machine already
+    # tracks the stop and the channel exit -- it has to, to know when the next
+    # entry is allowed -- so recording them costs nothing and turns the list
+    # from "what fired" into a LEDGER.
+    #
+    # R IS GROSS. The simulator charges spread on both sides plus 0.02 ATR of
+    # slippage; reproducing that here would be a second implementation of the
+    # part most likely to be wrong. Checked against sim/core.py over 2024-2026:
+    # gross sits ABOVE net by +0.021 (4h) to +0.085 (5m) R, ordered exactly like
+    # the measured cost floor and 55-95% of it. So `r_net_est` subtracts the
+    # cell's own floor -- a first-order correction, labelled as an estimate,
+    # because a display that quoted gross would flatter every number on it.
+    side, stop, entered_at, exit_pending, out = 0, 0.0, -1, False, []
+    cur = None
+
+    def _close(rec, i_, price, reason):
+        rec['exit_time'] = str(idx[i_])
+        rec['exit_time_server'] = str(idx[i_] + pd.Timedelta(milliseconds=offset))
+        rec['exit_price'] = float(price)
+        rec['exit_reason'] = reason
+        rec['open'] = False
+        if rec.get('fill') is not None and rec.get('risk'):
+            g = (price - rec['fill']) * rec['side_n'] / rec['risk']
+            rec['r_gross'] = round(float(g), 4)
+            rec['r_net_est'] = round(float(g) - floor_r, 4)
+
+    for i in range(start, len(c)):
+        if exit_pending:                      # 1. last bar's exit fills here
+            if cur is not None:
+                _close(cur, i, o[i], 'channel')
+            side, exit_pending = 0, False
+            cur = None
+
+        if side != 0 and i > entered_at:      # 2. the stop, intrabar
+            hit = (side > 0 and l[i] <= stop) or (side < 0 and h[i] >= stop)
+            if hit:
+                if cur is not None:
+                    _close(cur, i, stop, 'stop')
+                side, cur = 0, None
+
+        if side != 0 and i > entered_at:      # 3. channel exit, fills next bar
+            if side > 0 and np.isfinite(xlo[i]) and c[i] < xlo[i]:
+                exit_pending = True
+            elif side < 0 and np.isfinite(xhi[i]) and c[i] > xhi[i]:
+                exit_pending = True
+
+        if side == 0 and not exit_pending:    # 4. an entry, only while flat
+            if np.isfinite(hi[i]) and c[i] > hi[i]:
+                side, stop = 1, c[i] - 2.0 * atr[i]
+            elif np.isfinite(lo[i]) and c[i] < lo[i]:
+                side, stop = -1, c[i] + 2.0 * atr[i]
+            else:
+                continue
+            entered_at = i
+            # THE FILL IS THE NEXT BAR'S OPEN, which is where the engine fills
+            # and therefore what R has to be measured from. A signal on the
+            # newest closed bar has no fill yet -- it is reported with a null
+            # fill rather than being priced off its own close.
+            fill = float(o[i + 1]) if i + 1 < len(c) else None
+            risk = abs(fill - stop) if fill is not None else None
+            cur = {
+                'bar_time': str(idx[i]),
+                'bar_time_server': str(idx[i] + pd.Timedelta(milliseconds=offset)),
+                # A TRUE UTC EPOCH, with NO broker offset added. The offset
+                # belongs to `bar_time_server`, which is a wall-clock STRING for
+                # a human to read; folding it into an epoch produces a number
+                # that is neither UTC nor comparable with Date.now(), and the
+                # board duly rendered a live signal as "in 1h 58m" -- three
+                # hours in the future, because Pepperstone runs UTC+3.
+                'ts_ms': int(idx[i].value // 10 ** 6),
+                'action': 'buy' if side > 0 else 'sell',
+                'side_n': side,
+                'tag': 'breakout_up' if side > 0 else 'breakout_dn',
+                'close': float(c[i]),
+                'stop': float(stop),
+                'fill': fill,
+                'risk': round(risk, 6) if risk else None,
+                'bars_ago': int(len(c) - 1 - i),
+                'open': True,
+            }
+            out.append(cur)
+
+    out = out[-int(limit or 12):]
+    per_day = BARS_PER_DAY.get(tf, 24)
+    return {'symbol': symbol, 'tf': tf, 'strategy': strategy,
+            'params': strat.params(), 'scanned_bars': len(c) - start,
+            # in DAYS as well as bars: "nothing in 2000 bars" means nothing at a
+            # glance, and the board prints "none / 60d" from this
+            'scanned_days': round((len(c) - start) / float(per_day), 1),
+            'cost_floor_r': round(floor_r, 4),
+            'last_bar': str(idx[-1]), 'signals': out, 'read_only': True}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'NurAI-MT5-Bridge/1.0'
     origins = list(DEFAULT_ORIGINS)
@@ -1522,6 +1751,25 @@ class Handler(BaseHTTPRequestHandler):
                 if tf not in TF_NAMES:
                     return self._json({'error': 'bad timeframe %s' % tf}, 400)
                 return self._json(signal_now(name, tf, strat, one('position')))
+
+            if route == '/signal/recent':
+                # THE SAME RULE OVER A WINDOW instead of over one bar. Always on
+                # a flat basis -- it is a history of what the rule asked for, and
+                # what the account happened to be holding at the time is a
+                # different question that /signal already answers.
+                name = one('symbol', '') or ''
+                tf = one('tf', '4h')
+                strat = one('strategy', '') or None
+                if not name:
+                    return self._json({'error': 'symbol required'}, 400)
+                if tf not in TF_NAMES:
+                    return self._json({'error': 'bad timeframe %s' % tf}, 400)
+                try:
+                    look = int(one('lookback', '0') or 0)
+                    lim = int(one('limit', '12') or 12)
+                except ValueError:
+                    return self._json({'error': 'lookback/limit must be integers'}, 400)
+                return self._json(signals_recent(name, tf, strat, look, lim))
 
             return self._json({'error': 'no such endpoint', 'path': route}, 404)
 

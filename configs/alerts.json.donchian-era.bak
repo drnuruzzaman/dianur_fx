@@ -1,41 +1,124 @@
 {
-  "_note": "Written by the Settings modal (live pill -> Settings) and read by tools/scalper.py --registered and tools/event_alert.py on every run. Safe to hand-edit; the UI rewrites the whole file, so a comment added here will not survive a save -- put explanations in the per-cell `note` field, which does. A cell is TRADEABLE only if its median sub-era and its total R/yr agree in sign; only tradeable cells are messaged, the rest are journalled. The retired Donchian forward test lives in configs/retired/donchian_forward_test.json.",
+  "_note": "Written by the Settings modal (live pill -> Settings) and read by tools/signal_alert.py and tools/event_alert.py on every poll. Safe to hand-edit; the UI rewrites the whole file, so a comment added here will not survive a save -- put explanations in the per-cell `note` field, which does. `grade` is the cell's measured standing against its own friction floor (tools/friction_map.py + the three-era table in the README): validated | marginal | below, shown on every message so a sub-friction alert never reads like a validated one; cells added from the UI are ungraded, the honest state for a cell nobody has measured. `strategy` is OPTIONAL and PER CELL: omit it and the cell runs its timeframe's default (sim.strategies.strategy_for_tf), name one and that cell runs that rule instead. It exists because the rule was previously chosen per TIMEFRAME globally, so USDJPY 4h was handed the rule validated on XAUUSD 4h -- and USDJPY 4h measured clearly negative under it. Only strategies in sim.strategies.BASELINES can be served live; tl_breakout needs a trendline/regime table and is research-only for now. `destinations` is WHERE the alerts go: one entry per chat or WhatsApp number, each with a `channel` (telegram | whatsapp), a `target` -- for Telegram a numeric chat id, an @username, or a t.me link (t.me/name and t.me/c/<id>/<msg> are both resolved; a t.me/+hash INVITE link cannot be, and is refused); for WhatsApp a phone number in E.164 form or a wa.me link. The stored value is what was typed and is re-resolved on every send by tools/notify.py normalize_target(), and `kinds` -- any of signals | news | scalper -- so one group can take the macro calendar and not every 5m entry. Managed in Settings -> Destinations, read by tools/notify.py, which every alerting tool now sends through. A MISSING `destinations` key is not the same as an empty list: missing means nobody has configured this yet and TELEGRAM_CHAT_ID from configs/secrets.env is still the router, while [] means every destination was removed and nothing is announced anywhere. Tokens are NOT here and never will be -- they stay in configs/secrets.env, which the browser cannot read. `news.fetch_minutes` is how often the feed is refetched automatically (0 = manual only, minimum 5). It is honoured by whichever supervisor is up -- the timer in serve.py while the app is open, the `news` job in alerts_daemon.py otherwise -- and both ask `fetch_quantgist_news.py --scheduled`, which reads this value itself and compares it against the AGE OF THE FILE, so two runners cannot double the fetch rate.",
   "news": {
     "enabled": true,
     "lead_minutes": 10,
-    "impact": "low",
+    "impact": "any",
     "fetch_minutes": 360
+  },
+  "signals": {
+    "alert_on": [
+      "buy",
+      "sell",
+      "exit"
+    ],
+    "watch": [
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "4h",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.2082 / IS +0.1896. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "validated"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1h",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0741 / IS +0.1719. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "15m",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.1285 / IS +0.1154. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "5m",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.2662 / IS +0.1155. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1m",
+        "enabled": false,
+        "note": "floor 0.276 R exceeds the best frictionless edge ever measured (0.241 R)",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "4h",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0079 / IS -0.0186. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1m",
+        "enabled": false,
+        "note": "floor 0.174 R - off, and should stay off",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1h",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS -0.0481 / IS -0.0309. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "below"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "30m",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0052 (302 trades) / IS +0.1621 (434 trades). Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1d",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0554 (39 trades) / IS +0.1649 (35 trades). Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "5m",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0780 / IS +0.1198. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "15m",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS +0.0956 / IS +0.1225. Horizon-matched Donchian, params frozen at registration.",
+        "grade": "marginal"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "30m",
+        "enabled": true,
+        "note": "forward test from 2026-09-08. Pre-registered expectation, measured avg R net as-is: OOS -0.0242 (426 trades) / IS +0.0011 (521 trades). Horizon-matched Donchian, params frozen at registration.",
+        "grade": "below"
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1d",
+        "enabled": true,
+        "note": "not in the 2026-09-08 forward test"
+      }
+    ]
   },
   "scalper": {
     "registered": "2026-09-10",
     "rule": "rayo_scalper break mode: swing 20, EMA 20/50, stop 4.0 ATR, entry 0.10 ATR beyond the swing, exit TP1 (0.9R), expire 12 bars, SESSION 07:00-21:00 ON THE BROKER CLOCK (EET/EEST) = London local 05:00-19:00 = approx 04:00-19:00 UTC",
     "journal": "data/scalper_journal.jsonl",
     "scored_with": "tools/score_external.py --serial",
-    "why_separate": "not a sim.Strategy -- pending orders that fill intrabar and a three-rung TP ladder, neither of which the engine models -- so it is scored by tools/scalper.py, not polled through the bridge /signal",
+    "why_separate": "not a sim.Strategy -- pending orders and a TP ladder, which the engine does not model -- so it cannot ride on signals.watch, which the bridge /signal alerter reads",
     "watch": [
-      {
-        "symbol": "XAUUSD.a",
-        "tf": "1m",
-        "enabled": true,
-        "tradeable": false,
-        "control": true,
-        "measurable": true,
-        "expected_net_r": -0.0433,
-        "total_r_per_year": -223.73,
-        "worst_era_net_r": -0.1073,
-        "best_era_net_r": 0.0071,
-        "n": 58575,
-        "win_pct": 57.3,
-        "drawdown_r": 2533.5,
-        "horizon_hours": 24,
-        "eras": {
-          "2017-19": -0.1073,
-          "2019-21": -0.0503,
-          "2021-23": -0.0363,
-          "2023-26": 0.0071
-        },
-        "note": "CONTROL, expected to lose. 1m is catastrophic on every instrument (-224 R/yr here, drawdown 2533 R) -- the cost fraction, not the entry."
-      },
       {
         "symbol": "XAUUSD.a",
         "tf": "5m",
@@ -121,61 +204,6 @@
         "note": "Tradeable. Measured with swap on 809 fills, 59.8% win, drawdown 13.2 R. Median of four sub-eras and total R/yr agree in sign."
       },
       {
-        "symbol": "XAUUSD.a",
-        "tf": "4h",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": true,
-        "expected_net_r": 0.0548,
-        "total_r_per_year": 1.41,
-        "worst_era_net_r": -0.2631,
-        "best_era_net_r": 0.1731,
-        "n": 243,
-        "win_pct": 58,
-        "drawdown_r": 18.4,
-        "horizon_hours": 120,
-        "eras": {
-          "2017-19": -0.2631,
-          "2019-21": 0.0677,
-          "2021-23": 0.0419,
-          "2023-26": 0.1731
-        },
-        "note": "Journal only. Positive on the median sub-era but THIN -- 243 fills in nine years, about 26 a year, worth +1.4 R/yr. Too few trades to distinguish from luck and too little return to matter. Resolution horizon 120h, not the 24h the faster cells use: 24h is six bars on 4h and the trades would be abandoned unresolved."
-      },
-      {
-        "symbol": "XAUUSD.a",
-        "tf": "1d",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": false,
-        "note": "NOT MEASURABLE AS REGISTERED. Every daily bar is stamped at broker hour 0 and the rule gates on 07:00-21:00, so the session filter rejects every one of them: 0 tickets from 2,745 bars. That is a category error rather than a result -- an hour-of-day filter has no meaning on a daily bar. Trading 1d would need the gate dropped, which is a different rule and would have to be registered as one."
-      },
-      {
-        "symbol": "USDJPY.a",
-        "tf": "1m",
-        "enabled": true,
-        "tradeable": false,
-        "control": true,
-        "measurable": true,
-        "expected_net_r": -0.1343,
-        "total_r_per_year": -807.45,
-        "worst_era_net_r": -0.2085,
-        "best_era_net_r": -0.0803,
-        "n": 69257,
-        "win_pct": 57.4,
-        "drawdown_r": 8595.5,
-        "horizon_hours": 24,
-        "eras": {
-          "2017-19": -0.1386,
-          "2019-21": -0.2085,
-          "2021-23": -0.1299,
-          "2023-26": -0.0803
-        },
-        "note": "CONTROL, expected to lose. 1m is catastrophic on every instrument (-807 R/yr here, drawdown 8595 R) -- the cost fraction, not the entry."
-      },
-      {
         "symbol": "USDJPY.a",
         "tf": "5m",
         "enabled": true,
@@ -207,8 +235,8 @@
         "worst_era_net_r": -0.0338,
         "best_era_net_r": 0.0564,
         "n": 4501,
-        "win_pct": 56,
-        "drawdown_r": 62,
+        "win_pct": 56.0,
+        "drawdown_r": 62.0,
         "eras": {
           "2017-19": -0.0338,
           "2019-21": -0.0192,
@@ -260,64 +288,9 @@
         "note": "Tradeable. Measured with swap on 960 fills, 60.5% win, drawdown 18.9 R. Median of four sub-eras and total R/yr agree in sign."
       },
       {
-        "symbol": "USDJPY.a",
-        "tf": "4h",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": true,
-        "expected_net_r": 0.0292,
-        "total_r_per_year": 2.35,
-        "worst_era_net_r": -0.0612,
-        "best_era_net_r": 0.2885,
-        "n": 256,
-        "win_pct": 59.4,
-        "drawdown_r": 9.1,
-        "horizon_hours": 120,
-        "eras": {
-          "2017-19": -0.0612,
-          "2019-21": 0.0154,
-          "2021-23": 0.2885,
-          "2023-26": 0.043
-        },
-        "note": "Journal only. Positive on the median sub-era but THIN -- 256 fills in nine years, about 27 a year, worth +2.4 R/yr. Too few trades to distinguish from luck and too little return to matter. Resolution horizon 120h, not the 24h the faster cells use: 24h is six bars on 4h and the trades would be abandoned unresolved."
-      },
-      {
-        "symbol": "USDJPY.a",
-        "tf": "1d",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": false,
-        "note": "NOT MEASURABLE AS REGISTERED. Every daily bar is stamped at broker hour 0 and the rule gates on 07:00-21:00, so the session filter rejects every one of them: 0 tickets from 2,745 bars. That is a category error rather than a result -- an hour-of-day filter has no meaning on a daily bar. Trading 1d would need the gate dropped, which is a different rule and would have to be registered as one."
-      },
-      {
-        "symbol": "EURUSD.a",
-        "tf": "1m",
-        "enabled": false,
-        "tradeable": false,
-        "control": true,
-        "measurable": true,
-        "expected_net_r": -0.1061,
-        "total_r_per_year": -747.23,
-        "worst_era_net_r": -0.1435,
-        "best_era_net_r": -0.0788,
-        "n": 71517,
-        "win_pct": 56.7,
-        "drawdown_r": 7956,
-        "horizon_hours": 24,
-        "eras": {
-          "2017-19": -0.0788,
-          "2019-21": -0.1435,
-          "2021-23": -0.0894,
-          "2023-26": -0.1229
-        },
-        "note": "CONTROL, expected to lose. 1m is catastrophic on every instrument (-747 R/yr here, drawdown 7956 R) -- the cost fraction, not the entry."
-      },
-      {
         "symbol": "EURUSD.a",
         "tf": "5m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": false,
         "control": true,
         "expected_net_r": -0.0673,
@@ -338,7 +311,7 @@
       {
         "symbol": "EURUSD.a",
         "tf": "15m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": false,
         "control": false,
         "expected_net_r": -0.0095,
@@ -346,7 +319,7 @@
         "worst_era_net_r": -0.0359,
         "best_era_net_r": 0.0267,
         "n": 4889,
-        "win_pct": 55,
+        "win_pct": 55.0,
         "drawdown_r": 102.4,
         "eras": {
           "2017-19": 0.0267,
@@ -359,7 +332,7 @@
       {
         "symbol": "EURUSD.a",
         "tf": "30m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": true,
         "control": false,
         "expected_net_r": 0.0248,
@@ -388,7 +361,7 @@
         "worst_era_net_r": -0.0218,
         "best_era_net_r": 0.0842,
         "n": 1090,
-        "win_pct": 56,
+        "win_pct": 56.0,
         "drawdown_r": 20.6,
         "eras": {
           "2017-19": -0.0218,
@@ -399,64 +372,9 @@
         "note": "Tradeable. Measured with swap on 1090 fills, 56.0% win, drawdown 20.6 R. Median of four sub-eras and total R/yr agree in sign."
       },
       {
-        "symbol": "EURUSD.a",
-        "tf": "4h",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": true,
-        "expected_net_r": 0.0329,
-        "total_r_per_year": -0.35,
-        "worst_era_net_r": -0.0544,
-        "best_era_net_r": 0.0912,
-        "n": 261,
-        "win_pct": 53.3,
-        "drawdown_r": 13.2,
-        "horizon_hours": 120,
-        "eras": {
-          "2017-19": 0.0304,
-          "2019-21": 0.0355,
-          "2021-23": 0.0912,
-          "2023-26": -0.0544
-        },
-        "note": "Journal only. Positive on the median sub-era but THIN -- 261 fills in nine years, about 28 a year, worth -0.4 R/yr. Too few trades to distinguish from luck and too little return to matter. Resolution horizon 120h, not the 24h the faster cells use: 24h is six bars on 4h and the trades would be abandoned unresolved."
-      },
-      {
-        "symbol": "EURUSD.a",
-        "tf": "1d",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": false,
-        "note": "NOT MEASURABLE AS REGISTERED. Every daily bar is stamped at broker hour 0 and the rule gates on 07:00-21:00, so the session filter rejects every one of them: 0 tickets from 2,745 bars. That is a category error rather than a result -- an hour-of-day filter has no meaning on a daily bar. Trading 1d would need the gate dropped, which is a different rule and would have to be registered as one."
-      },
-      {
-        "symbol": "GBPUSD.a",
-        "tf": "1m",
-        "enabled": false,
-        "tradeable": false,
-        "control": true,
-        "measurable": true,
-        "expected_net_r": -0.068,
-        "total_r_per_year": -522.01,
-        "worst_era_net_r": -0.111,
-        "best_era_net_r": -0.0503,
-        "n": 72248,
-        "win_pct": 57.2,
-        "drawdown_r": 5621.9,
-        "horizon_hours": 24,
-        "eras": {
-          "2017-19": -0.0679,
-          "2019-21": -0.0503,
-          "2021-23": -0.068,
-          "2023-26": -0.111
-        },
-        "note": "CONTROL, expected to lose. 1m is catastrophic on every instrument (-522 R/yr here, drawdown 5622 R) -- the cost fraction, not the entry."
-      },
-      {
         "symbol": "GBPUSD.a",
         "tf": "5m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": false,
         "control": true,
         "expected_net_r": -0.0326,
@@ -465,7 +383,7 @@
         "best_era_net_r": -0.01,
         "n": 12963,
         "win_pct": 54.2,
-        "drawdown_r": 594,
+        "drawdown_r": 594.0,
         "eras": {
           "2017-19": -0.0157,
           "2019-21": -0.01,
@@ -477,7 +395,7 @@
       {
         "symbol": "GBPUSD.a",
         "tf": "15m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": false,
         "control": false,
         "expected_net_r": -0.0049,
@@ -498,7 +416,7 @@
       {
         "symbol": "GBPUSD.a",
         "tf": "30m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": true,
         "control": false,
         "expected_net_r": 0.0291,
@@ -538,64 +456,9 @@
         "note": "Tradeable. Measured with swap on 1052 fills, 56.8% win, drawdown 34.2 R. Median of four sub-eras and total R/yr agree in sign."
       },
       {
-        "symbol": "GBPUSD.a",
-        "tf": "4h",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": true,
-        "expected_net_r": 0.1362,
-        "total_r_per_year": 2.8,
-        "worst_era_net_r": -0.0373,
-        "best_era_net_r": 0.2572,
-        "n": 242,
-        "win_pct": 60.3,
-        "drawdown_r": 7.7,
-        "horizon_hours": 120,
-        "eras": {
-          "2017-19": -0.0373,
-          "2019-21": 0.1681,
-          "2021-23": 0.2572,
-          "2023-26": 0.1044
-        },
-        "note": "Journal only. Positive on the median sub-era but THIN -- 242 fills in nine years, about 26 a year, worth +2.8 R/yr. Too few trades to distinguish from luck and too little return to matter. Resolution horizon 120h, not the 24h the faster cells use: 24h is six bars on 4h and the trades would be abandoned unresolved."
-      },
-      {
-        "symbol": "GBPUSD.a",
-        "tf": "1d",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": false,
-        "note": "NOT MEASURABLE AS REGISTERED. Every daily bar is stamped at broker hour 0 and the rule gates on 07:00-21:00, so the session filter rejects every one of them: 0 tickets from 2,745 bars. That is a category error rather than a result -- an hour-of-day filter has no meaning on a daily bar. Trading 1d would need the gate dropped, which is a different rule and would have to be registered as one."
-      },
-      {
-        "symbol": "AUDUSD.a",
-        "tf": "1m",
-        "enabled": false,
-        "tradeable": false,
-        "control": true,
-        "measurable": true,
-        "expected_net_r": -0.1853,
-        "total_r_per_year": -1089.65,
-        "worst_era_net_r": -0.2013,
-        "best_era_net_r": -0.1284,
-        "n": 68066,
-        "win_pct": 56.3,
-        "drawdown_r": 11625.4,
-        "horizon_hours": 24,
-        "eras": {
-          "2017-19": -0.181,
-          "2019-21": -0.2013,
-          "2021-23": -0.1284,
-          "2023-26": -0.1896
-        },
-        "note": "CONTROL, expected to lose. 1m is catastrophic on every instrument (-1090 R/yr here, drawdown 11625 R) -- the cost fraction, not the entry."
-      },
-      {
         "symbol": "AUDUSD.a",
         "tf": "5m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": false,
         "control": true,
         "expected_net_r": -0.1053,
@@ -616,7 +479,7 @@
       {
         "symbol": "AUDUSD.a",
         "tf": "15m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": false,
         "control": false,
         "expected_net_r": -0.0499,
@@ -624,7 +487,7 @@
         "worst_era_net_r": -0.0684,
         "best_era_net_r": -0.0051,
         "n": 4415,
-        "win_pct": 54,
+        "win_pct": 54.0,
         "drawdown_r": 207.1,
         "eras": {
           "2017-19": -0.0684,
@@ -637,7 +500,7 @@
       {
         "symbol": "AUDUSD.a",
         "tf": "30m",
-        "enabled": false,
+        "enabled": true,
         "tradeable": true,
         "control": false,
         "expected_net_r": 0.001,
@@ -675,38 +538,6 @@
           "2023-26": -0.0149
         },
         "note": "Tradeable. Measured with swap on 830 fills, 55.9% win, drawdown 25.6 R. Median of four sub-eras and total R/yr agree in sign."
-      },
-      {
-        "symbol": "AUDUSD.a",
-        "tf": "4h",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": true,
-        "expected_net_r": 0.0693,
-        "total_r_per_year": 0.11,
-        "worst_era_net_r": -0.1303,
-        "best_era_net_r": 0.2039,
-        "n": 215,
-        "win_pct": 54.4,
-        "drawdown_r": 16.3,
-        "horizon_hours": 120,
-        "eras": {
-          "2017-19": 0.0935,
-          "2019-21": 0.2039,
-          "2021-23": 0.0451,
-          "2023-26": -0.1303
-        },
-        "note": "Journal only. Positive on the median sub-era but THIN -- 215 fills in nine years, about 23 a year, worth +0.1 R/yr. Too few trades to distinguish from luck and too little return to matter. Resolution horizon 120h, not the 24h the faster cells use: 24h is six bars on 4h and the trades would be abandoned unresolved."
-      },
-      {
-        "symbol": "AUDUSD.a",
-        "tf": "1d",
-        "enabled": false,
-        "tradeable": false,
-        "control": false,
-        "measurable": false,
-        "note": "NOT MEASURABLE AS REGISTERED. Every daily bar is stamped at broker hour 0 and the rule gates on 07:00-21:00, so the session filter rejects every one of them: 0 tickets from 2,745 bars. That is a category error rather than a result -- an hour-of-day filter has no meaning on a daily bar. Trading 1d would need the gate dropped, which is a different rule and would have to be registered as one."
       }
     ],
     "filter_note": "session filter adopted 2026-09-10: +42% on total R/yr across the four candidate cells, keeps ~90% of trades, replicated 3 of 4 on the 5m/15m holdout. A volatility filter improved R PER FILL more (XAU 1h 0.106 -> 0.201) and was REJECTED: 45% fewer trades left total R/yr below baseline.",
@@ -720,7 +551,7 @@
       "why": "NOT a prediction filter -- it fails about half its robustness checks on XAUUSD, though it passes 9 of 9 on USDJPY. It earns its place by DE-CORRELATING cells in the one-position queue, and its value grows with the number of cells enabled: 4 cells +7.9% -> +22.0% CAGR, 10 cells +2.0% -> +30.9% CAGR at less than half the drawdown. With all instruments on it is no longer optional.",
       "measured_10_cell_portfolio": {
         "baseline": {
-          "cagr_pct": 2,
+          "cagr_pct": 2.0,
           "max_dd_pct": 75.4,
           "p_losing_year_pct": 46
         },
@@ -763,6 +594,5 @@
         "news"
       ]
     }
-  ],
-  "primary_rule": "scalper"
+  ]
 }

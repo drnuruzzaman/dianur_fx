@@ -10,10 +10,11 @@ from .mean_revert import FADE, FOLLOW, MeanRevert
 from .mtf import DonchianMTF, EmaCrossMTF
 from .price_ema import PriceEma
 from .rsi_divergence import RsiDivergence
-from .rayo import RayoScalp
 from .tl_bounce import TrendlineBounce
 from .tl_breakout import TrendlineBreakout
-from .exits import DonchianExitEma, DonchianExitFixedR, DonchianExitTrail
+from .exits import (DonchianExitChannelTrail, DonchianExitEma,
+                    DonchianExitFixedR, DonchianExitLiquidity,
+                    DonchianExitTrail)
 from .rsi_ema_cross import RsiEmaCross
 from .retest import DonchianRetest
 from .trendlong import DonchianTrendLong
@@ -80,12 +81,17 @@ BASELINES = {'donchian': Donchian, 'donchian_high': _donchian_high,
              'donchian_exit_ema': DonchianExitEma,
              'donchian_exit_trail': DonchianExitTrail,
              'donchian_exit_2r': DonchianExitFixedR,
+             'donchian_exit_liq': DonchianExitLiquidity,
+             'donchian_exit_ct': DonchianExitChannelTrail,
              'ema_cross': EmaCross, 'price_ema': PriceEma,
              'mean_revert': MeanRevert, 'stretch_follow': _follow}
 FEATURE_STRATEGIES = {
-    # A feature strategy, not a baseline: it reads the trendline/regime table,
-    # which the bridge does not build per poll. Research-only until that changes.
-    'rayo_scalp': RayoScalp,
+    # `rayo_scalp` WAS HERE and is gone on purpose. RSS was replaced by the
+    # Rayo Scalper, which rests PENDING orders and ladders three targets --
+    # neither of which this engine models, so registering a close-based
+    # approximation under the same name would put two different rules behind
+    # one label. The rule lives in sim/strategies/rayo.py and is scored by
+    # tools/scalper.py --backtest on 1m bars.
     'tl_bounce': TrendlineBounce,
     'tl_breakout': TrendlineBreakout,
     'rsi_divergence': RsiDivergence,

@@ -722,10 +722,11 @@ table.grid td.sym{font-family:var(--sans); font-weight:700; letter-spacing:.3px}
 .alerts-tab:hover{color:var(--text)}
 .alerts-tab.on{color:var(--text); border-bottom-color:var(--accent); font-weight:700}
 
-.alerts-sched{display:flex; flex-direction:column; gap:6px; margin-top:4px}
+.alerts-sched{display:flex; flex-direction:column; gap:7px; margin-top:4px}
 .alerts-sched-row{display:flex; align-items:center; gap:9px;
-  background:var(--surface); border:1px solid var(--line); border-radius:4px;
-  padding:7px 9px}
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:8px; padding:10px 13px}
+.alerts-sched-row:hover{border-color:var(--text-faint)}
 .alerts-sched-txt{flex:1 1 auto; min-width:0}
 .alerts-sched-row .dot{width:8px; height:8px; border-radius:50%; flex:none}
 .alerts-sched-row .dot.ok{background:var(--up)}
@@ -921,6 +922,102 @@ body.bt-active .bt-body{flex:1 1 auto; min-height:0}
 .bt-inline input{width:78px}
 .bt-form .bt-symbox{flex:1 1 auto}
 .bt-form .bt-chips{row-gap:4px}
+
+/* ---------------- signal board ---------------- */
+/* `sb-`, NOT `sig-`. The right-hand Donchian panel (js/ui/signalpanel.js) got
+   there first and owns `.sig-row` as a three-column flex grid -- reusing the
+   prefix here turned every table row into that grid and stacked the cells three
+   to a line. Two panels about signals, two prefixes. */
+body.sb-active .panel{display:flex; flex-direction:column; overflow:hidden}
+.sb-head{display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex:0 0 auto;
+  padding:6px 10px; background:var(--surface); border-bottom:1px solid var(--line-soft)}
+.sb-wrap{flex:1 1 auto; min-height:0; overflow:auto}
+.sb-call{display:flex; align-items:center; gap:8px; font-size:12px; min-width:0;
+  flex-wrap:wrap}
+.sb-call b{font-family:var(--mono); font-size:11.5px}
+.sb-k{font-size:9px; letter-spacing:2px; text-transform:uppercase; color:var(--text-faint)}
+.sb-tools{display:flex; align-items:center; gap:5px; margin-left:auto}
+.sb-btn{background:var(--bg); border:1px solid var(--line); color:var(--text-dim);
+  border-radius:3px; cursor:pointer; font-family:var(--mono); font-size:10px; padding:2px 7px}
+.sb-btn:hover{border-color:var(--pink); color:var(--text)}
+.sb-btn.on{background:var(--accent-soft); border-color:var(--pink); color:#fff}
+
+/* THE GRADE IS THE WARNING and reads as one. `below` is the cell measured under
+   its own friction floor, so it gets the bearish colour rather than a footnote
+   nobody reads twice. */
+.sb-g-ok{color:var(--green); font-weight:700}
+.sb-g-mid{color:var(--orange)}
+.sb-g-low{color:var(--pink); opacity:.85}
+
+/* The headers carry a tooltip each, so they have to LOOK askable -- a title
+   nobody hovers is a title nobody reads. Dotted underline and the help cursor,
+   the two conventions everyone already knows. */
+/* the news-feed row in Alert settings: button and its age line, one line */
+.alerts-news{display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:6px 15px 10px}
+.alerts-news .alerts-note{min-width:0; margin-top:0}
+/* Stale feed reads as a warning, not as decoration. */
+.alerts-note.down{color:var(--pink)}
+.nw-note.down{color:var(--pink); opacity:.85; word-break:break-word}
+
+/* The forward-test grade on the rule panel. Same three colours the Signal
+   Board uses, so `marginal` means the same thing in both places. */
+.rp-g-ok{color:var(--green)}
+.rp-g-mid{color:var(--orange)}
+.rp-g-low{color:var(--pink)}
+.rp-cell-v[title]{cursor:help}
+
+/* ---------------- scalper ticket ---------------- */
+.scalperpanel{padding:8px 10px 12px}
+.sc-empty{color:var(--text-faint); font-size:11px; padding:4px 0}
+.sc-head{display:flex; align-items:baseline; justify-content:space-between;
+  gap:8px; margin-bottom:6px}
+.sc-side{font-size:10px; letter-spacing:1.4px; font-weight:700}
+.sc-entry{font-family:var(--mono); font-size:16px; color:var(--text)}
+.sc-row{display:flex; justify-content:space-between; gap:8px; font-size:11px;
+  padding:1px 0}
+.sc-k{color:var(--text-faint); font-size:9px; letter-spacing:1.4px;
+  text-transform:uppercase}
+.sc-v{font-family:var(--mono)}
+/* WHY THIS TICKET, in prose. Readable weight -- this is the part someone
+   actually reads before deciding, so it is not 9px grey like a footnote. */
+.sc-why-take{margin-top:8px; padding:7px 9px; border-radius:3px;
+  background:var(--surface-2); border-left:2px solid var(--line);
+  font-size:10.5px; line-height:1.6; color:var(--text-dim)}
+.sc-why-take > div + div{margin-top:4px}
+.sc-why-take b{color:var(--text); font-family:var(--mono)}
+
+/* the second table's heading, so the two rules are visibly separate systems */
+.sb-sub{margin:14px 0 4px; padding:0 10px; font-size:11px; font-weight:700;
+  letter-spacing:.06em; color:var(--text); text-transform:uppercase}
+.sb-sub-note{margin-left:10px; font-weight:400; letter-spacing:0;
+  text-transform:none; color:var(--text-faint); font-size:10px}
+
+.sb-th{cursor:help; text-decoration:underline dotted var(--text-faint);
+  text-underline-offset:3px}
+.sb-th:hover{color:var(--text)}
+
+/* The Order cell carries the ticket in plain words on hover -- "Sell at the
+   20-bar high", not "SELL LIMIT". Marked the same way as a column heading so
+   the affordance is one the reader has already learnt on this table. */
+td.sb-why{cursor:help; text-decoration:underline dotted currentColor;
+  text-underline-offset:3px; text-decoration-thickness:1px}
+.sb-call b[title]{cursor:help}
+.sc-side[title]{cursor:help}
+
+table.grid tr.sb-row{cursor:pointer}
+table.grid tr.sb-row:hover td{background:var(--surface-2)}
+/* A cell asking for a trade is the whole point of the tab; it gets the rail. */
+table.grid tr.sb-act td{background:rgba(255,158,27,.10)}
+table.grid tr.sb-act td:first-child{box-shadow:inset 2px 0 0 var(--orange)}
+table.grid tr.sb-off td{opacity:.45}
+.sb-exit{color:var(--orange); font-weight:700}
+table.grid tr.sb-drow td{background:var(--bg); padding:0}
+.sb-detail{padding:8px 12px; border-left:2px solid var(--pink);
+  display:flex; flex-direction:column; gap:5px; text-align:left}
+.sb-detail pre{margin:0; font-family:var(--mono); font-size:11px; line-height:1.55;
+  white-space:pre-wrap; color:var(--text)}
+.sb-note{font-size:11px; color:var(--text-dim); line-height:1.5; text-align:left}
 
 /* ---------------- economic calendar ---------------- */
 body.cal-active .panel{display:flex; flex-direction:column; overflow:hidden}
@@ -1191,7 +1288,6 @@ tr:hover .pv::after{display:none}
   color:var(--text-dim); font-family:var(--mono); font-size:10px;
   letter-spacing:.5px; padding:1px 6px; cursor:pointer}
 .rail-tf:hover{color:#fff; border-color:var(--line); background:var(--surface-2)}
-
 
 /* ---------------- Elliott replay (Backtest tab) ---------------- */
 /* Everything here is scoped inside the Backtest panel. The live chart has no
@@ -1519,6 +1615,13 @@ tr:hover .pv::after{display:none}
 .alerts-badge{font-size:10.5px; font-weight:400; opacity:.6;
   border:1px solid var(--line); border-radius:9px; padding:1px 7px}
 .alerts-hint{padding:0 15px 8px; font-size:11px; opacity:.62}
+/* THE FIRST LINE IN A PANE NEEDS AIR UNDER THE TABS. `.alerts-hint` carries no
+   top padding because most of them sit between other blocks that already
+   space them -- but the one directly beneath the tab strip was touching its
+   1px border, which read as the text being clipped by the rule rather than
+   introducing the pane. Scoped to :first-child so the hints that follow one
+   another (the rule sentence under this one) do not gain a gap each. */
+[role="tabpanel"] > .alerts-hint:first-child{padding-top:11px}
 .alerts-body{overflow:auto; padding-bottom:10px}
 .alerts-row{display:flex; align-items:center; gap:8px; padding:6px 15px; cursor:pointer}
 .alerts-sub{display:flex; gap:14px; padding:2px 15px 8px 36px; font-size:11px; opacity:.8}
@@ -1527,8 +1630,27 @@ tr:hover .pv::after{display:none}
 /* ONE ROW PER INSTRUMENT, timeframes as chips. The first design had one row per
    (symbol, timeframe) with a dropdown, which made "watch gold on three frames"
    three rows that each had to be added separately and read as unrelated. */
-.alerts-inst{padding:8px 15px; border-top:1px solid var(--line-soft,rgba(255,255,255,.06))}
-.alerts-inst:first-child{border-top:0}
+/* ONE CARD PER THING YOU CONFIGURE, across all three tabs.
+
+   The rows used to be separated by a 1px --line-soft rule, which against the
+   --surface they sit on is very nearly the same colour: five instruments read
+   as one undivided block and the eye had to count chips to find the boundary.
+   A card with a real gap makes each instrument an object you are configuring
+   rather than a line in a list, and it matches the Scheduler tab, which had
+   been drawn this way all along.
+
+   `.alerts-inst` is shared with the Destinations rows (`.al-dest`), so this
+   is one rule for two tabs -- which is the point: three tabs that look like
+   three different apps is what the separator question was really about. */
+.alerts-cells, .alerts-dests{display:flex; flex-direction:column; gap:7px;
+  padding:7px 15px}
+/* --surface-2, NOT --surface. The modal box is itself --surface, so a card
+   painted the same colour is a card you cannot see: the border was doing all
+   the work and the gap read as dead space. --surface-2 is the palette's next
+   step up and is what makes these read as objects sitting ON the panel. */
+.alerts-inst{padding:10px 13px; background:var(--surface-2);
+  border:1px solid var(--line); border-radius:8px}
+.alerts-inst:hover{border-color:var(--text-faint)}
 .alerts-inst-head{display:flex; align-items:center; gap:8px}
 .alerts-inst .sym{font-family:"Roboto Mono",monospace; font-size:12.5px; font-weight:600}
 .alerts-inst .rm{margin-left:auto; cursor:pointer; opacity:.4; font-size:15px; line-height:1}
@@ -1545,6 +1667,70 @@ tr:hover .pv::after{display:none}
 .tf-chip.on{opacity:1; background:var(--up); color:#04201d; border-color:transparent}
 .alerts-note{font-size:10.5px; opacity:.5; margin-top:5px}
 .alerts-addbtn{margin:10px 15px 0; width:calc(100% - 30px)}
+
+/* DESTINATIONS. One row per place an alert can go: switch, name, channel,
+   address, Test, remove -- then the kinds as chips on a second line, which is
+   the same shape as the instrument rows above (identity on top, choices
+   underneath) so the two panes read as one panel rather than two designs.
+
+   The address field takes the remaining width because it is the field that is
+   pasted into and the one that is unreadable when truncated -- a chat id is 14
+   featureless digits and a mistyped one fails silently until somebody wonders
+   why a group went quiet. */
+.al-dest .al-desthead{gap:6px}
+.al-in{background:var(--surface-2,#12161c); border:1px solid var(--line);
+  border-radius:3px; color:var(--text); font-family:var(--sans);
+  font-size:11.5px; padding:3px 6px; min-width:0}
+.al-in:disabled{opacity:.55; cursor:default}
+.al-in:focus{outline:0; border-color:var(--accent)}
+.al-label{flex:0 1 120px}
+.al-ch{flex:none; width:86px; font-size:11px}
+.al-target{flex:1 1 150px; font-family:"Roboto Mono",monospace; font-size:11px}
+/* THE ON/OFF SWITCH on a destination row. Deliberately not the `.dot` used by
+   the scheduler rows: that one is a status light the panel writes and you
+   cannot click, and reusing its shape for a control made the only clickable
+   thing on the row look like a readout. State is carried by the knob's
+   POSITION as well as its colour, so it survives a reader who cannot tell the
+   two greens apart. */
+.al-sw{
+  position:relative; flex:none; width:30px; height:17px; padding:0;
+  /* OFF IS BRAND PINK, not grey. Grey reads as "unavailable" -- the state of a
+     control that cannot be used -- and off here is a live, chosen setting that
+     is silencing a destination. Pink is this app's other pole (--down, the
+     bearish colour) and says the same thing the rest of the UI says with it:
+     the opposite of the green one. It also keeps the pair legible as a PAIR,
+     where green-vs-grey read as on-vs-absent. */
+  border:1px solid transparent; border-radius:9px; background:var(--down);
+  cursor:pointer; transition:background .12s, border-color .12s;
+}
+.al-sw .al-knob{
+  position:absolute; top:2px; left:2px; width:11px; height:11px;
+  border-radius:50%; background:#fff; transition:left .12s, background .12s;
+}
+.al-sw.on{background:var(--up); border-color:transparent}
+.al-sw.on .al-knob{left:15px; background:#04201d}
+.al-sw:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.al-sw:hover:not(:disabled){box-shadow:0 0 0 3px rgba(255,255,255,.08)}
+/* Read-only rows (from secrets.env) keep the switch as a READOUT: still shows
+   the state, does not invite a press it would have to refuse. */
+.al-sw:disabled{cursor:default; opacity:.5}
+.al-dest .rm{margin-left:0}
+.al-kinds{padding-left:15px}
+.alerts-dests{display:flex; flex-direction:column}
+.alerts-destadd{display:flex; gap:8px; align-items:center; padding-right:15px}
+.alerts-destadd .alerts-addbtn{flex:1}
+/* The credential line is normally informational -- a missing WhatsApp token is
+   the ordinary state for a Telegram-only setup. It only turns red when a
+   channel actually IN USE has no token, which is the case where nothing will
+   arrive and the panel would otherwise look healthy. */
+#alDestCreds{padding:0 15px 4px}
+#alDestCreds.down{color:var(--down); opacity:.9}
 .alerts-empty{padding:10px 15px; font-size:11px; opacity:.6}
 .alerts-status{font-size:11px; opacity:.75}
 .alerts-spacer{flex:1}
+
+/* A journalled-but-not-traded Signal Board row: the ticket is real, the
+   instruction is not. Dimmed rather than hidden, because the forward test
+   needs these cells visible and scored. */
+.sb-row.sb-muted { opacity: .45; }
+.sb-row.sb-muted td { font-style: italic; }

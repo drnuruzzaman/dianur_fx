@@ -4,6 +4,7 @@
 import { $, el, hhmmss, load, money, num, px, relTime, save, stamp,
          stampTz, tzLabel, TZ_MODES } from '../util.js';
 import { Backtest } from './backtest.js';
+import { SignalBoard } from './signalboard.js';
 import { closeMenu } from './menu.js';
 
 const table = (cols, rows) => {
@@ -54,6 +55,9 @@ export class Panels {
     this.currency = '';
     // the Backtest tab is a viewer over runs/index.json; see js/ui/backtest.js
     this.backtest = new Backtest();
+    /* The Signal Board reads configs/alerts.json and asks the bridge; it owns
+       its own poll timer, which is why it has to be told when it goes away. */
+    this.signals = new SignalBoard();
     this.tz = load('calendarTz', 'local');
     this.brokerOffsetMs = 0;          // handed over from /health by main.js
 
@@ -61,6 +65,7 @@ export class Panels {
       const b = e.target.closest('.tab');
       if (!b) return;
       if (this.tab === 'backtest' && b.dataset.tab !== 'backtest') this.backtest.hide();
+      if (this.tab === 'signals' && b.dataset.tab !== 'signals') this.signals.hide();
       if (b.dataset.tab === 'calendar') this.calScrolled = false;   // land on now again
       this.tab = b.dataset.tab;
       /* Clicking a tab COMMITS whatever was being previewed: there is no longer
@@ -309,21 +314,37 @@ export class Panels {
     const h = this.host;
     document.body.classList.toggle('bt-active', this.tab === 'backtest');
     document.body.classList.toggle('cal-active', this.tab === 'calendar');
-    if (this.tab === 'backtest') {
-      /* Not while PREVIEWING, and not while COLLAPSED. Backtest asks for the
-         expanded panel, and a hover that throws the layout to 72vh -- then puts
-         it back when the pointer moves on -- is the page jumping under the
-         mouse. Worse, with Backtest as the pinned tab the RESTORE re-rendered it
-         and this line un-collapsed a panel the user had just closed. A peek
-         stays a peek; clicking it pins the panel first, and then it gets its
-         room. */
+    document.body.classList.toggle('sb-active', this.tab === 'signals');
+    /* TABS THAT ASK FOR THE ROOM. Backtest and the Signal Board are both full
+       views rather than a list of rows -- thirteen columns over a dozen cells
+       does not read in a 200px strip any better than an equity curve does.
+
+       Not while PREVIEWING, and not while COLLAPSED. A hover that throws the
+       layout to 72vh -- then puts it back when the pointer moves on -- is the
+       page jumping under the mouse. Worse, with one of these as the pinned tab
+       the RESTORE re-rendered it and this line un-collapsed a panel the user
+       had just closed. A peek stays a peek; clicking it pins the panel first,
+       and then it gets its room. */
+    if (this.tab === 'backtest' || this.tab === 'signals') {
       const asked = this.size !== 'expanded' && this.size !== 'collapsed';
       if (asked && !this.peekTab) this.setSize('expanded');
+    }
+
+    if (this.tab === 'backtest') {
       this.backtest.show(h);
       return;
     }
     h.innerHTML = '';
     const d = this.data;
+
+    /* NOT BEHIND `covered()`. The eye hides what the ACCOUNT holds; the board
+       shows what the RULE says, which is a statement about the market and is
+       the same whether or not a position exists. The Book column is the account
+       speaking, so it is the one thing the eye does reach. */
+    if (this.tab === 'signals') {
+      this.signals.render(h, () => this.data.positions);
+      return;
+    }
 
     if (this.tab === 'positions') {
       if (covered()) return void h.append(sealed('positions'));

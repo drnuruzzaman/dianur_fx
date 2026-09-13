@@ -186,6 +186,20 @@ class Config:
     stop_slippage_mult: float = 1.5
     spread_points_default: float = 0.0   # 0 = fall back to the spec's live
     #                                      spread; see _spread_price
+    # FORCE the spread instead of flooring it. None keeps the max(recorded,
+    # floor) behaviour every number in runs/ was measured with; a value CHARGES
+    # EXACTLY THAT and ignores both the recorded column and the spec.
+    #
+    # It exists because `spread_points_default` is a FLOOR, so it cannot model a
+    # cheaper account on an instrument whose recorded spread is real: gold
+    # carries a genuine 5-9 points in the data, so max(recorded, 0.05) is still
+    # 5-9. Lowering the floor silently cheapened FX and left gold untouched,
+    # which would have made a cross-instrument cost comparison meaningless.
+    #
+    # This is a MEASUREMENT KNOB, not a broker. Set it to something no broker
+    # offers and the result is a bound on what cost reduction could ever buy,
+    # which is a real question -- it is not a tradeable configuration.
+    spread_points_fixed: Optional[float] = None
     apply_swap: bool = True
     max_bars_held: Optional[int] = None
     allow_short: bool = True
@@ -312,6 +326,9 @@ class Simulator:
         least that is conservative where history is silent and harmless where
         history is honest.
         """
+        # forced: charge exactly this, recorded column and spec both ignored
+        if self.cfg.spread_points_fixed is not None:
+            return float(self.cfg.spread_points_fixed) * self.spec['point']
         pts = spread_points if spread_points and spread_points > 0 else 0.0
         floor = self.cfg.spread_points_default
         if floor <= 0:

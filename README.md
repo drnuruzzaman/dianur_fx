@@ -213,16 +213,25 @@ See `serve.py` for why one merges and the other replaces.
 
 ---
 
-## Telegram: alerts out, commands in
+## Alerts out, commands in
 
-Two small tools, sharing `configs/secrets.env` and nothing else. A crash in one
-must not stop the other, which is why they are not one process.
+Small tools, sharing `configs/secrets.env` and nothing else. A crash in one must
+not stop the other, which is why they are not one process.
 
+    tools/notify.py          ROUTES: the one place that decides where a message
+                             goes -- Telegram or WhatsApp, one chat or several
     tools/event_alert.py     PUSHES a warning N minutes before a macro release
     tools/signal_alert.py    PUSHES a rule signal, for the cells you configure
+    tools/scalper.py         PUSHES a Rayo Scalper ticket (--notify)
     tools/telegram_bot.py    PULLS commands: /status, /profit, /news [all]
 
+The three pushers no longer know a chat id between them: they hand
+`notify.deliver(kind, text)` a message and a KIND, and the destination list in
+`configs/alerts.json` decides the rest. See **Destinations** below.
+
 ```bash
+python tools/notify.py --list                               # where alerts go, and why
+python tools/notify.py --test d1                            # one real test message
 python tools/event_alert.py --dry-run --lead 5000 --local   # preview, sends nothing
 python tools/telegram_bot.py --check                        # preview both replies
 configs\Scheduler\event_alert_install.cmd 10               # register the alerter
@@ -568,6 +577,222 @@ measurement, not a preference, and a control that let you promote a cell to
 `validated` would be a way to lie to yourself. It survives a save because the
 modal round-trips whole cell objects and only touches `enabled`.
 
+### Buying the bottom of the range: bounces often, pays nothing
+
+THE CLAIM TESTED. Price arriving at the lower Donchian band on 5m gold -- "the
+4345 area" when the band is 4341 -- is a good buy. Measured as forward move in
+ATR from every bar closing within 0.25 ATR ABOVE the 950-bar low, with no exit
+design at all, so a bad idea cannot hide behind a lucky stop.
+
+| era | horizon | n | at lower band | unconditional | shuffle pct |
+|---|---|---|---|---|---|
+| OOS | 1h | 425 | **-0.094** | +0.041 | 11.5% |
+| OOS | 4h | 425 | **-0.875** | +0.183 | 0.0% |
+| OOS | 12h | 425 | **-1.711** | +0.565 | 0.0% |
+| IS | 1h | 931 | +0.099 | +0.053 | 69.0% |
+| IS | 4h | 931 | +0.032 | +0.217 | 21.0% |
+| IS | 12h | 931 | +0.376 | +0.595 | 29.0% |
+
+TWO ERAS, TWO DIFFERENT FAILURES. In 2016-2020 the band bottom was actively
+WORSE than random -- the 4h and 12h results sit at the 0th percentile of 200
+shuffled draws, meaning no random selection of the same size did as badly. In
+2021-2026 it is positive but BELOW the unconditional return at every horizon
+beyond an hour, and the shuffle percentiles (69/21/29) say it is
+indistinguishable from picking bars at random.
+
+THE EYE IS NOT WRONG ABOUT THE BOUNCE, WHICH IS WHY THIS IS SEDUCTIVE. Price
+closes higher an hour later 56.0% of the time (OOS) and 55.4% (IS) -- it does
+bounce more often than not. The AVERAGE is still negative or flat, because the
+times it does not bounce it falls a long way. Frequency is not expectancy, and a
+chart is a picture of frequency.
+
+THE MIRROR RESULT IS THE INTERESTING ONE. Buying at the TOP of the same range
+beat buying at the bottom in BOTH eras -- +1.244 vs -1.711 ATR over 12h in OOS,
++0.775 vs +0.376 in IS. On this instrument the good buy is strength, not
+weakness, which is the same thing the validated breakout cell has been saying
+all along.
+
+THE FULL DISCRETIONARY READ WAS THEN TESTED, PRE-REGISTERED. Range low AND
+the engine's nearest support within 1.0 ATR (the DEMAND box and the channel's
+lower rail are the same kind of object here) AND a falling 5m trend. To count,
+it had to beat the unconditional return at 4h and 12h, in BOTH eras, above the
+90th percentile of 200 shuffles.
+
+| era | horizon | n | all three | range low only | unconditional | pct |
+|---|---|---|---|---|---|---|
+| OOS | 1h | 43 | -0.729 | -0.094 | +0.041 | 3.5% |
+| OOS | 4h | 43 | **-2.206** | -0.875 | +0.183 | **0.5%** |
+| OOS | 12h | 43 | **-4.845** | -1.711 | +0.565 | **0.5%** |
+| IS | 1h | 105 | +0.196 | +0.099 | +0.053 | 67% |
+| IS | 4h | 105 | **+0.780** | +0.032 | +0.217 | **86%** |
+| IS | 12h | 105 | +0.362 | +0.376 | +0.595 | 41% |
+
+VERDICT: FAIL. But the two failures point opposite ways and that is the whole
+story. In IS at 4h the confluence is the best mean-reversion number this project
+has produced -- +0.780 ATR against +0.217 unconditional, +0.239 R net of the
+cost floor, at the 86th percentile. It misses the pre-registered 90th by four
+points, and moving the bar now would be fitting to the answer.
+
+In OOS the SAME conditions are catastrophic: -2.206 ATR at 4h, worse than 199 of
+200 shuffles, and adding the confluence made it far worse than the level alone
+(-0.875). Two eras disagreeing in SIGN, violently, is the signature of era luck
+rather than structure -- the same shape that killed the hour effect and the
+trendline era table.
+
+TWO THINGS THAT KEEP THIS FROM BEING A CLEAN REFUTATION. OOS carries n=43,
+under the pre-set floor of 100, partly because 5m history only starts 2017-06 so
+that era is 3.5 years against IS's 5.6. And the IS gain DECAYS: +0.780 at 4h
+falls to +0.362 at 12h, below unconditional. An effect that needs to be
+harvested inside four hours and then reverses is not a level holding, it is a
+short-lived bounce.
+
+THE HOLDOUT SETTLED IT: THE CONFLUENCE DOES NOT GENERALISE. The same three
+conditions, nothing retuned, on two cells that had never been asked -- and the
+interpretation of each outcome was written down before the run.
+
+| cell | era | h | n | all three | uncond | pct |
+|---|---|---|---|---|---|---|
+| USDJPY 5m | OOS | 4h | 129 | -0.527 | -0.062 | 17.0% |
+| USDJPY 5m | OOS | 12h | 129 | **-2.144** | -0.158 | **1.5%** |
+| USDJPY 5m | IS | 4h | 114 | -0.438 | +0.174 | 15.0% |
+| USDJPY 5m | IS | 12h | 114 | -0.565 | +0.588 | 13.0% |
+| XAU 15m | OOS | 12h | 26 | -1.934 | +0.300 | 3.0% |
+| XAU 15m | IS | 12h | 58 | +0.161 | +0.316 | 40.0% |
+
+USDJPY 5m carries n=129 and n=114 -- ABOVE the pre-set floor of 100, so this
+cell is not underpowered the way gold's OOS was. It is negative in both eras, at
+both horizons, and below the unconditional return every single time. XAUUSD 15m
+agrees in direction and is too thin to score.
+
+SO THE +0.780 ON GOLD 5m WAS ERA LUCK. That was the pre-registered reading of
+"both fail": the 2021-2026 gold rally paying for dip-buying, not a level
+holding. Nothing was adjusted to reach this conclusion -- the thresholds, the
+horizons and the 90th-percentile bar are the ones set before the first run.
+
+AND THE CONFLUENCE ITSELF MAKES THINGS WORSE, which is the sharper finding. In
+most cells `all three` is below `range low only`: the extra conditions do not
+filter out bad entries, they select for the moment a falling market is leaning
+hardest on support -- which is exactly when it breaks. That is the same lesson
+the premise-void exit taught on RSS, arrived at from the entry side.
+
+### Gold signals are not rare; the board was asking the wrong question
+
+THE SIGNAL BOARD SHOWED SIX GOLD CELLS AND SIX DASHES, and it was right every
+time. A Donchian entry lives for exactly one bar, so a board that only asks
+about the CURRENT bar sees a signal only if you happen to look on the bar it
+fires. Measured 2016-2026:
+
+| tf | trades/yr | median gap | avg R | cost floor |
+|---|---|---|---|---|
+| 1m | 49.8 | 0.0 d | **-0.7014** | **0.340 R** |
+| 5m | 127.2 | 1.6 d | +0.1785 | 0.151 R |
+| 15m | 95.3 | 2.9 d | +0.1266 | 0.091 R |
+| 30m | 79.8 | 3.9 d | +0.1066 | 0.069 R |
+| 1h | 64.2 | 5.0 d | +0.1304 | 0.056 R |
+| 4h | 41.9 | 7.2 d | +0.1996 | 0.038 R |
+| 1d | 7.1 | 37.5 d | +0.0734 | 0.026 R |
+
+About 415 gold signals a year across the six enabled cells -- more than one a
+day somewhere on the ladder -- and the board reported "nothing" on almost every
+glance. `/signal/recent` scans a window instead of a bar, and the `Last signal`
+column turns that wall of dashes into "SELL, 5h ago".
+
+A WINDOW IN DAYS, NOT BARS. 400 bars is 33 hours on 5m and 66 days on 4h, so a
+flat bar count asks the fast cells about a window shorter than their own quiet
+period. The default is 60 days of calendar time, converted per timeframe.
+
+THE SCAN IS A SECOND IMPLEMENTATION OF THE RULE, so it was checked bar for bar
+against sim/core.py over 2024-2026: identical trade counts and every simulator
+entry matched on all six cells. Three earlier versions did not, and each failure
+is invisible in the output:
+
+  NO STOP         a scan knowing only the channel exit stays `in` through every
+                  stop-out and swallows the entry behind it. The simulator took
+                  TWICE as many trades.
+  EXIT TOO EARLY  the channel exit is an ORDER, filled at the next bar's open.
+                  Leaving on the triggering close re-entered a bar early and
+                  desynchronised the rest of the run.
+  SIZING          the simulator SKIPS entries whose lots round to zero, so its
+                  trade list is the rule filtered by what the account could
+                  afford. The scan is the RULE -- what it asked for.
+
+1m IS THE ONE GOLD FRAME LEFT OFF, and the reason is the cost floor rather than
+the channel: the stop is 2x the ONE-MINUTE ATR, so spread and slippage take
+0.340 R of every trade -- more than the best frictionless edge ever measured
+here (0.241 R). No entry rule clears that, which is why 1m is not a detection
+gap to be closed.
+
+### The forward test cells, and the era boundary that has to be copied exactly
+
+ELEVEN CELLS, ALL GRADED AND PRE-REGISTERED as of 2026-09-08. Grades follow one
+rule, applied to the two eras rather than to a preference:
+
+    below       negative avg R in EITHER era
+    marginal    positive in both, short of the 200-trade floor or net-over-
+                drawdown >= 1
+    validated   positive in both, >=200 trades per era, and net/maxDD >= 1 in both
+
+XAUUSD 4h is still the only `validated` cell. The three that were enabled but
+ungraded are now measured on the same basis as the other eight:
+
+| cell | OOS | IS | grade |
+|---|---|---|---|
+| XAUUSD 30m | +0.0052 (302) | +0.1621 (434) | marginal |
+| XAUUSD 1d | +0.0554 (39) | +0.1649 (35) | marginal |
+| USDJPY 30m | -0.0242 (426) | +0.0011 (521) | below |
+
+XAUUSD 30m is the interesting one: a strong IS number sitting on an OOS average
+that rounds to zero, which is the shape of a cell that owes its result to one
+era. XAUUSD 1d is `marginal` on the arithmetic but has 39 and 35 trades -- a
+fifth of the floor -- so its grade is carrying almost no evidence and should be
+read as "unmeasured" rather than "nearly good".
+
+THE ERA BOUNDARY IS 2016-01-01 .. **2021-01-01**, NOT 2020-12-31. The five extra
+bars let the last open trade close instead of being cut mid-flight. It sounds
+like a detail and it is not: measured to 2020-12-31 every one of the eight
+registered cells came back different -- XAU 4h at +0.2078 against the recorded
++0.2082, same 206 trades, only the final trade's R changed. Small, consistent,
+and enough to make a new cell's grade incomparable with the row above it.
+
+ANY SCRIPT THAT GRADES A CELL MUST RE-MEASURE THE EIGHT FIRST and check they
+reproduce. That is the only reason the boundary was caught: the reproduction
+gate failed on all eight before a single new number was read, which is exactly
+what a control is for.
+
+### The forward test could not emit an entry, and nobody noticed for a day
+
+FIFTEEN JOURNALLED SIGNALS, ALL OF THEM `exit`, NONE SCORABLE. Not bad luck --
+the alerter was structurally incapable of announcing an entry on either watched
+instrument, and the reason is one default in the wrong place.
+
+`/signal` reads the live position off the terminal unless told otherwise, and
+that is right for `tools/signal_now.py`: a breakout is an entry only when flat,
+and an order ticket that ignored what you already hold would be dangerous. But
+`tools/signal_alert.py` and the board inherited the same default while watching
+ELEVEN CELLS OVER TWO SYMBOLS. Eleven cells cannot each own a slice of one
+MetaTrader position. So with +0.17 lots of gold and +0.20 of yen open, all four
+gold cells believed they were already long, and a cell that believes it is in
+never says BUY. Every breakout on the 4h was answered `hold`.
+
+The Signal Board tab made it visible: eleven rows all reading `long` in a column
+labelled `state`, on a day when the rule was flat and inside its channel on
+every one of them. The column was reporting the account, not the rule.
+
+THE FIX IS A BASIS, NOT A FLAG. The board and the alerter now ask every cell
+with `position=flat` -- the ENTRY PASS -- because a board reports the market and
+the reader decides what to do about it. Exits are a statement about a position
+and cannot come from that pass, so the alerter takes a second EXIT PASS, but
+only for a symbol the terminal actually holds, from one `/positions` read that
+covers the whole run. `tools/signals_board.py --held` restores the old basis for
+when you want the instruction rather than the survey.
+
+WHAT THIS COSTS AND WHAT IT BUYS. The alerter now makes at most one extra call
+per held symbol per run, and it can announce an entry on a cell whose symbol is
+already open -- which is the whole point, since the eleven cells are eleven
+independent tests and were never meant to share one position. The 15 exit-only
+journal entries are not evidence about anything and should not be scored; the
+forward test starts from the first entry the fixed alerter announces.
+
 ### The announced signals are recorded and scored
 
 Two files, because they have opposite lifetimes:
@@ -837,6 +1062,278 @@ off tells you nothing.
 A save that fails leaves the modal OPEN, holding the edit. Closing would lose
 work that was never written and leave no way to tell which of the two states is
 on disk.
+
+#### Destinations: where an alert goes, as data instead of an env var
+
+Until 2026-09-10 the answer to "where do alerts go?" was `TELEGRAM_CHAT_ID`, a
+comma-separated list in a gitignored file that existed only on this machine --
+and THREE tools had their own copy of "read that variable, POST to
+api.telegram.org". Adding a group meant editing the file by hand; adding a
+channel meant editing three files.
+
+`tools/notify.py` is now the only thing that sends, and the list is data:
+
+```json
+"destinations": [
+  { "id": "d1", "channel": "telegram", "label": "Me",
+    "target": "686269315", "enabled": true,
+    "kinds": ["signals", "news", "scalper"] },
+  { "id": "d2", "channel": "telegram", "label": "Gold group",
+    "target": "-1004443429312", "enabled": true, "kinds": ["signals", "news"] }
+]
+```
+
+    Signal alerts  [11 on]   News & scheduler   Destinations  [2 on]
+
+    Telegram bot token: set · WhatsApp (cloud): token MISSING — configs/secrets.env
+
+    ●  Telegram 1     [telegram v]  686269315            [Test]  x
+       signals  news  scalper
+    ●  Telegram 2     [telegram v]  -1004443429312       [Test]  x
+       signals  news
+                       + Add destination...
+
+THREE KINDS, SO ONE GROUP CAN TAKE THE CALENDAR AND NOT EVERY 5m ENTRY.
+`signals` (signal_alert.py), `news` (event_alert.py) and `scalper`
+(scalper.py --notify) are each routed independently. Verified: unticking
+`scalper` on the group and saving gives `notify.destinations(kind='scalper')`
+one destination and `kind='signals'` two.
+
+    ●  [telegram v]  Telegram 1      686269315            [Test]  x
+
+CHANNEL, THEN NAME, THEN ADDRESS -- the order the row is filled in and the
+order it is read. The channel decides what the address even looks like and what
+the placeholder says, so putting it after the field it governs asked the reader
+to guess the format and then re-read the row once it was resolved.
+
+##### The chat names itself
+
+`Telegram 1` and `Telegram 2` were the first labels this panel wrote, and they
+are the one thing about a destination nobody needs told. `notify.describe()`
+asks the Bot API's `getChat` what the chat is CALLED and the row takes that
+name:
+
+    ●  [telegram v]  Trade Like a Pro   -1004443429312   [Test]  x
+       signals  news
+       supergroup
+
+`getChat` needs no extra rights -- a bot may call it for any chat it is IN,
+which is exactly the set of chats worth being a destination. `title` names a
+group or channel; `first_name` names a private chat, so a private thread reads
+as the person rather than as untitled.
+
+ONLY AN UNNAMED ROW IS NAMED FOR YOU. A label somebody typed is never
+overwritten: renaming `Gold group (mine)` to the channel's own title on the next
+open would be the panel arguing with the reader. `Telegram <n>` counts as
+unnamed, because that is exactly the placeholder Import writes and nobody types
+it -- which is also how the rows that already said `Telegram 1` picked up their
+real names without a migration. Verified: `Gold group (mine)` survived a save
+and a reopen while the row beside it took its name from Telegram.
+
+THE CHAT TYPE IS SHOWN UNDER THE NAME. "Trade Like a Pro" does not say whether
+an alert lands in a room full of people or a private thread, and that is the
+difference between an embarrassing message and a private one.
+
+A FAILED LOOKUP IS DIAGNOSTIC AND IS SHOWN. `chat not found` here almost always
+means the bot is not in that chat yet -- the same thing that will make the alert
+fail -- so it appears under the row rather than waiting for a `Test`. The
+missing-token case is suppressed, because the credential line already says so
+and repeating it on every row would bury the useful one. Nothing about a name is
+fatal: a destination whose name cannot be read is still a destination.
+
+Names are cached per process and asked once per row when the panel opens, so
+switching tabs does not talk to Telegram again. `python tools/notify.py --list
+--names` prints them too -- behind a flag, because `--list` is the offline answer
+to "where do alerts go" and should not fail when the network does. There is no
+equivalent call on WhatsApp: neither the Cloud API nor the unofficial providers
+expose a name for a number you hold, so a WhatsApp row keeps whatever you call
+it.
+
+##### An @username or a share link, not just a numeric id
+
+Nobody has a Telegram chat id to hand. What people have is the thing they can
+copy: `@goldsignals`, or the `t.me/...` link out of the channel's share menu.
+`notify.normalize_target` turns any of these into one of the two things the Bot
+API accepts as `chat_id` -- a numeric id, or an `@username` for a PUBLIC
+channel:
+
+| pasted | sends to |
+|---|---|
+| `@goldsignals`, `goldsignals`, `t.me/goldsignals` | `@goldsignals` |
+| `https://t.me/c/1987654321/12` | `-1001987654321` |
+| `-1001234567890`, `686269315` | unchanged |
+| `t.me/+AbCdEf123`, `t.me/joinchat/...` | **refused** |
+| `+61 412 345 678`, `wa.me/61412345678` | `+61412345678` |
+| `0412345678` | **refused** |
+
+TWO REFUSALS, BOTH DELIBERATE. A `t.me/+hash` is an INVITE link: it carries a
+one-time hash rather than an address, nothing in the Bot API resolves one, and
+it would still be the wrong answer because a bot cannot join by link. And a
+national number with a leading `0` has no country code -- guessing one would
+send the alert to a stranger in whichever country the guess landed in. Both say
+so, with the way out, rather than failing later as `chat not found`.
+
+`t.me/c/<id>/<message>` IS resolvable, and is the useful one: that path form
+appears in PRIVATE supergroups and channels, where there is no username, and the
+chat id is `-100` + that number. Converted here rather than left as the reader's
+arithmetic problem.
+
+A PUBLIC @USERNAME STILL NEEDS THE BOT INSIDE THE CHANNEL, as a member or (for
+a channel) an administrator. Resolving an address and being allowed to post are
+different questions and only the first is answered by normalisation -- the
+second is what `Test` answers.
+
+THE PANEL SHOWS WHAT THE TYPED VALUE BECAME, under the row, and only when it
+differs -- echoing an unchanged id back at the reader is noise.
+`GET /notify/resolve` asks the SERVER, on commit rather than per keystroke, so
+there is ONE implementation of these rules. A copy in JavaScript would agree
+until one of the two was edited, and the disagreement would surface as a message
+going somewhere nobody chose.
+
+WHAT IS STORED IS WHAT WAS TYPED. The file keeps `t.me/goldsignals` and the
+router resolves it again on every send, so the link stays recognisable; storing
+the resolved form would quietly replace it with an id the reader would have to
+decode to recognise their own channel. `_resolved` is panel state and is
+stripped at Save -- a cached resolution in a file read by tools that resolve
+addresses themselves would be worse than none, because nothing would correct it.
+
+A SWITCH, NOT A STATUS DOT. The row's on/off control started as the `.dot`
+the scheduler rows use -- and that one is a status LIGHT: something the panel
+writes and you cannot click. Reusing its shape made the only clickable thing on
+the row look like a readout, with colour as the sole clue. It is now a
+track-and-knob switch, which reads as a control at a glance and carries its
+state in the knob's POSITION as well as its colour, so it still reads whatever
+a reader's eyes do with the two hues. OFF IS BRAND PINK (`--down`), not grey:
+grey reads as "unavailable", the state of a control that cannot be used, and
+off here is a live setting that is deliberately silencing a destination. Pink
+is the app's other pole and says what it says everywhere else in this UI --
+green 147,201,15 against pink 227,28,121, a pair rather than a presence and an
+absence. It is a `<button role="switch">`,
+so Tab reaches it and Space and Enter work without any handler; a `<span>` with
+a click listener was invisible to a keyboard. The read-only rows imported from
+`secrets.env` render the switch DISABLED -- still a readout of the state,
+without inviting a press it would have to refuse.
+
+THE CREDENTIAL LINE IS SILENT WHEN NOTHING IS WRONG. It used to print the
+state of both channels on every open -- `Telegram bot token: set · WhatsApp
+(cloud): token MISSING, phone id MISSING` -- four facts, three of them
+irrelevant to a Telegram-only setup, sitting above the rows they were meant to
+help read. A missing WhatsApp token is the NORMAL state for someone who does
+not use WhatsApp, and announcing it as a problem is how a line stops being read
+on the day it matters. It now appears only when a channel that is actually IN
+USE (enabled, and with a target) has no credential, and says only that:
+`WhatsApp token and WhatsApp phone id missing from configs/secrets.env — those
+alerts cannot send`. The panel hint shrank to `Tick what each destination
+receives.`, and the warning that Test sends a REAL message moved onto the Test
+button's tooltip -- a fact that is true every time and needed once.
+
+That change surfaced a race worth recording: `paintCreds` cleared the line
+before its fetch and set it afterwards, and several things call it (a switch, a
+channel change, a remove). Two overlapping runs meant the first would show the
+warning and the second would blank it for the length of its own request -- a
+warning that existed and was invisible. Nothing is cleared up front now; every
+branch sets the final state after its await, so whichever run finishes last is
+simply right.
+
+THE ADDRESS IS MANAGED IN THE UI, THE CREDENTIAL IS NOT, and that line is the
+security property of the whole feature. A chat id is an ADDRESS -- worthless
+without the token -- and it has to live in the file the browser writes or it
+cannot be managed from the browser at all. The tokens stay in
+`configs/secrets.env`, and `GET /notify/status` answers only whether each one is
+PRESENT, as a boolean. There is no endpoint that can return a token, which is
+the same rule `tools/_secrets.py` follows when it refuses to print one.
+
+A MISSING `destinations` KEY IS NOT AN EMPTY ONE. Missing means nobody has
+managed this from the UI, so `TELEGRAM_CHAT_ID` is still the router and an
+install that never opens the tab keeps working unchanged. `[]` means every row
+was removed, which is a decision, and it silences everything. So the panel shows
+the env chats READ-ONLY with an `Import 2 chats from secrets.env` button rather
+than adopting them on open: adopting silently would rewrite the routing of an
+install whose owner only came to look. Save writes nothing to
+`configs/secrets.env` either way -- the env var is never edited, only outgrown.
+
+TEST SENDS THE ROW THAT IS ON SCREEN, not the one on disk. The button sits
+beside a row that may never have been saved, so `POST /alerts/test` takes the
+destination IN THE BODY. A test that read the file would have tested the OLD
+address while the reader watched the new one, which is worse than no button.
+
+IT REPORTS THE API'S OWN WORDS. `chat not found`, `bot was kicked from the
+group` and `re-engagement message` point at three different fixes, and
+collapsing them into "failed" makes the panel useless at the only moment it
+matters. Verified end to end without messaging anybody, by testing a deliberately
+invalid chat id: `HTTP 400 {"ok":false,...,"description":"Bad Request: chat not
+found"}` came back through the endpoint and onto the status line -- which also
+proves the token is valid and the request reached Telegram.
+
+A PARTIAL SEND STILL COUNTS AS SENT. `signal_alert.py` records a signal in its
+dedupe ledger when at least one destination accepted it, so a chat that was down
+MISSES that message rather than every chat receiving it again next poll. A
+duplicate entry signal can be acted on twice; a missing copy of one cannot.
+
+##### WhatsApp is not Telegram, and one of the differences cannot be coded around
+
+  * **The official Cloud API cannot send to a GROUP or a CHANNEL.** `to` is a
+    phone number; there is no group endpoint and no channel endpoint. Nothing
+    in this app can work around it, so the panel says so where the target is
+    typed -- a group id there is not a typo to be corrected, it is a request
+    Meta's API will not serve.
+  * **A `whatsapp.com/channel/...` link is an invite link, not an address.**
+    Same species as Telegram's `t.me/+hash`: it carries an invite code. A
+    WhatsApp Channel is internally a "newsletter" addressed as
+    `120363...@newsletter`, and the invite code does not contain that. Meta
+    publishes no way to POST to a channel programmatically at any tier, so
+    there is nothing to resolve it into. Both that link and
+    `chat.whatsapp.com/...` are refused BY NAME, before any digits are read --
+    because the number scraper underneath will otherwise reduce one to a phone
+    number belonging to somebody else. Measured, not imagined: the channel link
+    tried during this work became `+00297220`, and the alerter would have
+    messaged whoever owns it. Two further guards came out of the same test --
+    any LETTER in a WhatsApp target is refused (`chat.whatsapp.com/AbCdEf123`
+    used to become `+123`), and the digit count must be 7 to 15, which is what
+    E.164 allows.
+  * **Free-form text only reaches a number that messaged you in the last 24
+    hours** (error 131047). An alert at 03:00 is exactly the case that fails, so
+    the cloud path sends an approved TEMPLATE when `WHATSAPP_TEMPLATE` is set,
+    with the message as its one body variable.
+  * `WHATSAPP_PROVIDER=whapi` routes through whapi.cloud, which DOES support
+    groups and free-form text by driving WhatsApp Web. It is not a Meta product
+    and it can get a number banned. It is here so the option is visible rather
+    than pretended away, and it is labelled unofficial everywhere it appears.
+
+SELENIUM WAS CONSIDERED AND DECLINED, 2026-09-10. Driving `web.whatsapp.com`
+with a persistent Chrome profile does work, and it is the only route that
+reaches a WhatsApp group or channel -- it is also exactly what whapi and
+green-api ARE, hosted, so it is not a different risk class from the provider
+option already wired up. Three costs decided it: the ban for automating an
+unofficial client lands on the PHONE NUMBER, personal chats included; the
+WhatsApp Web DOM is obfuscated and changes without notice, so a broken selector
+fails SILENTLY, which is the worst possible failure for a system whose whole job
+is to say that something happened; and the session eventually needs a human with
+the phone to re-scan a QR. Against that, a Telegram channel reaches a broadcast
+audience today with no ban risk and no DOM to maintain. Revisit only if the
+audience is specifically on WhatsApp and will not move -- the shape it would
+take is a `selenium` provider behind the same `send_whatsapp` dispatch (so
+destinations, kinds and Test are unchanged) plus a browser-holder process in
+alerts_daemon.py, because a browser costs ~25s to start and that cannot be paid
+per alert.
+
+NEITHER WHATSAPP PATH HAS BEEN RUN AGAINST A LIVE ACCOUNT -- there are no
+WhatsApp credentials on this machine. The request shapes follow the published
+APIs; a `Test` on a real destination is the only thing that turns that into
+evidence. Telegram is the path with a track record. What IS verified is the
+refusal: a WhatsApp row with no token answers
+`WHATSAPP_TOKEN missing from configs/secrets.env`, and the credential line turns
+red only when a channel actually IN USE has no token -- a missing WhatsApp token
+is the ordinary state for a Telegram-only setup, and painting that red would
+train the reader to ignore the line.
+
+A NEW ROW ARRIVES SWITCHED OFF WITH EVERY KIND TICKED. The two halves answer
+different questions: adding is not arming, so nothing leaves the machine on its
+own; but once armed it should behave the obvious way rather than silently
+receiving nothing because no kind was ever chosen. A row with no target is
+DROPPED at Save rather than refused -- "+ Add destination" creates the empty row
+as the form, and refusing would block the other tabs' edits over a row nobody
+finished. The status line says how many went.
 
     *XAU/USD 4h*  BUY
     🟢   Entry   4415.20
@@ -4590,6 +5087,48 @@ more than common ones, and any future liquidity feature should prefer PDH/PDL
 over swing levels. The trading claim does not survive: nothing here beats simply
 weighting the break by its ring.
 
+#### The other reading: a sweep as a reversal on its own
+
+`tools/sweep_break_eval.mjs` asked whether a sweep improves a BREAK. The Rayo
+Scalping Strategy's entry engine rests on the prior claim -- a completed sweep
+of a low is itself a LONG, of a high a SHORT -- so `tools/sweep_reversal_eval.mjs`
+asks that, with the same strict `sweepAt` definition and the same matched-candle
+control, on XAUUSD 5m and 15m, 2016-2020 and 2021-2026, at H=20 (comparable with
+the break test) and H=6 (the horizon a scalp actually holds). Edge in pp over the
+control, DAY-level sell-side sweep -> LONG, the setup the pattern is drawn as:
+
+| cell | H=20 | H=6 |
+|---|---|---|
+| 15m 2016-2020 | +1.13 (z 1.0) | **+6.32 (z 5.4)** |
+| 15m 2021-2026 | **-4.83 (z -5.1)** | **-3.46 (z -3.7)** |
+| 5m 2016-2020 | **+6.83 (z 5.6)** | **+4.15 (z 3.4)** |
+| 5m 2021-2026 | +1.45 (z 1.4) | -0.77 (z -0.8) |
+
+IT IS AN ERA, NOT AN EDGE. Every 2016-2020 cell is positive and three of four
+are significant; every 2021-2026 cell is null or negative and two are
+significantly negative. Same cell, same horizon, opposite sign: 15m at H=6 is
++6.32 in one era and -3.46 in the next. That is not a fade a threshold could
+rescue, it is a reversal, and the 5m 2016-2020 cell that supports the claim at
+both horizons is also the only one of eight where depth orders the effect the
+right way.
+
+WHAT DID REPLICATE, AND WHY IT IS NOT TRADEABLE. Buy-side sweep -> SHORT is
+positive in seven of eight cells, six significantly (z 2.9 to 7.7), at +0.6 to
++2.25 pp. It is the most replicated liquidity result this project has, it is the
+OPPOSITE side from the one the pattern is taught on, and it sits inside the
+friction gap: the arithmetic section puts structural edges 1 to 2.5 pp short of
+costs, and this is 0.6 to 2.25 before any.
+
+THE EVENT RATE IS THE OLDER PROBLEM AGAIN. A sweep completes on 29-33% of bars
+in every cell. The per-level definition is strict; the OR across ~65 live levels
+is not, exactly as the break test found, and a signal present on a third of bars
+is close to no signal.
+
+VERDICT. R4 is now measured in both readings and clears in neither. With R5
+(compression -> expansion) at 12 of 12 negative, R1-R3 inside the friction gap
+across the S/R programme, and RSS itself 9 of 9 negative, every component of the
+Rayo score has a verdict and none is positive. A weighted sum of zeros is zero.
+
 #### Both charts weight on the ring now
 
 `_msEvents` takes the second axis from whichever test the CALLER supplies. A
@@ -5123,7 +5662,7 @@ The ladder stops being measurable at its third step. That is a constraint on
 conditioning, not a verdict against it -- the fix is a wider instrument universe,
 not deeper buckets, which is also the axis that has actually replicated here.
 
-### Liquidity levels, built and unmeasured
+### Liquidity levels, built, audited, and measured twice
 
 `js/chart/liquidity.js` is the one primitive the system specification named that
 had nothing behind it. It emits previous-day and previous-session extremes,
@@ -5148,8 +5687,11 @@ merge, and the sweep is asked only of the nearest live level each side.
 `tools/liquidity_audit.mjs` rebuilds every field from a truncated prefix and
 compares -- 0 mismatches on 4h, 15m, and on the multi-timeframe path with the
 higher frames cut to the same wall-clock instant. **Nothing imports it and no
-chart draws it**, because it has no verdict yet, and eleven gates, three retest
-rules and a regime gate are the reason not to draw a detector before it has one.
+chart draws it.** It now has two verdicts, both negative -- as a break
+confirmation and as a reversal on its own, `tools/sweep_break_eval.mjs` and
+`tools/sweep_reversal_eval.mjs`, both in the S/R section above -- and eleven
+gates, three retest rules and a regime gate are the reason a detector with two
+negative verdicts is not drawn either.
 
 ### Entry filters: eleven gates, none of them real
 
@@ -5493,6 +6035,95 @@ way it went. Current answer on 2021-2026: it helps 2 of 6 combinations and hurts
 **Carry-free mode** (`--carry-free`, `Config.flat_by_hour`) flattens before
 rollover so swap never applies — necessary here because swap on these
 instruments is large and only knowable at today's rate.
+
+### Nothing fetched the news automatically, and now Settings says how often
+
+Until 2026-09-10 the feed changed only when somebody pressed **Fetch news
+now**. There was no scheduled task and no daemon job for it, so a rail that
+looked days old usually WAS days old -- and the fix for the ordering above
+would have been cosmetic without this one, because a correctly sorted stale
+file is still a stale file.
+
+`news.fetch_minutes` in `configs/alerts.json` is the interval, set from
+Settings -> News (off, 15m, 30m, 1h, 3h, 6h, daily). Two supervisors honour it:
+a timer thread in `serve.py` while the app is open, and a job in
+`alerts_daemon.py` when it is not.
+
+THE FILE'S OWN AGE IS THE CLOCK, and that is what makes two runners safe. Each
+one asks the fetcher, once a minute, whether the document on disk is older than
+the configured interval -- `fetch_quantgist_news.py --scheduled` -- so whoever
+asks first satisfies the interval for BOTH. A countdown per process would have
+pulled the feed twice as often as anybody asked for, and would have reset every
+time a process restarted.
+
+ONE DEFINITION OF THE INTERVAL, AND IT IS IN THE TOOL. `--scheduled` carries no
+number: the fetcher reads `news.fetch_minutes` itself, on every run. Neither
+supervisor holds a copy, so a change in Settings takes effect on the next
+minute with nothing restarted. An intermediate version passed the interval as
+an argument and the comment beside it claimed the tool read the config -- it
+did not, and the daemon would have fetched every five minutes whatever the
+panel said.
+
+`fetchedAt` FROM INSIDE THE FILE, NOT THE MTIME, the same rule the Settings age
+line follows: the tool writes that field when it speaks to the API, while mtime
+moves for a copy, a restore or a sync -- and an mtime bumped by a backup would
+silently suppress a fetch that was due.
+
+FIVE MINUTES IS THE FLOOR (`MIN_INTERVAL`), enforced in the tool for a
+hand-edited config and simply not offered in the dropdown. Below it the only
+thing that changes is the API bill: the radar re-clusters in hours and the rail
+drops anything over two days, so a one-minute poll fetches one document sixty
+times an hour.
+
+"NOT DUE" IS NOT A FETCH and is not recorded as one. `_NEWS_JOB['last']` is what
+the panel shows about the most recent real fetch, and overwriting it every
+minute with "not due" would erase the error from a fetch that had actually
+failed. "Off" exits 0 for the same reason: honouring the configuration is not a
+failure, and a non-zero exit would have a supervisor logging an error a minute.
+
+Verified end to end: with the interval at 5 minutes and the file's stamp aged to
+20 minutes old, the server's own timer refetched within 80 seconds -- the stamp
+moved from `1789005930706` to `1789007153529` with nothing else touching it.
+
+### The news rail: current first, and two days is the cut
+
+`js/ui/newspanel.js` ranks QuantGist's radar clusters for the chart in front of
+you. It ranked by IMPACT until 2026-09-10, with recency only as the last
+tiebreak -- so a cluster whose newest story was three days old sat at the top on
+84%, above fresh ones at 60%. That is a defensible answer to "what is moving
+this instrument" and it was the wrong one in practice: it made a rail that had
+JUST been refetched look like it had not refreshed, and a reader who cannot
+trust the refresh cannot trust the rail. The function's own comment said
+"Newest first", which it had never done.
+
+Now: relevant first, then NEWEST first, impact as the tiebreak -- and clusters
+whose `latestSeen` is over two days old are dropped outright. Sorting alone
+would have left them on screen, lower down, and a rail that is half three-day-old
+topics still reads as stale however it is ordered.
+
+TWO DAYS IS WHERE THE FEED'S OWN BEHAVIOUR CHANGES. The radar re-associates a
+live topic within hours, so a cluster older than that is one the vendor stopped
+updating rather than a story still developing. On the file that prompted this,
+eight of seventeen clusters sat at 2.8 days -- and the file ALSO carried a fresh
+cluster for the same topics, so the cut did not lose a single subject: `iran-war`
+went from a 2.8-day entry to a 37-minute one. Nine of seventeen now show, every
+one under 7h.
+
+`latestSeen` IS THE AGE OF THE NEWEST STORY IN THE CLUSTER, as the vendor
+reports it -- not the age of the file. A cluster with no `latestSeen` is KEPT:
+absent is not old, and hiding news over a missing timestamp would be a
+formatting detail deciding what you get to read.
+
+AN EMPTY RAIL NOW HAS THREE CAUSES, NOT TWO, and they are different facts: the
+fetch failed (nothing came back), the feed is genuinely empty, or everything was
+dropped for age. The third says so and names the newest cluster's age --
+otherwise this change would have relocated the confusion it was made to end,
+reporting a working fetch as an empty one.
+
+RELEVANCE STILL SORTS FIRST, because that is what the `elsewhere` divider is:
+clusters touching your instrument, then everything else. With the age cut both
+sides are current anyway. For strict time order regardless of instrument, drop
+the `hits` comparison from the sort -- one line, and the comment says so.
 
 ### Macro: surprise, sentiment and impact are three different things
 
@@ -5917,6 +6548,338 @@ cheapest friction floor on those cells is 0.084 R. The complaint was right and
 the remedy is three to ten times too small.
 
 Confluence was the fourth, and it has now been run. It does not close the gap.
+
+### Portfolio effects and the cost floor, the last two untested routes
+
+"Why nothing converts" named two things never run: friction reduction and
+portfolio effects. Both are now measured, on the four instruments that have a
+contract spec (AUDJPY, GBPUSD and USDCAD have bars but no spec and cannot be
+simulated at all).
+
+THE COST FLOOR IS NOT WHAT HISTORY CHARGED. `_spread_price` bills
+max(recorded, floor) and the floor defaults to the spec's CURRENT live spread --
+24 points on gold against a recorded 4h median of 5. So a decade of history is
+billed at today's book. `Config.spread_points_default` overrides it; the table
+below scales that floor.
+
+Avg R per trade, horizon-matched Donchian:
+
+| cell | x1.00 | x0.50 | x0.25 |
+|---|---|---|---|
+| XAUUSD 4h OOS | +0.2082 | +0.2204 | +0.2261 |
+| XAUUSD 4h IS | +0.1896 | +0.1907 | +0.1935 |
+| **XAUUSD 15m OOS** | **+0.1285** | +0.1795 | **+0.2037** |
+| **XAUUSD 15m IS** | **+0.1154** | +0.1373 | **+0.1458** |
+| **USDJPY 15m OOS** | **+0.0956** | +0.1147 | **+0.1215** |
+| **USDJPY 15m IS** | **+0.1225** | +0.1682 | **+0.1924** |
+| EURUSD 15m IS | -0.3030 | -0.2696 | -0.2524 |
+| AUDUSD 15m IS | -0.3949 | -0.3558 | -0.3356 |
+
+COST IS A 4H NON-ISSUE AND A 15M LEVER. Quartering the floor moves 4h by less
+than 0.02 R -- the spread is a rounding error against a stop that wide -- and
+moves 15m by +0.05 to +0.07 R, a 40-57% improvement. That is the same order as
+the 1-2.5 pp gap the arithmetic section describes, so on the fast frames the
+account IS the strategy. It buys nothing on the cells that were never positive:
+EURUSD and AUDUSD stay deeply negative at every price.
+
+PORTFOLIO EFFECTS, THE FOURTH ROUTE, ARE REAL. Trades merged by exit time into
+one R curve, so the portfolio drawdown can be read against the sum of its parts:
+
+| group | cell | net R | maxDD | sum of parts | net/DD |
+|---|---|---|---|---|---|
+| all four | 4h IS | -60.2 | -99.7 | -153.1 | -0.60 |
+| all four | 15m IS | -320.6 | -383.0 | -679.0 | -0.84 |
+| gold+yen | 4h OOS | +44.8 | -19.3 | -29.5 | 2.32 |
+| gold+yen | 4h IS | +38.7 | -25.6 | -46.5 | 1.51 |
+| gold+yen | 15m OOS | +90.1 | -108.5 | -128.9 | 0.83 |
+| gold+yen | 15m IS | +135.9 | -71.6 | -208.9 | 1.90 |
+
+The diversification is genuine and it is large: portfolio drawdown comes in 16
+to 66% under the sum of the parts, and monthly-R correlations are 0.03 to 0.27
+across the four -- gold against yen is 0.12 at 4h and 0.03 at 15m. These really
+are close to independent bets.
+
+AND IT CHANGES NOTHING ABOUT WHAT TO TRADE, for two reasons. Diversification
+divides drawdown; it cannot manufacture expectancy, so "all four" is negative in
+every cell and era -- pooling two positive cells with two negative ones gives a
+negative portfolio. Picking gold and yen first is a SELECTION, defensible only
+because "the edge is the cell, not the signal" established it independently.
+And even then the best portfolio does not beat the best single cell: gold 4h
+alone runs 3.15 / 1.95 net-over-drawdown against gold+yen 4h at 2.32 / 1.51.
+Adding yen at 4h DILUTES gold, because yen is +0.008 and -0.019 there.
+
+WHERE IT DOES PAY IS 15M, AND ONLY WITH THE COSTS DOWN. Gold and yen are both
+positive in both eras at 15m, essentially uncorrelated, and gold+yen at a
+quartered floor reaches 1.36 / 2.80 net-over-drawdown against 0.68 / 0.27 for
+gold 15m alone at full cost. That is the one configuration where the two
+untested routes combine into something better than either alone -- and it is
+still short of gold 4h on its own, at three to six times the absolute return
+for five to seven times the drawdown.
+
+VERDICT. Both routes are real and neither rescues a scalp. Cost reduction is
+worth having and is a BROKER decision, not a code one; the portfolio is worth
+having and requires cells that are already positive. Together they make 15m
+tradeable rather than merely non-losing. Gold 4h remains the best risk-adjusted
+cell measured.
+
+### The zero-cost bound: which failures are cost, and which are signal
+
+`Config.spread_points_fixed` charges EXACTLY a given spread, ignoring both the
+recorded column and the spec floor. It exists because `spread_points_default`
+is a FLOOR: gold carries a genuine 5-9 recorded points, so lowering the floor
+cheapened FX and left gold untouched, which made cross-instrument cost
+comparison meaningless.
+
+THE ZERO-COST BOUND is 0.01 points everywhere and 0.05 on gold -- $0.0005 a
+trade. No broker offers this and it is not a configuration; it is the CEILING on
+what any cost reduction could ever buy. Slippage stays on at 0.02 ATR, because
+zeroing that too would model a fill nobody gets. Avg R, as-is against the bound:
+
+| cell | as-is | zero-cost | delta |
+|---|---|---|---|
+| XAUUSD 4h OOS / IS | +0.2082 / +0.1896 | +0.2328 / +0.1970 | +0.025 / +0.007 |
+| USDJPY 4h OOS / IS | +0.0079 / -0.0186 | +0.0386 / +0.0013 | +0.031 / +0.020 |
+| **XAUUSD 15m OOS / IS** | +0.1285 / +0.1154 | **+0.2347 / +0.1586** | +0.106 / +0.043 |
+| **USDJPY 15m OOS / IS** | +0.0956 / +0.1225 | **+0.2974 / +0.2237** | +0.202 / +0.101 |
+| EURUSD 15m OOS / IS | -0.2728 / -0.3030 | -0.0915 / -0.2351 | +0.181 / +0.068 |
+| AUDUSD 15m OOS / IS | -0.1360 / -0.3949 | +0.0372 / -0.3134 | +0.173 / +0.082 |
+
+THIS IS THE DIAGNOSTIC THE PROJECT WAS MISSING. Every previous failure was
+"structural edge minus friction" without knowing which term dominated. Now:
+
+  * EURUSD and AUDUSD are NOT cost problems. Free, EURUSD 15m is still -0.09 and
+    -0.24 and AUDUSD is still -0.31 in sample. No account rescues them, which is
+    "the edge is the cell, not the signal" restated at the cost-free limit.
+  * USDJPY 15m is ALMOST ENTIRELY a cost problem. +0.0956 becomes +0.2974 -- it
+    pays two thirds of its gross edge to the spread. It is the most
+    cost-burdened cell measured and the one an account change would most help.
+  * 4h is cost-insensitive. The whole range is 0.007 to 0.031 R, so nothing
+    about what ships today depends on the broker.
+
+PORTFOLIO AT THE BOUND, net over max drawdown:
+
+| group | 4h OOS / IS | 15m OOS / IS |
+|---|---|---|
+| all four | 0.16 / -0.45 | 1.95 / -0.59 |
+| **gold+yen** | **3.51 / 1.82** | **3.54 / 3.22** |
+
+15m gold+yen at the bound is the best risk-adjusted result in this project --
+better than gold 4h alone at 3.15 / 1.95 -- and it is the only configuration
+that is strong in BOTH eras at BOTH timeframes. "All four" stays negative in
+sample even free, because diversification divides drawdown and cannot
+manufacture expectancy.
+
+WHAT IT DOES NOT LICENCE. The bound is unreachable. The realistic ladder for
+15m gold+yen is 0.83 / 1.90 at the spec floor, 1.36 / 2.80 at a quarter of it
+(roughly a raw account), and 3.54 / 3.22 free. So a real ECN account buys
+perhaps a third to a half of the distance, and the honest reading is that most
+of the 15m opportunity currently goes to the broker rather than that 15m is
+about to become the best book. Gold 4h remains what to trade; USDJPY 15m
+becomes the cell worth re-measuring the day the account changes.
+
+### Gold and yen priced apart: spread, slippage, and the pure signal
+
+Three levels, so each component of the bill is separated rather than lumped:
+as-is (spec floor + 0.02 ATR slippage), no-spread (0.05 pts gold / 0.01 FX,
+slippage still on), and GROSS (both near zero). Avg R per trade:
+
+| cell | as-is | no-spread | GROSS | spread costs | slippage costs |
+|---|---|---|---|---|---|
+| XAU 5m OOS | +0.2662 | +0.4810 | +0.5121 | **0.215** | 0.031 |
+| XAU 5m IS | +0.1155 | +0.1872 | +0.2155 | 0.072 | 0.028 |
+| XAU 15m OOS | +0.1285 | +0.2347 | +0.2634 | 0.106 | 0.029 |
+| XAU 4h OOS | +0.2082 | +0.2328 | +0.2580 | 0.025 | 0.025 |
+| XAU 4h IS | +0.1896 | +0.1970 | +0.2287 | 0.007 | 0.032 |
+| **JPY 5m OOS** | +0.0780 | +0.4132 | +0.4430 | **0.335** | 0.030 |
+| JPY 5m IS | +0.1198 | +0.3129 | +0.3428 | 0.193 | 0.030 |
+| JPY 15m OOS | +0.0956 | +0.2974 | +0.3256 | 0.202 | 0.028 |
+| JPY 4h IS | -0.0186 | +0.0013 | +0.0247 | 0.020 | 0.023 |
+
+TWO CLEAN REGULARITIES, both predicted and both confirmed. Spread cost roughly
+HALVES per timeframe step -- gold 0.215, 0.106, 0.049, 0.025 from 5m to 4h --
+because it is a fixed price against a stop that grows with the frame. And
+slippage is CONSTANT at 0.023-0.032 R everywhere, because 0.02 ATR a side
+against a 2 ATR stop is ~2% of risk whatever the frame. Slippage is not a
+timeframe problem and cannot be escaped by slowing down.
+
+THE RANKING OF TIMEFRAMES IS A COST ARTEFACT. Gold+yen portfolio, net over max
+drawdown:
+
+| tf | as-is | no-spread | GROSS |
+|---|---|---|---|
+| 5m | 1.00 / 1.63 | 6.33 / 3.99 | **7.00 / 4.69** |
+| 15m | 0.83 / 1.90 | 3.54 / 3.22 | 4.47 / 3.75 |
+| 1h | 0.08 / 0.98 | 0.81 / 1.57 | 1.16 / 2.05 |
+| 4h | **2.32 / 1.51** | 3.51 / 1.82 | 4.42 / 2.44 |
+
+Net of costs 4h wins. Gross, 5m wins by a wide margin and 4h is third. The
+signal is STRONGEST on the fast frames and so is the bill; "fast timeframes do
+not work here" was always "fast timeframes do not survive this spread", and the
+two are not the same claim. USDJPY 5m is the extreme case -- +0.0780 as-is
+against +0.4430 gross, so it hands over five sixths of its edge.
+
+WHAT IS ACTUALLY RECOVERABLE, and this is where the excitement has to stop.
+GROSS is unreachable: 0.05 points on gold is $0.0005 and slippage is real.
+The attainable ladder for 15m gold+yen is 0.83 / 1.90 at the spec floor, 1.36 /
+2.80 at a QUARTER of it -- roughly a raw account -- and 3.54 / 3.22 only at a
+spread no venue quotes. Most of the headline gain sits in the last, impossible
+stretch. A real ECN account buys perhaps a third of the distance.
+
+SO THE CONCLUSION IS UNCHANGED AND BETTER UNDERSTOOD. Trade gold 4h, because it
+is the cell whose edge survives the spread you actually pay. But the reason the
+fast cells fail is now measured rather than assumed, and it is not the signal.
+If the account ever changes, USDJPY 5m and 15m are the cells to re-measure
+first -- they are the most cost-burdened and carry the largest gross edge.
+
+### The Rayo Scalper, and the only lever that mattered
+
+RSS WAS REPLACED by a swing-break rule: EMA trend, a break of the 20-bar swing
+with a pending stop order, an ATR stop and a 0.9 / 1.5 / 2.4 R ladder. At the
+settings it shipped with -- 5m, 1.5 ATR stop, exit at TP3 -- it measured gross
++0.0101 R against 0.1023 R of costs. Net **-0.0922 R per fill**, about -1360 AUD
+a year at a 0.01 lot.
+
+THE ENTRY WAS NEVER THE PROBLEM. Break-even at a 2.4R target is 29.4% and the
+rule hit 30%: a coin flip landing a fraction on the right side. Cost is
+(spread + slippage) / risk and risk is `stop_atr` x ATR(tf), so only the stop
+width and the timeframe move it. A 27-cell sweep confirmed it monotonically --
+5m at 1.5 ATR pays 0.148 R, 30m at 4.0 ATR pays 0.027 R.
+
+ONE CELL OF 27 WAS POSITIVE IN BOTH ERAS: 30m, stop 4.0 ATR, exit at TP1.
+One in 27 is also what luck produces, so it went to a holdout -- USDJPY, which
+was never in the sweep, and XAUUSD 1h, which was not in the grid:
+
+| era | XAU 30m | XAU 1h | JPY 30m | JPY 1h |
+|---|---|---|---|---|
+| 2017-19 | **-0.046** | **-0.029** | **-0.077** | **-0.031** |
+| 2019-21 | +0.069 | +0.073 | +0.011 | +0.085 |
+| 2021-23 | +0.023 | +0.032 | +0.108 | +0.288 |
+| 2023-26 | +0.043 | +0.218 | +0.036 | +0.039 |
+
+TWELVE OF SIXTEEN POSITIVE, and every failure sits in one era. Exit at 0.9R
+needs a 52.6% hit rate: 2017-19 delivers 50.9-53.1%, every later period 55-70%.
+2017-19 is when gold ranged between 1200 and 1350, and a trend-joining breakout
+rule has nothing to join in a range. That is a regime dependence rather than a
+defect, and it is the honest reason to expect this to stop working when range
+returns.
+
+WHAT IS STILL UNPROVEN, and it is not small. The parameters were CHOSEN on a
+sweep of XAUUSD spanning all four periods, so the gold rows are not clean
+out-of-sample for that choice -- USDJPY is the cleaner evidence, and it fails
+2017-19 on both frames. Nothing has been forward tested. And a 4 ATR stop on 1h
+gold is ~70 points, roughly 1.2% of a 7,900 AUD account at the minimum lot,
+over the 0.5% every backtest here assumes: the same affordability wall the
+Donchian 4h cell hit.
+
+AND IT IS NO LONGER A SCALPER. 30m to 1h with a four-ATR stop is a position held
+for hours, which is exactly what the arithmetic predicted: the way to beat the
+cost fraction is to stop scalping. Its per-year R is now in the same territory
+as the validated Donchian 4h cell, by a different route.
+
+### The session gate is OFF -- the Scalper trades 24 hours
+
+Turned off by request on 2026-09-10, after the window had been measured. Nothing
+below is retracted; the default simply changed, and the number it costs is
+recorded here so the choice stays legible.
+
+WHAT THE WINDOW WAS. Broker-clock hours 07:00-21:00 (EET/EEST -- London local
+05:00-19:00 all year), chosen against a pre-registered bar: beat the baseline in
+all four candidate cells, then replicate on 5m and 15m, which had no part in
+choosing it. It did both. It kept ~90% of the fills and was worth **+42% on
+total R per year** across the four cells (31.5 -> 44.6 R/yr), which is the price
+of switching it off. A volatility filter looked far better per trade -- it
+nearly doubled R per fill on XAU 1h -- and left the account worse off, because
+it took 45% fewer trades. Total R decided it, not R per fill.
+
+THE BOUNDARIES BARELY MATTERED. Ten alternative windows defined in true UTC were
+measured as replacements; none beat the incumbent in all four cells, and every
+sane daytime window landed between 42 and 46 R/yr. The whole gain came from
+excluding the quiet hours, not from where the edges sat.
+
+WHAT 24 HOURS COSTS, MEASURED TODAY on XAUUSD.a 30m, 2024-01-01 to 2026-12-31:
+
+| gate | fills | NET R per fill | total net R |
+|---|---|---|---|
+| 24h (new default) | 600 | +0.1093 | **+65.6** |
+| broker 07-21 | 499 | +0.1242 | +62.0 |
+
+Per fill the window is still better, by the same shape of margin it always
+showed. On TOTAL R over this span 24h is slightly ahead, because the extra 101
+fills carry their own weight -- which is not a contradiction of the +42%, it is
+a different span and one cell against four. Read it as: the cost of trading
+around the clock is smaller than the headline number on recent gold, and the
+gate remains the better rule per trade.
+
+STILL REPRODUCIBLE. The gate is a parameter, not deleted code:
+`tools/scalper.py --session 7-21`, or `tickets(df, session=(7, 21))`. **Any
+comparison against a Scalper number recorded before 2026-09-10 must pass it**,
+or it compares two different rules.
+
+ONE CONSTANT, THREE PLACES. `sim/strategies/rayo.py` `DEFAULTS['session']` is
+the rule; `js/chart/scalper.js` exports `SESSION` to match, and the panel reads
+that same export to decide whether to say "outside the measured session" at all.
+The panel used to hard-code 07-21 twice over, and an earlier version compared
+the WALL CLOCK in UTC against hours the rule read off the DECISION BAR on the
+broker's clock -- so it could announce a closed session while `ticket()` was
+posting trades. Hard-coding the window here would have reproduced that bug with
+the window wrong instead of the clock. Verified after the change at broker hour
+03:00, deep inside what used to be the excluded block: the panel posts a full
+BUY STOP ticket with its ladder, where it previously printed the off-session
+line.
+
+### RSS: eight exits, and the baseline beat all seven challengers
+
+The gap was arithmetic. RSS short-only wins +1.87 R and loses -1.11 R, so
+break-even is 37.2% and the measured hit rate is 29-35%. Three ways to close
+three to eight points: raise the hit rate, raise the payoff, or shrink the
+losers. Eleven entry filters across this project spent the first. The second is
+self-defeating -- a further target lowers the hit rate by the same arithmetic
+that raises the payoff. The third had never been tried.
+
+XAUUSD 5m, short-only, three eras, pooled avg R (170-188 trades per arm):
+
+| arm | pooled avg R |
+|---|---|
+| A baseline | **-0.0785** |
+| H trail 3 ATR + target | -0.1378 |
+| C premise void, 0.25 ATR | -0.1397 |
+| D stop 0.5 ATR (control) | -0.1460 |
+| B premise void, on the close | -0.1624 |
+| F trail 3 ATR, no target | -0.1836 |
+| G trail 2 ATR, no target | -0.2011 |
+| E void + stop 0.5 ATR | -0.2292 |
+
+Arm A reproduces the recorded -0.0785 on 170 trades exactly, which is what makes
+the other seven comparable rather than merely printed.
+
+THE PREMISE-VOID EXIT WORKED AND LOST MONEY ANYWAY. A short is taken at a
+ceiling on the claim that the ceiling holds; B leaves the moment a bar closes
+above it. Mechanically it did its job -- mean loss fell from -1.218 to -0.567,
+better than halved. It was worse in all three eras, because the hit rate
+collapsed from 32-36% to 19-25% and target exits fell from 47 to 32. The new
+break-even, 23.0%, still sat above the new hit rate.
+
+WHAT THAT REFUTES IS BIGGER THAN THE EXIT. A third of the trades that closed
+through the boundary reached the target anyway. So a close through one of these
+levels says nothing about what comes next -- the support and resistance RSS
+trades are not levels in any predictive sense. Same verdict the hit rate gave,
+reached from the other direction, and the reason no exit can rescue this rule.
+D, the tighter stop, was in the design as the control that separates "the
+premise died" from "the exit was nearer"; it lost too, so neither reading
+survives.
+
+THE TRAIL LOST, CONTRADICTING AN ESTABLISHED RESULT HERE, AND THE EXCEPTION IS
+THE POINT. Across twelve cells no take-profit ever beat a trail. On RSS all
+three trail arms lost, and F turned 98.3% of exits into stops while cutting mean
+win from +1.88 to +1.41. That earlier result was measured against targets set at
+a MULTIPLE OF RISK -- geometry with no claim behind it, which a trail deserves
+to beat. RSS aims at the opposite BOUNDARY, a level the setup itself nominated.
+"No TP beats a trail" is a statement about arbitrary R-multiple caps, not about
+structural targets, and the distinction had not been drawn until now.
+
+VERDICT: DO NOT TRADE RSS. Short-only at -0.0785 R is its best form and it is
+negative; all three avenues are measured and spent; the one that came closest
+failed by refuting the rule's own premise.
 
 ### The conclusion to carry forward
 

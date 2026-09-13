@@ -56,15 +56,53 @@ function relevance(cluster, alias) {
 
 const pct = (v) => (Number.isFinite(v) ? Math.round(v * 100) + '%' : '—');
 
-/** Newest first, most relevant first, at most `max`. */
+/**
+ * How old a cluster may be and still appear on the rail.
+ *
+ * TWO DAYS, chosen because that is where the feed's own behaviour changes: the
+ * radar re-associates a live topic within hours, so a cluster whose newest
+ * member story is older than this is one the vendor has stopped updating, not
+ * a story that is still developing. Measured on the file that prompted the
+ * change: eleven clusters sat at 2.8 days with headlines that no longer even
+ * matched their topic, while `sanctions` and `trump-posts` were at 0.1 and 0.0.
+ *
+ * A CLUSTER WITH NO `latestSeen` IS KEPT. Absent is not old -- it means the
+ * vendor did not date it, and dropping a story because its timestamp is
+ * missing would silently hide news on the strength of a formatting detail.
+ */
+export const MAX_CLUSTER_AGE_MS = 2 * 24 * 60 * 60 * 1000;
+
+/**
+ * Fresh clusters only, relevant first, then NEWEST FIRST.
+ *
+ * THE ORDER CHANGED ON 2026-09-10, and the old one was not a bug. It ranked by
+ * IMPACT and left recency as the last tiebreak, so a three-day-old cluster at
+ * 84% sat above a fresh one at 60%. That answers "what is moving this
+ * instrument", which is a fair question -- but it made a rail that had just
+ * been refetched look like it had not refreshed at all, and a reader who
+ * cannot trust the refresh cannot trust the rail. Impact is now the tiebreak
+ * and time decides.
+ *
+ * RELEVANCE STILL SORTS FIRST, because it is what the `elsewhere` divider is
+ * made of: the clusters touching the chart in front of you, then everything
+ * else. With the age cut in place both sides are current anyway, so this costs
+ * nothing in freshness. (For strict time order regardless of instrument, drop
+ * the `hits` comparison from the sort -- one line.)
+ *
+ * THE AGE CUT IS THE OTHER HALF. Sorting alone would leave the stale clusters
+ * on screen, just lower down, and a rail that is 60% three-day-old topics
+ * still reads as stale however it is ordered.
+ */
 export function rankClusters(doc, symbol, max = 12) {
   const alias = aliasesFor(symbol, doc);
-  const rows = (doc && doc.clusters ? doc.clusters : []).map((c) => ({
-    ...c, hits: relevance(c, alias),
-  }));
+  const now = Date.now();
+  const rows = (doc && doc.clusters ? doc.clusters : [])
+    .filter((c) => !Number.isFinite(c.latestSeen)
+                   || now - c.latestSeen <= MAX_CLUSTER_AGE_MS)
+    .map((c) => ({ ...c, hits: relevance(c, alias) }));
   rows.sort((a, b) => (b.hits > 0) - (a.hits > 0)
-    || (b.impact || 0) - (a.impact || 0)
-    || (b.latestSeen || 0) - (a.latestSeen || 0));
+    || (b.latestSeen || 0) - (a.latestSeen || 0)
+    || (b.impact || 0) - (a.impact || 0));
   return rows.slice(0, max);
 }
 
@@ -91,8 +129,34 @@ export function renderNews(host, symbol, doc) {
     return;
   }
   const rows = rankClusters(doc, symbol);
+  const total = (doc.clusters || []).length;
+  if (!rows.length && total) {
+    /* EVERY CLUSTER WAS DROPPED FOR AGE, which is a THIRD fact and not either
+       of the two below: the feed answered, it carried news, and none of it is
+       recent. Saying "no clusters in the feed" here would be the same lie in
+       reverse -- a working fetch reported as an empty one -- which is the
+       confusion the age cut was added to end, not to relocate. */
+    const newest = Math.max(...(doc.clusters || [])
+      .map((c) => (Number.isFinite(c.latestSeen) ? c.latestSeen : 0)));
+    host.append(el('div', { class: 'nw-empty' },
+      `${total} clusters, all older than 2 days — the feed is working, the `
+      + `radar has not updated. Newest: ${newest ? ago(newest) : 'undated'}`));
+    return;
+  }
   if (!rows.length) {
-    host.append(el('div', { class: 'nw-empty' }, 'no clusters in the feed'));
+    /* AN EMPTY FEED AND A BROKEN FEED LOOK IDENTICAL, and they are opposite
+       facts: one says the world is quiet, the other says nobody is listening.
+       The fetcher records why in `notes` -- a revoked API key, a 401, a
+       timeout -- and reading it here is the difference between a rail that
+       explains itself and a rail that quietly lies about the market. */
+    const why = (doc.notes || []).filter(Boolean);
+    host.append(el('div', { class: 'nw-empty' },
+      why.length ? 'the news fetch failed — the rail is empty because nothing '
+                   + 'came back, not because nothing happened'
+                 : 'no clusters in the feed'));
+    for (const n of why.slice(0, 3)) {
+      host.append(el('div', { class: 'nw-note down', text: String(n).slice(0, 160) }));
+    }
     return;
   }
 
