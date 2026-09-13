@@ -10,6 +10,14 @@ server sends no-store on everything instead.
     python serve.py            # http://127.0.0.1:5173
     python serve.py 8080
 
+IT STARTS THE BRIDGE AND THE BOT. `python serve.py` is the whole app: the MT5
+bridge (bridge/mt5_bridge.py, the source of every price, position and signal)
+and the Telegram command bot come up with it, and stop with it. A bridge that
+is ALREADY running is attached to rather than replaced, and if that one is in
+--mock mode this says so in red letters, because a fabricated account that
+looks exactly like a real one is the most expensive thing a startup log can
+fail to mention. DNFX_MT5=0 and DNFX_BOT=0 opt out of each.
+
 WORKSPACE PERSISTENCE. localStorage is scoped to the browser profile: clear the
 site data, switch browser, or open the app from a different host and every
 setting is gone. The workspace belongs to the PROJECT, so it lives in the
@@ -65,6 +73,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +87,11 @@ ALERTS = os.path.join(ROOT, 'configs', 'alerts.json')
 REPLAYS = os.path.join(ROOT, 'data', 'replays')
 NEWS = os.path.join(ROOT, 'data', 'news', 'quantgist.json')
 NEWS_FETCH = os.path.join(ROOT, 'tools', 'fetch_quantgist_news.py')
+
+#: Where the MT5 bridge lives. ONE VARIABLE for the whole project -- the same
+#: name tools/telegram_bot.py and tools/score_signals.py read -- so pointing the
+#: app at a bridge on another port means setting it once.
+BRIDGE_URL = os.environ.get('DNFX_BRIDGE', 'http://127.0.0.1:8765')
 
 #: One news fetch at a time. The tool rewrites `quantgist.json` with a temp file
 #: and a replace, so two of them racing cannot corrupt it -- but they can burn
@@ -710,6 +724,132 @@ def news_timer():
             print('* news timer: %s' % exc)
 
 
+def bridge_health(timeout=1.5):
+    """What the bridge says about itself, or None when nothing answers.
+
+    A PROBE, NOT A PORT CHECK. "Is 8765 taken" and "is a bridge there" are
+    different questions, and the answer to the second carries the thing that
+    actually matters: whether it is MOCK. Today this machine had a --mock
+    bridge holding the port and the real one sitting beside it unable to bind,
+    so the app was reading fabricated prices while looking perfectly healthy.
+    """
+    try:
+        with urllib.request.urlopen(BRIDGE_URL.rstrip('/') + '/health',
+                                    timeout=timeout) as r:
+            return json.loads(r.read().decode() or '{}')
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def _bridge_line(h):
+    """One sentence about a /health payload, for the startup log."""
+    if h.get('mock'):
+        return 'MOCK MODE — fabricated data, no terminal touched'
+    if h.get('connected'):
+        return 'connected: account %s on %s' % (h.get('login'), h.get('server'))
+    return 'not connected: %s' % (h.get('error') or 'terminal not attached')
+
+
+def start_bridge():
+    """Start the MT5 bridge alongside the app, unless one is already up.
+
+    WHY IT IS HERE. The bridge is the app's data: no bridge, no prices, no
+    account, no signal. It was a second thing to remember to launch, and
+    forgetting it produced a page that loaded perfectly and showed nothing --
+    the same argument that put the Telegram bot in this file.
+
+    PROBE FIRST, AND NEVER START A SECOND ONE. A bridge already running is
+    ATTACHED TO, not replaced: it may be one the user started deliberately with
+    --mock or a different account, and taking it over from a page server would
+    be the wrong kind of helpful. It also avoids the failure this machine was
+    in when the feature was written -- two bridge processes, the first holding
+    8765 in mock mode and the second alive with no port at all, the app quietly
+    reading fabricated data. The port bind alone does not prevent that; the
+    probe does, and it says which one you have.
+
+    IT IS SAID OUT LOUD WHEN THE ANSWER IS MOCK. A fabricated account that
+    looks exactly like a real one is the single most expensive thing this
+    process can fail to mention.
+
+    OPT OUT WITH DNFX_MT5=0. Not DNFX_BRIDGE -- that name is already the bridge
+    URL in three tools, and overloading it to also mean a boolean would make
+    `DNFX_BRIDGE=0` silently point them at a URL called "0".
+    """
+    if os.environ.get('DNFX_MT5') == '0':
+        print('* mt5 bridge: skipped (DNFX_MT5=0)')
+        return None
+
+    here = bridge_health()
+    if here is not None:
+        print('* mt5 bridge: already running at %s -- %s'
+              % (BRIDGE_URL, _bridge_line(here)))
+        if here.get('mock'):
+            print('  ! the page will show FABRICATED data. Stop that process '
+                  'and restart to attach to the terminal.')
+        return None                       # not ours; not ours to stop, either
+
+    script = os.path.join(ROOT, 'bridge', 'mt5_bridge.py')
+    if not os.path.exists(script):
+        print('* mt5 bridge: %s is missing' % script)
+        return None
+
+    args = [sys.executable, script]
+    # The port comes from DNFX_BRIDGE so one variable still decides where the
+    # bridge lives for every part of this project.
+    port = urllib.parse.urlparse(BRIDGE_URL).port or 8765
+    if port != 8765:
+        args += ['--port', str(port)]
+    extra = (os.environ.get('DNFX_MT5_ARGS') or '').split()
+    if extra:
+        args += extra                     # e.g. DNFX_MT5_ARGS=--mock
+
+    try:
+        child = subprocess.Popen(args, cwd=ROOT)
+    except OSError as err:
+        # Serving the page is this process's job; a bridge that will not start
+        # must not stop the app from coming up. The pill will show it as down.
+        print('* mt5 bridge: could not start (%s)' % err)
+        return None
+    print('* mt5 bridge: starting (pid %d)%s -- DNFX_MT5=0 to skip'
+          % (child.pid, (' ' + ' '.join(extra)) if extra else ''))
+
+    def report():
+        """Say how it went, once, without holding up the page.
+
+        MetaTrader5 import plus login takes seconds, and blocking here would
+        delay the server for a result nobody is waiting on -- the page polls
+        /health on its own and the pill turns over when it turns over. This
+        thread exists so the CONSOLE says what happened, because "starting" is
+        not an outcome and a bridge that failed to attach otherwise says so
+        only in a colour on a pill.
+        """
+        for _ in range(40):                            # up to ~20s
+            time.sleep(0.5)
+            if child.poll() is not None:
+                print('* mt5 bridge: exited %d before answering' % child.returncode)
+                return
+            h = bridge_health(timeout=1.0)
+            if h is not None:
+                print('* mt5 bridge: %s' % _bridge_line(h))
+                return
+        print('* mt5 bridge: no answer after 20s -- see the window it printed to')
+
+    threading.Thread(target=report, daemon=True, name='bridge-report').start()
+    return child
+
+
+def stop_bridge(child):
+    """Stop only a bridge THIS process started. See start_bridge."""
+    if child is None or child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+    print('* mt5 bridge: stopped')
+
+
 def start_bot():
     """Start the Telegram command bot alongside the app. Returns the child.
 
@@ -785,6 +925,11 @@ def main():
     print('* news fetch: %s'
           % ('every %d min' % _iv if _iv else 'manual only (Settings -> News)'))
 
+    # THE BRIDGE BEFORE THE BOT, because it is slower to come up and the page
+    # is useless without it: starting it first gives it a head start on the
+    # seconds MetaTrader5 takes to attach, which is time the page spends
+    # loading anyway.
+    bridge = start_bridge()
     bot = start_bot()
     print('* Nur AI on http://127.0.0.1:%d (no-store; Ctrl+C to stop)' % port)
     try:
@@ -794,6 +939,7 @@ def main():
     finally:
         srv.server_close()
         stop_bot(bot)
+        stop_bridge(bridge)
 
 
 if __name__ == '__main__':

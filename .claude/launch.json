@@ -4,8 +4,11 @@
     {
       "name": "dianurfx",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["serve.py", "5173"],
-      "port": 5173
+      "runtimeArgs": [
+        "serve.py"
+      ],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }

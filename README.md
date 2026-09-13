@@ -173,7 +173,24 @@ sim/strategies/       donchian, ema_cross (baselines); tl_bounce, tl_breakout,
 sim/run_tl.py         feature build + strategy runs + the confluence A/B
 sim/run.py            run a backtest, write runs/<id>/
 tests/                the three gates
-serve.py              no-cache static dev server
+
+serve.py              the app: no-cache static server, and it starts the MT5
+                      bridge, the Telegram bot and the news timer with it
+tools/notify.py       the ONLY thing that sends a message; destinations, kinds,
+                      Telegram + WhatsApp, address normalisation
+tools/event_alert.py  warns N minutes before a macro release
+tools/telegram_bot.py the command side: /status, /profit, /news
+tools/alerts_daemon.py  runs every alert job in one process, without Task Scheduler
+tools/score_signals.py  scores what was ANNOUNCED, forward, against what happened
+tools/fetch_quantgist_news.py  the news feed; --scheduled honours the interval
+tools/scalper.py      the Rayo Scalper: --live, --backtest, --notify; the live
+                      signal source (it replaced tools/signal_alert.py, which is
+                      parked in configs/retired/ with its scheduler files)
+sim/strategies/rayo.py  the Scalper's rule (tickets, not a sim.Strategy)
+js/chart/scalper.js   the same rule in the browser, for the panel and the bands
+js/ui/scalperpanel.js the Rayo Scalper panel
+js/ui/alertsettings.js  the Settings modal: cells, news, scheduler, destinations
+js/ui/newspanel.js    the news rail: relevance, then newest, 2-day cut
 ```
 
 No build step, no bundler, no npm — ES modules straight from disk. Two design
@@ -213,6 +230,52 @@ See `serve.py` for why one merges and the other replaces.
 
 ---
 
+## `python serve.py` is the whole app
+
+The bridge and the bot now start with it and stop with it:
+
+    python serve.py
+    * mt5 bridge: starting (pid 46560) -- DNFX_MT5=0 to skip
+    * telegram bot: started (pid 41048) -- DNFX_BOT=0 to skip
+    * Nur AI on http://127.0.0.1:5173
+    * mt5 bridge: connected: account 51527502 on Pepperstone-MT5-Live01
+
+THE BRIDGE IS THE APP'S DATA -- every price, position, account figure and
+signal comes through `bridge/mt5_bridge.py` -- so forgetting to launch it
+produced a page that loaded perfectly and showed nothing. That is the same
+argument that put the Telegram bot here.
+
+IT PROBES BEFORE IT SPAWNS, AND NEVER STARTS A SECOND ONE. A bridge already
+running is ATTACHED TO, not replaced: it may be one you started deliberately,
+with `--mock` or a different account, and a page server taking that over would
+be the wrong kind of helpful.
+
+AND IT SAYS SO WHEN THE ANSWER IS MOCK, which is not hypothetical. When this
+was written the machine had TWO bridge processes: the first holding 8765 in
+`--mock` mode, the second -- the real one, started later -- alive with no port
+at all, because the bind had failed. The app had been reading FABRICATED prices
+and a fabricated account, and nothing anywhere said so. The port bind does not
+prevent that; a `/health` probe does, and it also answers the question the port
+cannot:
+
+    * mt5 bridge: already running at http://127.0.0.1:8765 -- MOCK MODE ...
+      ! the page will show FABRICATED data. Stop that process and restart.
+
+`DNFX_MT5=0` skips it. Deliberately NOT `DNFX_BRIDGE`, which three tools
+already read as the bridge's URL -- overloading it to also mean a boolean would
+have `DNFX_BRIDGE=0` pointing them at a URL called "0". The URL variable still
+decides the PORT the bridge is started on, so one name still says where the
+bridge lives. `DNFX_MT5_ARGS=--mock` passes arguments through.
+
+THE READINESS REPORT IS ON A THREAD. MetaTrader5's import and login take
+seconds and the page is loading during them, so blocking the server for a
+result nobody is waiting on would be paying for nothing. The console gets the
+outcome when it arrives -- "starting" is not an outcome, and a bridge that
+failed to attach would otherwise say so only as a colour on a pill.
+
+ONLY A BRIDGE THIS PROCESS STARTED IS STOPPED on the way out, for the same
+reason it is not replaced on the way in.
+
 ## Alerts out, commands in
 
 Small tools, sharing `configs/secrets.env` and nothing else. A crash in one must
@@ -221,8 +284,10 @@ not stop the other, which is why they are not one process.
     tools/notify.py          ROUTES: the one place that decides where a message
                              goes -- Telegram or WhatsApp, one chat or several
     tools/event_alert.py     PUSHES a warning N minutes before a macro release
-    tools/signal_alert.py    PUSHES a rule signal, for the cells you configure
-    tools/scalper.py         PUSHES a Rayo Scalper ticket (--notify)
+    tools/scalper.py         PUSHES a Rayo Scalper ticket (--notify) -- THE live
+                             signal source since 2026-09-10, when the
+                             horizon-matched Donchian alerter was retired to
+                             configs/retired/signal_alert.py
     tools/telegram_bot.py    PULLS commands: /status, /profit, /news [all]
 
 The three pushers no longer know a chat id between them: they hand
@@ -1196,6 +1261,27 @@ the resolved form would quietly replace it with an id the reader would have to
 decode to recognise their own channel. `_resolved` is panel state and is
 stripped at Save -- a cached resolution in a file read by tools that resolve
 addresses themselves would be worse than none, because nothing would correct it.
+
+A 404 FROM OUR OWN ENDPOINTS MEANS ONE THING, AND NOW SAYS IT. `serve.py` is a
+running PROCESS and `.js` is not: every static file here is re-read per request
+-- the reason this server exists instead of `http.server` -- so an edit to the
+panel appears on a reload while an edit to `serve.py` does not, because the
+interpreter that loaded it is still running the old code. The two drift apart
+silently and the panel ends up calling an endpoint its own server has never
+heard of.
+
+It cost a real confusion the first time: **Test reported "not found"**, which
+reads as *that chat does not exist* -- so the reader goes looking at Telegram
+for a fault that is on this machine, in a process that needs restarting. Every
+one of these calls now checks for a 404 before parsing and says
+`the dev server is older than this panel — restart serve.py`.
+
+The credential line had the worse version of the same bug: a stale server
+answers `/notify/status` with an HTML 404 PAGE, so `.json()` threw and the catch
+blamed the network -- and had it parsed, `c.telegram` would have been undefined
+and the panel would have printed **"Telegram bot token: MISSING"** about a token
+that is present. A settings panel lying about a credential is the last thing
+that should happen there, so the status check runs before the parse.
 
 A SWITCH, NOT A STATUS DOT. The row's on/off control started as the `.dot`
 the scheduler rows use -- and that one is a status LIGHT: something the panel
