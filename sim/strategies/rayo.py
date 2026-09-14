@@ -29,7 +29,10 @@ about -1360 AUD a year on a 0.01 lot. The entry was never the problem. Cost is
 and the timeframe move it. A 27-cell sweep over tf x stop x exit confirmed it
 monotonically: 5m/1.5 pays 0.148 R, 30m/4.0 pays 0.027 R.
 
-THE SETTINGS THAT SURVIVED: stop 4.0 ATR, exit at TP1 (0.9R). Net R per fill,
+THE SETTINGS THAT SURVIVED: stop 4.0 ATR, exit at TP1 (0.9R) -- SUPERSEDED on
+2026-09-14 by stop 5.0, see "THE STOP WANTS TO BE WIDER THAN 4.0" below. The
+table that follows is the 4.0 measurement and is kept because the argument for
+5.0 is built on it. Net R per fill,
 four sub-periods, two instruments -- and USDJPY was never in the sweep, so it is
 a holdout for the parameter choice:
 
@@ -126,7 +129,18 @@ is `none (24h) 32.7` against `broker 07-21 44.9` in the table above. Anything
 compared against a number from before this change must set session=(7, 21)
 explicitly, or it is comparing two different rules.
 
-TREND AGE IS A SIGNAL-QUALITY SCORE, AND IT IS REPORTED, NOT ACTED ON. Nine
+TREND AGE IS A SIGNAL-QUALITY SCORE. IT IS NOW ACTED ON, BUT NOT HERE --
+`age <= 20` was switched on 2026-09-14 in tools/scalper.py, which WITHHOLDS
+THE TELEGRAM MESSAGE for a stale-trend ticket. This module still proposes it
+and the journal still records it, deliberately: every expected_net_r in
+configs/alerts.json was measured UNGATED, so gating the rule would invalidate
+the registry, and the gate is not a per-cell improvement in any case -- it
+makes each gold cell individually worse. Measured on a one-position account
+at stop 5.0, ten tradeable cells: +20.7% -> +23.7% CAGR, chance of a losing
+year 22% -> 16%, drawdown unchanged. The paragraphs below are the evidence it
+was switched on for, and were written while it was not.
+
+AS ORIGINALLY WRITTEN: REPORTED, NOT ACTED ON. Nine
 quantities knowable at signal time were tested for a relationship to outcome --
 cost fraction, ATR relative to its own median, EMA separation, distance to the
 trigger, swing width, ADX, trend age, position in the range, and side. The
@@ -170,6 +184,95 @@ begin on four cells at once, so the gate DE-CORRELATES them and fewer signals
 collide in the one-position queue. That is also why it improves the portfolio
 while making each gold cell individually worse.
 
+THE STOP WANTS TO BE WIDER THAN 4.0, AND 4.0 WAS CHOSEN ON THE WRONG QUESTION.
+The 27-cell sweep that settled it asked which stop maximised NET R PER CELL.
+Re-swept 2026-09-14 on an account (tools/scalp_portfolio.py --stop-sweep), mean
+net R per fill:
+
+    cell           4.0      4.5      5.0
+    XAU 30m     +0.0376  +0.0619  +0.0868
+    XAU 1h      +0.1347  +0.1531  +0.1682
+    JPY 30m     +0.0417  +0.0510  +0.0750
+    JPY 1h      +0.0951  +0.1195  +0.1546
+
+Monotone in all four, and the era table finally clears the bar this rule has
+been failing since it was written: ERA-CELLS POSITIVE GO 12/16 AT 4.0 TO 16/16
+AT 5.0. 2017-19 -- the ranging regime named above as "the honest reason to
+expect this to stop working" -- turns positive on every cell.
+
+On the account (gold+yen, one position, 2% risk): CAGR +14.4% -> +20.9%, maxDD
+47.8% -> 31.4%, P(losing year) 31% -> 22%. 4.5 is indistinguishable from 5.0
+(+21.7%, 33.4%) and 5.5-6.0 dips, so choosing between 4.5 and 5.0 is noise.
+
+REPLICATED ON INSTRUMENTS THAT HAD NO PART IN IT. EUR/GBP/AUD, 30m and 1h: mean
+net R improves in 5 of 6 going 4.0 -> 5.0, including a sign flip on EURUSD 30m
+(-0.0091 -> +0.0273). GBPUSD 30m is flat. Those instruments stay weak in
+absolute terms -- 13/24 era-cells positive at 4.0, 15/24 at 5.0 -- but the
+DIRECTION is not a gold-and-yen artefact.
+
+AND IT IS A PREDICTION, NOT A SWEEP HIT. Cost fraction is
+(spread + slip) / (stop_atr x ATR): wider is predicted to pay until the falling
+trade count eats it, which is the same argument that moved this rule from 1.5 to
+4.0 in the first place. It was simply not pushed to where it stops paying.
+Minimum-lot risk at 5.0 ATR is AUD 68 on 1h gold, 0.68% of a 10k account, so
+unlike the 4h Donchian cell this is affordable at the risk it is measured at.
+
+STILL 4.0 IN DEFAULTS. Changing it invalidates every `expected_net_r` and
+`tradeable` flag in configs/alerts.json, the registered `rule` string, and the
+js/chart/scalper.js mirror. Those move together or not at all.
+
+THE PORTFOLIO TABLE ABOVE DID NOT REPRODUCE, AND THE 10-CELL ROW REVERSED.
+Re-measured 2026-09-14 with tools/scalp_portfolio.py -- which is now a tool in
+the repo rather than a scratch file, precisely so this cannot happen twice --
+over 2017-01-01..2026-09-01, 2% risk, swap charged, one position at a time:
+
+    arm                          trades   CAGR   maxDD   P(losing yr)
+    4 cells,  no gate              2201  +14.4%  47.8%       31%
+    4 cells,  age <= 20            1588  +17.8%  43.5%       28%
+    10 cells, no gate              2203  +14.5%  47.8%       31%
+    10 cells, age <= 20            1820   +7.9%  54.9%       39%
+
+The 4-cell rows still favour the gate, smaller than recorded. The 10-cell rows
+say the OPPOSITE of what is registered in configs/alerts.json (+2.0% -> +30.9%
+at 75.4% -> 34.2% drawdown): with ten cells the gate COSTS six points of CAGR
+and adds seven of drawdown. The old run's inputs were never written down, so
+there is nothing to diff; the number that is reproducible is this one.
+
+WHY THE CLAIM WAS WRONG -- THE QUEUE IS SATURATED. One cell takes 2091 trades
+in nine years, four cells take 2201, ten cells take 2203. Enabling six more
+instruments adds TWO TRADES, because the account is already holding a position
+almost whenever a ticket appears. So "its value grows with the number of cells
+enabled" describes something that cannot happen: extra cells do not add trades,
+they only change which cell owns the account.
+
+AND THE SELECTION RULE, NOT THE ENTRY RULE, DECIDES WHO THAT IS. Simultaneous
+tickets were resolved in config order, so XAUUSD 30m won every tie for nine
+years and took 1938 of 2218 trades -- 87% of the account, for being first in the
+file. Five priority rules were measured against that accident (arrival, random,
+age, expectation, slowest-frame). None beats it on return; `expectation` and
+`slow` cut drawdown from 47.8% to about 40% for four points of CAGR; preferring
+the FRESHEST trend is the worst of the five, which is worth sitting with, given
+that age as a GATE is the thing that helps.
+
+TWO POSITIONS AT MATCHED TOTAL RISK IS THE BIGGEST EFFECT MEASURED, AND IT
+FAILS THIS PROJECT'S OWN BAR. Splitting the same 2% across two slots (1% each,
+never two positions in one instrument):
+
+    slots   trades   R/yr    CAGR   maxDD   P(losing yr)
+    1         2203   +8.8   +14.5%  47.8%       31%
+    2         4459  +16.8   +15.7%  39.6%       26%
+    3         6768  +11.7    +6.2%  39.4%       37%
+
+More return, eight points less drawdown, and a lower chance of a losing year,
+for no extra risk -- the account simply stops turning trades away. Three slots
+gives it back: mean R per trade halves, which is what taking the dregs looks
+like. BUT BY SUB-ERA it wins in only two of four (net R/yr, 1 slot -> 2 slots):
+2017-19 -4.5 -> -14.9, 2019-21 +17.9 -> +14.6, 2021-23 -4.5 -> +34.1, 2023-26
++18.4 -> +26.0. It is better where the rule already worked and worse in the
+range regime that was always its weakness, which is amplification, not edge.
+The pre-registered bar for adopting a filter here was all four; two is not
+adoption, it is a candidate.
+
 WHAT IS STILL UNPROVEN. The parameters were CHOSEN on a sweep of XAUUSD covering
 all four periods, so the gold rows are not clean out-of-sample for that choice;
 USDJPY is the cleaner evidence. Nothing has been forward tested. And a 4 ATR
@@ -211,9 +314,12 @@ DEFAULTS = {
     'swing': 20,
     'fast': 20,
     'slow': 50,
-    # 4.0, NOT 1.5. See "THE COST FRACTION IS THE RULE" -- a 1.5 ATR stop on 5m
-    # gold hands a tenth of the risk to the spread before the market moves.
-    'stop_atr': 4.0,
+    # 5.0, NOT 4.0 AND NOT 1.5. See "THE COST FRACTION IS THE RULE" for why a
+    # 1.5 ATR stop on 5m gold hands a tenth of the risk to the spread, and
+    # "THE STOP WANTS TO BE WIDER THAN 4.0" for why the 4.0 that replaced it was
+    # still too tight: it was chosen on per-cell R, and on an account 5.0 turns
+    # all sixteen gold/yen era-cells positive where 4.0 managed twelve.
+    'stop_atr': 5.0,
     # NONE -- THE RULE TRADES AROUND THE CLOCK, by request and against the
     # measurement. The 07-21 broker window was worth +42% on total R per year
     # while keeping ~90% of the fills (see THE SESSION FILTER), so turning it
@@ -243,7 +349,7 @@ def atr(bars, n=14):
     return tr.ewm(alpha=1 / n, adjust=False).mean()
 
 
-def tickets(bars, mode='break', swing=20, fast=20, slow=50, stop_atr=4.0,
+def tickets(bars, mode='break', swing=20, fast=20, slow=50, stop_atr=5.0,
             session=None):
     """Every ticket the rule would post, one per qualifying bar.
 
@@ -317,14 +423,31 @@ def tickets(bars, mode='break', swing=20, fast=20, slow=50, stop_atr=4.0,
             'symbol': None,
             'side': 'buy' if side > 0 else 'sell',
             'order': order,
-            'entry': round(float(entry), 3),
-            'sl': round(float(stop), 3),
-            'tp': [round(float(entry + side * k * risk), 3) for k in TPS],
+            # NOT round(x, 3). THREE DECIMALS IS A GOLD-AND-YEN ASSUMPTION and
+            # it silently destroyed every 5-digit instrument: EURUSD tickets
+            # came out as entry 1.146 / SL 1.141 / TP1 1.15, so the rounding
+            # step (0.0005) was 10% of a 30m stop and ~100% of a 1m one. The
+            # measured EUR/GBP/AUD cells were wrong at every timeframe, and the
+            # 1m controls returned 10-25% win rates that looked like a strategy
+            # result and were a formatting error.
+            #
+            # js/chart/scalper.js never rounded, so the two twins had been
+            # posting DIFFERENT FX tickets; not rounding here is what makes them
+            # agree. Prices are formatted where they are displayed, by code that
+            # knows the instrument's digits.
+            'entry': float(entry),
+            'sl': float(stop),
+            'tp': [float(entry + side * k * risk) for k in TPS],
             't': idx[i].tz_localize('UTC').isoformat().replace('+00:00', 'Z'),
             'ms': int(idx[i].value // 10 ** 6),
-            'risk': round(float(risk), 6),
-            'atr': round(float(A), 6),
-            'level': round(float(H if up else L), 3),
+            # SIX DECIMALS IS THE SAME MISTAKE ONE ORDER SMALLER. `risk` is
+            # what every net-R figure divides by and what the cost fraction is
+            # quoted over; rounding it while entry and SL carry full precision
+            # breaks the identity |entry - SL| == risk, which is the cheapest
+            # check that a ticket's numbers describe one trade.
+            'risk': float(risk),
+            'atr': float(A),
+            'level': float(H if up else L),
             'trend': 'up' if up else 'down',
             'age': int(age[i]),
             'mode': mode,

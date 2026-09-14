@@ -8,9 +8,9 @@
   },
   "scalper": {
     "registered": "2026-09-14",
-    "rule": "rayo_scalper break mode: swing 20, EMA 20/50, stop 5 ATR, entry 0.10 ATR beyond the swing, exit TP1 (0.9R), expire 12 bars, SESSION OFF (24h) -- the gate measured +42% on total R/yr and is switched off by request; pass --session 7-21 to compare against pre-2026-09-10 numbers.",
+    "rule": "rayo_scalper break mode: swing 20, EMA 20/50, stop 5.0 ATR, entry 0.10 ATR beyond the swing, exit TP1 (0.9R), expire 12 bars, SESSION OFF (24h) -- the gate measured +42% on total R/yr and is switched off by request; pass --session 7-21 to compare against pre-2026-09-10 numbers.",
     "journal": "data/scalper_journal.jsonl",
-    "scored_with": "python tools/score_scalper.py -- hourly via the \"DiaNurFx-Score-Scalper\" task. It resolves each journalled ticket on 1m bars FROM THE BRIDGE (true UTC, the clock the journal is in -- not the broker-time archive), reusing tools/scalper.py resolve() so a live number and a registered number cannot disagree for reasons nobody can find. Tickets are grouped by stop_atr so the 4.0 and 5.0 eras are never pooled. tools/score_external.py grades hand-logged THIRD-PARTY signals and is not this.",
+    "scored_with": "tools/score_external.py --serial",
     "why_separate": "not a sim.Strategy -- pending orders that fill intrabar and a three-rung TP ladder, neither of which the engine models -- so it is scored by tools/scalper.py, not polled through the bridge /signal",
     "watch": [
       {
@@ -210,7 +210,7 @@
         "control": true,
         "measurable": true,
         "expected_net_r": -0.0349,
-        "total_r_per_year": -37,
+        "total_r_per_year": -37.0,
         "worst_era_net_r": -0.07,
         "best_era_net_r": -0.0148,
         "n": 9767,
@@ -351,7 +351,7 @@
         "control": true,
         "measurable": true,
         "expected_net_r": -0.1203,
-        "total_r_per_year": -705.08,
+        "total_r_per_year": -705.09,
         "worst_era_net_r": -0.1339,
         "best_era_net_r": -0.0663,
         "n": 60421,
@@ -416,7 +416,7 @@
       {
         "symbol": "EURUSD.a",
         "tf": "30m",
-        "enabled": true,
+        "enabled": false,
         "tradeable": true,
         "control": false,
         "measurable": true,
@@ -425,7 +425,7 @@
         "worst_era_net_r": -0.0098,
         "best_era_net_r": 0.1225,
         "n": 1589,
-        "win_pct": 57,
+        "win_pct": 57.0,
         "drawdown_r": 23.3,
         "horizon_hours": 24,
         "eras": {
@@ -440,7 +440,7 @@
       {
         "symbol": "EURUSD.a",
         "tf": "1h",
-        "enabled": true,
+        "enabled": false,
         "tradeable": true,
         "control": false,
         "measurable": true,
@@ -541,7 +541,7 @@
         "measurable": true,
         "expected_net_r": -0.0358,
         "total_r_per_year": -34.17,
-        "worst_era_net_r": -0.0643,
+        "worst_era_net_r": -0.0642,
         "best_era_net_r": 0.0092,
         "n": 8825,
         "win_pct": 53.9,
@@ -551,7 +551,7 @@
           "2017-19": -0.0317,
           "2019-21": 0.0092,
           "2021-23": -0.0399,
-          "2023-26": -0.0643
+          "2023-26": -0.0642
         },
         "note": "CONTROL, expected to lose. 5m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0358 R per fill, -34.2 R/yr, drawdown 356.7 R."
       },
@@ -567,7 +567,7 @@
         "worst_era_net_r": -0.0437,
         "best_era_net_r": 0.0883,
         "n": 3269,
-        "win_pct": 55,
+        "win_pct": 55.0,
         "drawdown_r": 72.5,
         "horizon_hours": 24,
         "eras": {
@@ -582,7 +582,7 @@
       {
         "symbol": "GBPUSD.a",
         "tf": "30m",
-        "enabled": true,
+        "enabled": false,
         "tradeable": true,
         "control": false,
         "measurable": true,
@@ -592,7 +592,7 @@
         "best_era_net_r": 0.1445,
         "n": 1609,
         "win_pct": 57.5,
-        "drawdown_r": 23,
+        "drawdown_r": 23.0,
         "horizon_hours": 24,
         "eras": {
           "2017-19": 0.0243,
@@ -606,7 +606,7 @@
       {
         "symbol": "GBPUSD.a",
         "tf": "1h",
-        "enabled": true,
+        "enabled": false,
         "tradeable": true,
         "control": false,
         "measurable": true,
@@ -711,7 +711,7 @@
         "best_era_net_r": -0.0556,
         "n": 9729,
         "win_pct": 53.4,
-        "drawdown_r": 723,
+        "drawdown_r": 723.0,
         "horizon_hours": 24,
         "eras": {
           "2017-19": -0.0784,
@@ -747,7 +747,7 @@
       {
         "symbol": "AUDUSD.a",
         "tf": "30m",
-        "enabled": true,
+        "enabled": false,
         "tradeable": true,
         "control": false,
         "measurable": true,
@@ -771,7 +771,7 @@
       {
         "symbol": "AUDUSD.a",
         "tf": "1h",
-        "enabled": true,
+        "enabled": false,
         "tradeable": true,
         "control": false,
         "measurable": true,
@@ -829,7 +829,7 @@
         "best_era_net_r": 0.2502,
         "n": 21,
         "win_pct": 52.4,
-        "drawdown_r": 5,
+        "drawdown_r": 5.0,
         "horizon_hours": 720,
         "eras": {
           "2017-19": 0.2502,
@@ -843,14 +843,11 @@
     "filter_note": "session filter adopted 2026-09-10: +42% on total R/yr across the four candidate cells, keeps ~90% of trades, replicated 3 of 4 on the 5m/15m holdout. A volatility filter improved R PER FILL more (XAU 1h 0.106 -> 0.201) and was REJECTED: 45% fewer trades left total R/yr below baseline.",
     "clock_note": "The session window is in BROKER SERVER TIME because the stored research bars are (tools/_brokerclock.py). js/chart/scalper.js converts true-UTC bridge bars with the same EET/EEST rule before gating; before 2026-09-10 it compared UTC hours against these numbers and ran a window three hours out.",
     "swap_note": "expected_net_r now INCLUDES overnight financing, which no earlier number did. Gold pays -82.92 points/lot/night long and receives +30.23 short; 11-17% of trades are held overnight so the drag is 4-18% of the edge. Computed as points x point / risk_price -- lot and contract size cancel. expected_net_r_swapfree is the previous, overstated figure, kept so the forward test can be re-scored against either.",
-    "instruments_note": "ALL FIVE instruments with 1m data are enabled at the frames that clear the four tradeable tests. EURUSD/GBPUSD/AUDUSD 30m and 1h were switched on 2026-09-14, after the stop moved to 5.0 ATR and after the 3-decimal price-rounding bug was fixed -- every earlier number for these three instruments was measured through that rounding and was wrong at every timeframe, so this is their first honest measurement. AUDJPY.a and USDCAD.a are NOT here: they have 15m/1h/4h bars but no 1m, and this rule rests pending orders that fill intrabar, so they cannot be scored honestly rather than merely being unmeasured.",
+    "instruments_note": "ALL FIVE instruments with 1m data are enabled, by request. AUDJPY.a and USDCAD.a are NOT here: they have 15m/1h/4h bars but no 1m, and this rule rests pending orders that fill intrabar, so they cannot be scored honestly rather than merely being unmeasured.",
     "quality": {
       "score": "age",
       "meaning": "bars since EMA20 crossed EMA50, on the execution frame; shipped on every ticket",
-      "enforce": true,
-      "max_age": 20,
-      "enforced_where": "tools/scalper.py --notify only. A tradeable cell whose ticket carries age > max_age is JOURNALLED, NOT MESSAGED. The gate is deliberately NOT in sim/strategies/rayo.py: every expected_net_r in this file was measured ungated, and putting it in the rule would invalidate all of them. It is also not a per-cell improvement -- it makes each gold cell individually worse -- so the rule is the wrong place for it on the merits as well.",
-      "caveat": "THE MEASURED BENEFIT IS A QUEUE EFFECT. It comes from a simulated account holding ONE POSITION AT A TIME, where declining a stale-trend ticket leaves the slot free for a fresher one. A reader who takes several of these signals at once is not running the arm that was measured and should not expect the number.",
+      "recommended_max": 20,
       "scope": "Measured at stop 5.0 ATR on 2026-09-14. The stop-4.0 figures this block used to carry are in superseded_stop_4_0 -- the gate's effect DEPENDS ON THE STOP WIDTH and reverses between the two, so a number from one is not evidence about the other.",
       "why": "Per-cell it is not a prediction filter: it fails about half its robustness checks on XAUUSD and passes 9 of 9 on USDJPY. On one account with one position, at stop 5.0: roughly NEUTRAL on the 4-cell set (+20.8% -> +19.6% CAGR, 31.4% -> 31.1% drawdown, P(losing year) 22% -> 19%) and MODESTLY POSITIVE on the 10-cell set (+20.7% -> +23.7% CAGR, drawdown unchanged at ~31.5%, P(losing year) 22% -> 16%). At stop 4.0 the same comparison ran the other way on ten cells (+14.5% -> +7.9%), so this is a property of the pair of settings and not of the gate alone. It is still NOT ENABLED anywhere in the live path.",
       "measured_with": "python tools/scalp_portfolio.py --grid --from 2017-01-01 --to 2026-09-14 --risk 0.02 --equity 10000",
@@ -926,7 +923,7 @@
     "measured_with": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none",
     "measurement": {
       "measured_on": "2026-09-14",
-      "stop_atr": 5,
+      "stop_atr": 5.0,
       "swing": 20,
       "fast": 20,
       "slow": 50,
@@ -947,14 +944,13 @@
         "2023-26"
       ],
       "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none"
-    },
-    "scored_to": "data/scalper_scored.jsonl"
+    }
   },
   "destinations": [
     {
       "id": "d1",
       "channel": "telegram",
-      "label": "\ud83d\ude42 Nur",
+      "label": "🙂 Nur",
       "target": "686269315",
       "enabled": true,
       "kinds": []
@@ -965,7 +961,9 @@
       "label": "Gold group (mine)",
       "target": "-1004443429312",
       "enabled": true,
-      "kinds": []
+      "kinds": [
+        "news"
+      ]
     },
     {
       "id": "d3",

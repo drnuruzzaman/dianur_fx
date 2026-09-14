@@ -81,17 +81,22 @@
   <aside class="rightbar" id="rightbar">
     <div class="side-head">
       <span>Rayo Scalper</span>
-      <button class="rail-tf" id="scMode" title="Click to switch break / fade">BREAK</button>
+      <button class="rail-tf" id="scMode">BREAK</button>
     </div>
     <div class="scalperpanel" id="scalperpanel"></div>
     <div class="side-head">
+      <span class="head-help" data-tip-title="Fear &amp; Greed Index" data-tip-body="Three readings on the instrument and timeframe on screen, each ranked against its own recent history on that same cell. Ranking is what lets gold and the yen be read on one scale." data-tip-note="Context only — nothing here gates a trade, filters a signal or reaches a ticket. 50 means &quot;as usual for this market&quot;, not &quot;flat&quot;.">Fear &amp; Greed Index</span>
+      <button class="rail-tf" id="condTf">—</button>
+    </div>
+    <div class="conditions" id="conditions"></div>
+    <div class="side-head">
       <span>Trend read</span>
-      <button class="rail-tf" id="trSym" title="Read timeframe — changes the chart too">—</button>
+      <button class="rail-tf" id="trSym">—</button>
     </div>
     <div class="trendread" id="trendread"></div>
     <div class="side-head">
       <span>Signal engine</span>
-      <button class="rail-tf" id="sigSym" title="Execution timeframe — changes the chart too">—</button>
+      <button class="rail-tf" id="sigSym">—</button>
     </div>
     <div class="signalpanel" id="signalpanel"></div>
   </aside>

@@ -82,6 +82,37 @@ EXPECTED = {}
 TRADEABLE = set()
 
 
+#: The trend-age gate, read from configs/alerts.json `scalper.quality`.
+#: {} until load_registry() has run, and an empty dict means NO GATE -- a
+#: config that fails to parse must not silently start filtering signals.
+QUALITY = {}
+
+
+def age_gate(t):
+    """Should this ticket be silenced for being a stale trend? (go, why)
+
+    THE GATE IS ON THE MESSAGE, NOT ON THE RULE. `sim/strategies/rayo.py` still
+    proposes the ticket and `--journal` still records it, so the cell keeps
+    being scored on everything it would have taken. Only the Telegram message is
+    withheld. That matters twice over: every expected_net_r in the registry was
+    measured UNGATED, and the gate is not a per-cell improvement anyway -- it
+    makes each gold cell individually worse and earns its place by
+    de-correlating cells in a one-position queue.
+
+    Measured on that queue at stop 5.0, ten tradeable cells: +20.7% -> +23.7%
+    CAGR, P(losing year) 22% -> 16%, drawdown unchanged.
+    """
+    if not QUALITY.get('enforce'):
+        return True, None
+    cap = QUALITY.get('max_age')
+    if cap is None or t.get('age') is None:
+        return True, None
+    if t['age'] <= cap:
+        return True, None
+    return False, ('trend age %d bars > %d -- stale trend, journalled not sent'
+                   % (t['age'], cap))
+
+
 def load_registry(path=None):
     """EXPECTED and TRADEABLE from configs/alerts.json. Returns the watch list.
 
@@ -95,6 +126,9 @@ def load_registry(path=None):
             watch = (json.load(fh).get('scalper') or {}).get('watch') or []
     except (OSError, ValueError):
         return []
+    QUALITY.clear()
+    QUALITY.update((json.load(io.open(cfg, encoding='utf-8')).get('scalper')
+                    or {}).get('quality') or {})
     for c in watch:
         key = (c.get('symbol'), c.get('tf'))
         if c.get('expected_net_r') is not None:
@@ -102,6 +136,15 @@ def load_registry(path=None):
         if c.get('tradeable'):
             TRADEABLE.add(key)
     return watch
+
+def _spec_digits(symbol, tf, default=2):
+    """The instrument's decimal places, for formatting a price as a price."""
+    try:
+        from sim.instruments import spec
+        return int(spec(symbol, tf).get('digits', default))
+    except Exception:                       # noqa: BLE001 -- display must not fail
+        return default
+
 
 # THE RULE LIVES IN sim/strategies/rayo.py, not here. This file is the harness
 # -- fills, the ladder race, expiry, costs -- and a copy of the rule beside a
@@ -135,6 +178,11 @@ def resolve(tk, M, expire_ms, horizon_ms):
     if not touch.size:
         return {'outcome': 'expired', 'r': None, 'end_ms': int(ms[min(fe, len(ms)-1)])}
     f = fs + int(touch[0])
+    # FILL TIME, REPORTED. Overnight financing is charged per night
+    # HELD, and the nights between the ticket being posted and the order
+    # actually filling are not held. tools/scalp_portfolio.py needs the
+    # difference; every other caller ignores the extra key.
+    fill_ms = int(ms[f])
 
     # ---- 2. the race ----
     hs, he = f, i1
@@ -148,15 +196,17 @@ def resolve(tk, M, expire_ms, horizon_ms):
     i_sl = hs + int(sl_hit[0]) if sl_hit.size else None
     i_tp = hs + int(tp_hit[0]) if tp_hit.size else None
     if i_sl is not None and i_tp is not None and i_sl == i_tp:
-        return {'outcome': 'sl', 'r': -1.0, 'ambiguous': True, 'end_ms': int(ms[i_sl])}
+        return {'outcome': 'sl', 'r': -1.0, 'ambiguous': True,
+                'fill_ms': fill_ms, 'end_ms': int(ms[i_sl])}
     if i_sl is not None and (i_tp is None or i_sl < i_tp):
-        return {'outcome': 'sl', 'r': -1.0, 'ambiguous': False, 'end_ms': int(ms[i_sl])}
+        return {'outcome': 'sl', 'r': -1.0, 'ambiguous': False,
+                'fill_ms': fill_ms, 'end_ms': int(ms[i_sl])}
     if i_tp is not None:
         return {'outcome': 'tp%d' % EXIT_TP[0],
                 'r': round(abs(tgt - entry) / risk, 4),
-                'ambiguous': False, 'end_ms': int(ms[i_tp])}
+                'ambiguous': False, 'fill_ms': fill_ms, 'end_ms': int(ms[i_tp])}
     return {'outcome': 'open', 'r': round((C[he - 1] - entry) * side / risk, 4),
-            'ambiguous': False, 'end_ms': int(ms[he - 1])}
+            'ambiguous': False, 'fill_ms': fill_ms, 'end_ms': int(ms[he - 1])}
 
 
 def _safe_print(text):
@@ -216,6 +266,22 @@ def should_notify(key, t, st):
     moved = abs(float(t['entry']) - float(prev.get('entry', 0)))
     if moved > 0.5 * float(t['risk']):
         return True, 'entry moved %.2f (> half the %.2f risk)' % (moved, t['risk'])
+
+    # THE STOP IS PART OF THE TICKET, AND COMPARING ONLY THE ENTRY MISSED IT.
+    # The entry is `swing +/- 0.10 ATR` and does not depend on the stop width,
+    # so when the rule moved from 4.0 to 5.0 ATR on 2026-09-14 every SL and all
+    # three targets moved about 25% -- and this function called those tickets
+    # "unchanged" and sent nothing. A reader holding an order placed from an
+    # older message would have kept a stop the rule no longer asks for, and
+    # would never have been told. A parameter change is exactly when the alert
+    # matters most.
+    prev_sl = prev.get('sl')
+    if prev_sl is None:
+        return True, 'no stop recorded for the last message -- re-announcing'
+    sl_moved = abs(float(t['sl']) - float(prev_sl))
+    if sl_moved > 0.25 * float(t['risk']):
+        return True, ('stop moved %.5g (> a quarter of the %.5g risk)'
+                      % (sl_moved, t['risk']))
     return False, 'unchanged'
 
 
@@ -297,11 +363,15 @@ def do_live(args):
             print('%s: no ticket' % m)
             continue
         t = tk[-1]
-        print('\n%s %s   %s %s %.2f        [%s]'
+        # %.2f IS A GOLD FORMAT. It printed EURUSD entries as "1.09", which
+        # on a 5-digit instrument is not a price. The digits come from the
+        # instrument spec, the same place the chart and the message do.
+        _f = '%%.%df' % _spec_digits(args.symbol, args.tf)
+        print(('\n%s %s   %s %s ' + _f + '        [%s]')
               % (args.symbol, args.tf, t['side'].upper(),
                  t['order'].upper(), t['entry'], m))
-        print('  SL  %.2f' % t['sl'])
-        print('  TP1 %.2f   TP2 %.2f   TP3 %.2f' % tuple(t['tp']))
+        print(('  SL  ' + _f) % t['sl'])
+        print(('  TP1 ' + _f + '   TP2 ' + _f + '   TP3 ' + _f) % tuple(t['tp']))
         print('  bar %s   expires in %d bars' % (t['t'], args.expire))
         print('  YOU place this order. This tool cannot and does not.')
 
@@ -311,6 +381,10 @@ def do_live(args):
                   % (args.symbol, args.tf,
                      ('%+.4f' % EXPECTED[(args.symbol, args.tf)])
                      if (args.symbol, args.tf) in EXPECTED else 'un-measured'))
+        elif args.notify and not age_gate(t)[0]:
+            # SILENCED, NOT SUPPRESSED -- the ticket was printed above and, with
+            # --journal, is recorded. Only the message is withheld.
+            print('  (no message: %s)' % age_gate(t)[1])
         elif args.notify:
             nkey = '%s|%s|%s' % (args.symbol, args.tf, m)
             st = _notify_state()
@@ -366,9 +440,18 @@ def do_live(args):
                     except Exception as exc:                # noqa: BLE001
                         print('  ! notify failed: %s' % exc, file=sys.stderr)
                 # RECORDED AFTER THE ATTEMPT so a failed send is retried next poll.
-                st[nkey] = {'side': t['side'], 'entry': t['entry'],
-                            'at': datetime.now(timezone.utc).isoformat()}
-                _notify_save(st)
+                # NOT AFTER A DRY RUN. `--dry-run` is documented as "print the
+                # message, send nothing", and it fell through to here -- so a
+                # dry run recorded the ticket as announced and the next REAL run
+                # called it unchanged and stayed silent. Previewing a message
+                # was enough to cancel it. Found on 2026-09-14 when a preview of
+                # the corrected 5.0-ATR stops swallowed the announcement of
+                # those very stops.
+                if not args.dry_run:
+                    st[nkey] = {'side': t['side'], 'entry': t['entry'],
+                                'sl': t['sl'], 'risk': t['risk'],
+                                'at': datetime.now(timezone.utc).isoformat()}
+                    _notify_save(st)
 
         if args.journal:
             key = '%s|%s|%s|%s' % (args.symbol, args.tf, m, t['t'])
@@ -413,7 +496,7 @@ def main():
     ap.add_argument('--swing', type=int, default=20)
     ap.add_argument('--fast', type=int, default=20)
     ap.add_argument('--slow', type=int, default=50)
-    ap.add_argument('--stop-atr', type=float, default=4.0)
+    ap.add_argument('--stop-atr', type=float, default=5.0)
     ap.add_argument('--expire', type=int, default=12, help='bars, then cancel')
     # THE SESSION GATE IS OFF BY DEFAULT, matching rayo.DEFAULTS. It is exposed
     # because the +42% R/yr the window measured is only reproducible if this run

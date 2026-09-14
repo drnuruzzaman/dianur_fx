@@ -33,6 +33,7 @@ import { Panels } from './ui/panels.js';
 import { TrendRead, readTfs } from './ui/trendread.js';
 import { SignalPanel } from './ui/signalpanel.js';
 import { ScalperPanel } from './ui/scalperpanel.js';
+import { ConditionsPanel } from './ui/conditionspanel.js';
 import { structuralTrail } from './chart/exittrail.js';
 import { installTips } from './ui/tips.js';
 import { installChat } from './ui/chat.js';
@@ -581,6 +582,7 @@ const trendRead = new TrendRead($('#trendread'), $('#trSym'));
    about the next few bars of the chart you are on, not about context. */
 const signalPanel = new SignalPanel($('#signalpanel'), $('#sigSym'));
 const scalperPanel = new ScalperPanel($('#scalperpanel'), $('#scMode'));
+const conditionsPanel = new ConditionsPanel($('#conditions'), $('#condTf'));
 let panelTick = 0;
 let panelReadTimer = null;
 
@@ -658,6 +660,7 @@ async function loadTrendRead(chart) {
      js/chart/scalper.js for why that is a mirror of the Python and not a
      second rule. */
   scalperPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf), app.spec, tf);
+  conditionsPanel.update(symbol, TF_LABEL[tf] || tf, series.get(tf));
   app.active.draw();
 }
 
@@ -1710,7 +1713,7 @@ function openSymbol(sym) {
  * -- one the chart's, one the panel's -- is how a reader ends up trading a
  * signal computed on a series they were not looking at. */
 function wireRailTf() {
-  for (const id of ['#rpSym', '#trSym', '#sigSym']) {
+  for (const id of ['#rpSym', '#trSym', '#sigSym', '#condTf']) {
     const btn = $(id);
     if (!btn) continue;
     btn.addEventListener('click', (e) => {
@@ -2141,9 +2144,20 @@ const SNAP_PANELS = [
   /* Order follows the rail, top to bottom, so the exported image reads the way
      the screen does. */
   { id: 'scalperpanel', label: 'Rayo Scalper' },
+  /* `lines` OVERRIDES THE GENERIC WALK. Conditions is mostly SVG, and reading
+     its leaves returns the dial's axis ticks as loose numbers -- "0", "25",
+     "50", "75", "100" -- which the pairing step then welds into rows that mean
+     nothing. A panel that cannot be scraped formats itself. */
+  { id: 'conditions', label: 'Fear & Greed Index',
+    lines: () => conditionsPanel.snapshotLines(),
+    art: () => conditionsPanel.snapshotArt() },
   { id: 'trendread', label: 'Trend read' },
   { id: 'signalpanel', label: 'Signal engine' },
-  { id: 'rulepanel', label: 'Donchian rule' },
+  /* THE DONCHIAN RULE PANEL WENT WITH THE RULE. `#rulepanel` is not in
+     index.html any more -- it was removed when the Donchian was retired on
+     2026-09-10 -- so this entry drew a heading with nothing under it for
+     anyone who ticked it. A menu option that exports an empty section is
+     worse than a missing one. */
 ];
 const SNAP_KEY = 'ui.snapPanels';
 /* SCALPER IS IN THE DEFAULT SET, but only for someone who has never chosen.
@@ -2152,7 +2166,7 @@ const SNAP_KEY = 'ui.snapPanels';
    itself to a saved selection is how a shared image grows a section the sender
    did not know it had. */
 const snapSel = () => new Set(load(SNAP_KEY,
-  ['scalperpanel', 'trendread', 'signalpanel', 'rulepanel']));
+  ['scalperpanel', 'conditions', 'trendread', 'signalpanel']));
 
 /* The panels are HTML, the chart is a canvas, and the export has to be ONE
    image. Rather than pull in a DOM-rasteriser, the text is read out of the
@@ -2160,13 +2174,77 @@ const snapSel = () => new Set(load(SNAP_KEY,
    white card instead of the app's dark palette, and drops the controls (a
    timeframe button means nothing in a PNG). */
 function panelLines(id) {
+  const own = SNAP_PANELS.find((p) => p.id === id && p.lines);
+  if (own) return own.lines();
   const host = $('#' + id);
   if (!host) return [];
   const clean = (n) => (n.textContent || '').replace(/\s+/g, ' ').trim();
+
+  /* THE COLOUR WAS IN THE DOM AND WAS BEING THROWN AWAY. The rail paints a
+     value green, pink or dim; the export rendered every one of them in the
+     same grey, so an image of a SELL ticket looked exactly like a BUY. The
+     tone now travels with the text. */
+  const toneOf = (node) => {
+    const c = node.classList;
+    if (c.contains('up')) return 'up';
+    if (c.contains('down')) return 'down';
+    if (c.contains('dim') || c.contains('sc-k') || c.contains('axis-k')) return 'dim';
+    return null;
+  };
+
+  /* A BAR IS A ROW, NOT THREE LEAVES. The leaves walk below would emit the
+     label and the number and silently drop the bar between them -- which is
+     the part that shows the reading rather than stating it. These rows are
+     read whole and their descendants claimed so the walk does not repeat them.
+
+     The geometry comes off the live element's inline style, so the image
+     cannot disagree with the screen about where a fill ends:
+       .axis-fill   width:N%                 -> anchored left, 0..100
+       .sig-fill    width:N%; right|left:50% -> anchored centre, +/- 100 */
+  const barOf = (rowEl) => {
+    const f = rowEl.querySelector('[class*="-fill"]');
+    if (!f) return null;
+    const pct = parseFloat(f.style.width);
+    if (!Number.isFinite(pct)) return null;
+    const centred = f.style.right === '50%' || f.style.left === '50%';
+    const c = f.classList;
+    const tone = (c.contains('pos') || c.contains('hi') || c.contains('up')) ? 'up'
+      : (c.contains('neg') || c.contains('lo') || c.contains('down')) ? 'down' : null;
+    return {
+      pct, tone,
+      anchor: centred ? 'center' : 'left',
+      dir: f.style.right === '50%' ? -1 : 1,
+    };
+  };
+
   const items = [];
   const claimed = new Set();
   for (const node of host.querySelectorAll('*')) {
     if (claimed.has(node) || node.closest('button')) continue;
+
+    if (node.classList.contains('sig-row') || node.classList.contains('axis')) {
+      const leaves = [...node.querySelectorAll('*')]
+        .filter((n) => !n.children.length && clean(n));
+      for (const kid of node.querySelectorAll('*')) claimed.add(kid);
+      if (!leaves.length) continue;
+      const vNode = leaves.length > 1 ? leaves[leaves.length - 1] : null;
+      items.push({
+        row: true,
+        k: clean(leaves[0]),
+        v: vNode ? clean(vNode) : null,
+        tone: vNode ? toneOf(vNode) : null,
+        bar: barOf(node),
+      });
+      continue;
+    }
+    /* The end captions sit BESIDE the bar row, not inside it, so they arrive
+       as their own item and are drawn under the bar they belong to. */
+    if (node.classList.contains('axis-ends')) {
+      const two = [...node.children].map(clean);
+      for (const kid of node.querySelectorAll('*')) claimed.add(kid);
+      if (two.length === 2) items.push({ endsOnly: two });
+      continue;
+    }
     /* `snap-line` MARKS PROSE. The leaves-only walk below is right for the
        label/value panels and wrong for a sentence: the scalper's rationale
        wraps its levels in <b>, so the walk skipped the sentence (it has element
@@ -2180,45 +2258,183 @@ function panelLines(id) {
     }
     if (node.children.length) continue;                 // leaves only
     const t = clean(node);
-    if (t) items.push({ t, prose: false });
+    /* THE ROW A LEAF BELONGS TO IS IN THE DOM, and pairing adjacent leaves
+       threw that away. `Trend continuation - London` is a standalone note with
+       no value; blind pairing welded it to the NEXT row's timeframe and every
+       row after it shifted by one, so "Structure", "Invalidation" and
+       "Risk : reward" -- all labels -- were rendered in the value column while
+       their values sat in the label column.
+
+       A ROW IS THE NEAREST ANCESTOR HOLDING TWO OR MORE TEXT LEAVES. Not "the
+       direct child of the panel" -- that was the first fix and it was wrong,
+       because the rows sit under group wrappers (`tr-rows > tr-row`,
+       `tr-facts > tr-fact`, `sig-stats > sig-stat`), so walking that far
+       collapsed every timeframe and every fact into one enormous line.
+
+       Counting leaves works at any depth and needs no list of class names to
+       stay in step with the panels: `tr-mark` and `tr-state` hold one leaf
+       each and are passed over; `tr-row` holds two and stops the walk. A leaf
+       whose parent is the panel itself -- the Trend read note, the Signal
+       engine verdict -- has no such ancestor and stays a row of its own. */
+    if (t) {
+      const leaves = (el) => (el.children.length
+        ? [...el.querySelectorAll('*')].filter((n) => !n.children.length && clean(n)).length
+        : (clean(el) ? 1 : 0));
+      let rowEl = node;
+      while (rowEl.parentElement && rowEl.parentElement !== host
+             && leaves(rowEl) < 2) {
+        rowEl = rowEl.parentElement;
+      }
+      items.push({ t, tone: toneOf(node), prose: false, rowEl });
+    }
   }
-  /* the panels render label/value as adjacent leaves; pair them back up so the
-     caption reads as rows rather than a column of orphaned words. Prose never
-     pairs -- two sentences welded together read as neither. */
   const rows = [];
   for (let i = 0; i < items.length; i++) {
-    if (items[i].prose) { rows.push(items[i]); continue; }
-    const nxt = items[i + 1];
-    if (nxt && !nxt.prose) { rows.push({ t: `${items[i].t}   ${nxt.t}`, prose: false }); i++; }
-    else rows.push(items[i]);
+    const it = items[i];
+    if (it.prose || it.row || it.endsOnly) { rows.push(it); continue; }
+    const group = [it];
+    while (i + 1 < items.length && items[i + 1].rowEl === it.rowEl
+           && !items[i + 1].prose && !items[i + 1].row) {
+      group.push(items[++i]);
+    }
+    const last = group[group.length - 1];
+    /* THE LABEL KEEPS ITS OWN TONE WHEN IT HAS ONE. "SELL STOP" is the
+       headline of the ticket and is pink in the rail, but it is the LABEL of
+       its pair, and inking every label grey rendered the loudest thing in the
+       panel as furniture. Only up/down carry over -- a label that is merely
+       `dim` stays label-coloured. */
+    rows.push(group.length === 1
+      ? { k: it.t, kTone: it.tone, tone: it.tone }
+      : { k: it.t, kTone: it.tone,
+          v: group.slice(1).map((g) => g.t).join(' '), tone: last.tone });
   }
   return rows;
 }
 
 /**
- * Fit the rows to the caption column: clip a label/value row, WRAP a sentence.
+ * Rasterise an SVG element for the canvas caption.
+ *
+ * encodeURIComponent, NOT btoa. The dial carries no non-ASCII today, but a
+ * base64 path throws on the first accented character anybody adds to a label,
+ * and it throws at export time -- long after the change that caused it.
+ *
+ * Resolves to null rather than rejecting: a caption that loses its picture is
+ * a smaller failure than a Save button that silently does nothing.
+ */
+function svgToImage(svg, w, h) {
+  return new Promise((resolve) => {
+    let url;
+    try {
+      const clone = svg.cloneNode(true);
+      clone.setAttribute('width', String(w));
+      clone.setAttribute('height', String(h));
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      url = 'data:image/svg+xml;charset=utf-8,'
+        + encodeURIComponent(new XMLSerializer().serializeToString(clone));
+    } catch (err) {
+      resolve(null);
+      return;
+    }
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => resolve(null);
+    im.src = url;
+  });
+}
+
+/** Canvas has no rounded rect on older engines; this one is two lines. */
+function roundRect(x, px, py, w, h, r) {
+  const rr = Math.min(r, h / 2, Math.abs(w) / 2);
+  x.beginPath();
+  x.moveTo(px + rr, py);
+  x.arcTo(px + w, py, px + w, py + h, rr);
+  x.arcTo(px + w, py + h, px, py + h, rr);
+  x.arcTo(px, py + h, px, py, rr);
+  x.arcTo(px, py, px + w, py, rr);
+  x.closePath();
+  x.fill();
+}
+
+/* EXPORT INK, NOT THE APP PALETTE. The caption is drawn on a white card and
+   the rail's colours are chosen for a near-black background: brand lime
+   (#93C90F) is barely legible on white and the pink vibrates. Same hues,
+   pulled down to something that reads as print. */
+const SNAP_INK = {
+  head: '#171C8F',
+  label: '#36434F',
+  base: '#0B1A2B',
+  up: '#2F6B0A',
+  down: '#A81059',
+  /* PROSE IS THE BULK OF THE CAPTION AND WAS THE LIGHTEST THING ON IT. The
+     rationale sentences were drawn in `dim` (#8093a6), chosen as a muted grey
+     on white and washed out on the #F4F6F8 card -- several lines of the most
+     explanatory text in the image were the hardest to read. Body copy is now
+     near-black and only genuinely secondary marks stay light. */
+  prose: '#2F3A44',
+  dim: '#5F6C77',
+  /* Lifted from the Strategy Replay's light palette so the two exports match. */
+  panel: '#F4F6F8',
+  rule: '#D6DBE0',
+  note: '#5F6C77',
+};
+
+/**
+ * Fit rows to the caption column: clip a label/value row, WRAP a sentence.
  *
  * Clipping was the right call for two-word rows and is the wrong one for the
  * rationale -- an explanation that ends in an ellipsis explains nothing. Done
  * here rather than at draw time so the image is sized for the wrapped height
  * and the panels cannot run off the bottom.
  */
-function layoutLines(rows, ctx, maxW) {
+function layoutLines(rows, ctx, maxW, tabW) {
+  const clip = (t, w) => {
+    let out = t;
+    while (out.length && ctx.measureText(out).width > w) out = out.slice(0, -1);
+    return out === t ? t : out.slice(0, -1) + '\u2026';
+  };
   const out = [];
   for (const r of rows) {
-    if (!r.prose) {
-      let t = r.t;
-      while (t.length && ctx.measureText(t).width > maxW) t = t.slice(0, -1);
-      out.push(t === r.t ? t : t.slice(0, -1) + '…');
+    if (r.prose) {
+      let line = '';
+      for (const word of r.t.split(' ')) {
+        const next = line ? line + ' ' + word : word;
+        if (line && ctx.measureText(next).width > maxW) {
+          out.push({ prose: true, t: line });
+          line = word;
+        } else line = next;
+      }
+      if (line) out.push({ prose: true, t: line });
       continue;
     }
-    let line = '';
-    for (const word of r.t.split(' ')) {
-      const next = line ? `${line} ${word}` : word;
-      if (line && ctx.measureText(next).width > maxW) { out.push(line); line = word; }
-      else line = next;
-    }
-    if (line) out.push(line);
+    /* A LABEL TOO LONG FOR THE COLUMN GETS THE WHOLE WIDTH INSTEAD OF A
+       HAIRCUT. The tab stop is what makes the short rows scan; imposing it on
+       a long one turned "Trend continuation - London" into
+       "Trend continuatio...", which is less readable than the ragged line it
+       replaced. Wide rows flow: label, then value right after it. */
+    if (r.endsOnly) { out.push({ endsOnly: r.endsOnly }); continue; }
+    /* THE VALUE IS RIGHT-ALIGNED TO THE COLUMN EDGE, not placed at a tab stop.
+       A fixed stop only works while every label is shorter than it, and the
+       Signal engine's footer labels are not -- "Accuracy (walk-forward,
+       n=1235)" overran it, so those rows fell back to flowing inline and
+       stopped lining up with everything above them. Anchoring the number to
+       the right edge aligns every row whatever its label costs, and it is
+       what the bar rows already did. */
+    const k = r.k || '';
+    const v = r.v == null ? null : String(r.v);
+    const vw = v == null ? 0 : ctx.measureText(v).width;
+    out.push({
+      k: clip(k, maxW - vw - 16),
+      kTone: (r.kTone === 'up' || r.kTone === 'down') ? r.kTone : null,
+      v,
+      tone: r.tone || null,
+      bar: r.bar || null,
+    });
+    /* A GENERATOR THAT SUPPLIES ITS OWN ENDS GETS THE SAME TREATMENT AS THE
+       DOM WALK. The index panel returns `ends` on the row because that is how
+       knows them; the walk finds them as a separate sibling element. Both end
+       up as one `endsOnly` line under the bar, so there is a single thing for
+       the renderer to draw. */
+    if (r.bar && r.ends && r.ends[0]) out.push({ endsOnly: r.ends });
   }
   return out;
 }
@@ -2235,17 +2451,41 @@ function snapshotWithInfo(c, chosen) {
 
   return new Promise((resolve) => {
     const img = new Image();
-    img.onload = () => {
-      const PAD = 28, COLW = 460, TITLE = 30, LINE = 26;
+    img.onload = async () => {
+      const PAD = 28, COLW = 460, TITLE = 34, LINE = 26;
+      /* THE VALUE COLUMN IS A TAB STOP, not three spaces after the label.
+         Space padding only lines up when every label is the same length --
+         "SL" and "Participation" are not -- so the old caption stair-stepped
+         its way down the page. */
+      const TAB = 176;
+      const VALW = 56;                       // right-aligned number column
       /* Measured with the SAME font the draw loop uses, or the wrap decided
          here and the pixels drawn below would disagree. */
       const meas = el('canvas').getContext('2d');
       meas.font = '15px "Roboto Mono", ui-monospace, monospace';
-      const blocks = wanted.map((p) => ({
-        label: p.label,
-        lines: layoutLines(panelLines(p.id), meas, COLW - PAD * 2),
-      }));
-      const needed = blocks.reduce((a, b) => a + TITLE + b.lines.length * LINE + PAD, PAD);
+      /* ART IS FETCHED BEFORE ANY MEASURING. The caption's height is decided
+         up front so the panels cannot run off the bottom, and a picture whose
+         size arrives later would break that -- so the raster happens here,
+         not at draw time. */
+      const blocks = [];
+      for (const p of wanted) {
+        const lines = layoutLines(panelLines(p.id), meas, COLW - PAD * 2, TAB);
+        let art = null;
+        if (p.art) {
+          const a = p.art();
+          if (a && a.svg) {
+            const aw = Math.min(COLW - PAD * 2, 300);
+            const ah = Math.round((aw * a.h) / a.w);
+            const im = await svgToImage(a.svg, aw, ah);
+            if (im) art = { im, w: aw, h: ah };
+          }
+        }
+        if (lines.length || art) blocks.push({ label: p.label, lines, art });
+      }
+      const lineH = (ln) => (ln.endsOnly ? 18 : LINE);
+      const needed = blocks.reduce(
+        (a, b) => a + TITLE + (b.art ? b.art.h + 6 : 0)
+          + b.lines.reduce((t, ln) => t + lineH(ln), 0) + PAD, PAD);
       const w = img.width + COLW;
       const h = Math.max(img.height, needed);
 
@@ -2256,21 +2496,109 @@ function snapshotWithInfo(c, chosen) {
       x.fillRect(0, 0, w, h);
       x.drawImage(img, 0, 0);
 
+      /* THE CAPTION IS A CARD, not text floating on the same white as the
+         chart. Same panel grey the Strategy Replay export uses in light mode
+         (#F4F6F8 on #D6DBE0 rules), so the two exported artefacts from this
+         app look like they came from the same app.
+
+         FULL HEIGHT, and the chart is shorter than the caption whenever
+         enough panels are ticked -- a card that stopped at the chart's bottom
+         edge would read as a rendering fault rather than a choice. */
+      x.fillStyle = SNAP_INK.panel;
+      x.fillRect(img.width, 0, w - img.width, h);
+
+      /* THE SEAM, now the edge of the card rather than a line floating in the
+         gutter: with a background behind the caption the boundary is where
+         the colour changes, and the rule belongs on it. */
+      x.strokeStyle = SNAP_INK.rule;
+      x.lineWidth = 2;
+      x.beginPath();
+      x.moveTo(img.width, 0);
+      x.lineTo(img.width, h);
+      x.stroke();
+      x.lineWidth = 1;
+
       let y = PAD;
       const left = img.width + PAD;
       for (const b of blocks) {
-        x.fillStyle = '#0b1a2b';
-        x.font = '600 19px "Roboto Mono", ui-monospace, monospace';
-        x.fillText(b.label, left, y + 14);
-        x.strokeStyle = '#c9d6e4';
+        x.fillStyle = SNAP_INK.head;
+        x.font = '700 19px "Roboto Mono", ui-monospace, monospace';
+        x.fillText(b.label.toUpperCase(), left, y + 14);
+        x.strokeStyle = SNAP_INK.rule;
         x.beginPath();
-        x.moveTo(left, y + 24.5); x.lineTo(w - PAD, y + 24.5);
+        x.moveTo(left, y + 26.5); x.lineTo(w - PAD, y + 26.5);
         x.stroke();
         y += TITLE;
-        x.font = '15px "Roboto Mono", ui-monospace, monospace';
+        if (b.art) {
+          /* Centred in the column: the dial is a figure, and a figure hard
+             against the left margin reads as another row of the table. */
+          x.drawImage(b.art.im,
+                      left + ((COLW - PAD * 2) - b.art.w) / 2, y, b.art.w, b.art.h);
+          y += b.art.h + 6;
+        }
         for (const line of b.lines) {
-          x.fillStyle = '#33475b';
-          x.fillText(line, left, y + 14);      // already fitted by layoutLines
+          if (line.endsOnly) {
+            /* Tiny captions under the bar, at its two ends -- the same words
+               the rail prints, so a reader knows which way the bar runs. */
+            x.font = '12px "Roboto Mono", ui-monospace, monospace';
+            x.fillStyle = SNAP_INK.note;
+            const bx = left + TAB;
+            const bw = (COLW - PAD * 2) - TAB - VALW;
+            x.textAlign = 'left';
+            x.fillText(line.endsOnly[0], bx, y + 8);
+            x.textAlign = 'right';
+            x.fillText(line.endsOnly[1], bx + bw, y + 8);
+            x.textAlign = 'left';
+            y += 18;
+            continue;
+          }
+          if (line.prose) {
+            x.font = '15px "Roboto Mono", ui-monospace, monospace';
+            x.fillStyle = SNAP_INK.prose;
+            x.fillText(line.t, left, y + 14);
+            y += LINE;
+            continue;
+          }
+          const bold = line.kTone ? '700 ' : '';
+          x.font = bold + '15px "Roboto Mono", ui-monospace, monospace';
+          x.fillStyle = line.kTone ? SNAP_INK[line.kTone] : SNAP_INK.label;
+          x.fillText(line.k, left, y + 14);
+          if (line.bar) {
+            /* label | bar | number, exactly the rail's layout. The number is
+               right-aligned so a column of them reads as a column. */
+            const bx = left + TAB;
+            const bw = (COLW - PAD * 2) - TAB - VALW;
+            const by = y + 6;
+            const BH = 9;
+            /* Was #eef2f6, chosen against a white page. On the #F4F6F8 card
+               an empty track all but vanished, so a bar at 4% looked like no
+               bar at all rather than a small one. */
+            x.fillStyle = '#e2e7ec';
+            roundRect(x, bx, by, bw, BH, 4.5);
+            x.fillStyle = SNAP_INK[line.bar.tone] || SNAP_INK.dim;
+            if (line.bar.anchor === 'center') {
+              const mid = bx + bw / 2;
+              const w = Math.max(2, (line.bar.pct / 100) * bw);
+              roundRect(x, line.bar.dir < 0 ? mid - w : mid, by, w, BH, 4.5);
+              x.strokeStyle = '#c9d6e4';
+              x.beginPath();
+              x.moveTo(mid + 0.5, by - 2); x.lineTo(mid + 0.5, by + BH + 2);
+              x.stroke();
+            } else {
+              roundRect(x, bx, by, Math.max(2, (line.bar.pct / 100) * bw), BH, 4.5);
+            }
+            x.font = '700 15px "Roboto Mono", ui-monospace, monospace';
+            x.fillStyle = SNAP_INK[line.tone] || SNAP_INK.base;
+            x.textAlign = 'right';
+            x.fillText(line.v == null ? '' : line.v, left + (COLW - PAD * 2), y + 14);
+            x.textAlign = 'left';
+          } else if (line.v != null) {
+            x.font = '700 15px "Roboto Mono", ui-monospace, monospace';
+            x.fillStyle = SNAP_INK[line.tone] || SNAP_INK.base;
+            x.textAlign = 'right';
+            x.fillText(line.v, left + (COLW - PAD * 2), y + 14);
+            x.textAlign = 'left';
+          }
           y += LINE;
         }
         y += PAD;
@@ -2503,6 +2831,11 @@ const tick = {
        replace the as-of read with today's, banner and all. */
     if (!asOfCut(app.active).scrolled) {
       trendRead.repaint(app.active.bars);
+      /* THE DIAL FOLLOWS PRICE. Its direction axis is computed from the live
+         close against the last closed bar's trend and range, so it has
+         something new to say on every tick -- unlike the signal engine below,
+         which is throttled because it does not. */
+      conditionsPanel.repaint(app.active.bars);
       panelTick = (panelTick + 1) % 4;
       if (panelTick === 0) signalPanel.repaint(app.active.bars);
     }

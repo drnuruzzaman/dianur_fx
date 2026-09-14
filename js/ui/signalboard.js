@@ -37,8 +37,10 @@
  */
 
 import { api } from '../api.js';
-import { loadScalperCells } from '../chart/graded.js';
-import { ticket as scalpTicket, orderPhrase } from '../chart/scalper.js';
+import { gated, loadGate, loadMeasurement, loadScalperCells } from '../chart/graded.js';
+import { MIN_LIVE_N, loadScored } from '../chart/scored.js';
+import { attach as hoverCard } from './hovercard.js';
+import { ticket as scalpTicket, orderPhrase, STOP_ATR } from '../chart/scalper.js';
 import { TF, el, load, num, px, relTime, save, stamp } from '../util.js';
 
 const ALERTS = 'configs/alerts.json';
@@ -186,6 +188,147 @@ function windowCell(r) {
 }
 
 /** Digits worth showing: gold moves in cents, yen in tenths of a pip. */
+/**
+ * The `Live` cell: what this cell has done, or how far off saying so it is.
+ *
+ * THE COUNT IS THE POINT BELOW THE FLOOR. A mean over three trades is not a
+ * worse estimate of the edge, it is not an estimate of the edge, and rendering
+ * it next to a nine-year figure invites precisely the comparison it cannot
+ * support. So under MIN_LIVE_N this shows `3 fills` -- true, useful, and
+ * impossible to misread as performance.
+ */
+/* THE VOCABULARY, IN ONE PLACE. Five words describe a ticket's whole life and
+   none of them mean anything on their own -- "expired" sounds like a loss,
+   "open" sounds like an opportunity, and "fill" is the only one that can carry
+   a result. Defining them separately on each surface is how two surfaces end up
+   defining them differently. */
+const WORDS = {
+  posted: 'POSTED — the rule proposed a pending order at a price away from the '
+        + 'market. Nothing has been risked yet; it reposts on nearly every bar '
+        + 'until something happens to it.',
+  fill: 'FILL — price traded through the entry and the order opened. Only a '
+      + 'fill can have a result, so every average on this board is over fills '
+      + 'and nothing else.',
+  expired: 'EXPIRED — price never reached the entry within the 12-bar expiry '
+         + 'window, so the order was cancelled. NOT a loss: no position ever '
+         + 'existed. About half of all tickets end this way, which is normal '
+         + 'for a resting-order rule and not a sign anything is wrong.',
+  won: 'WON — the fill reached the first target (0.9R) before the stop.',
+  stopped: 'STOPPED — the fill reached the stop first. When a single 1m bar '
+         + 'contains both the stop and the target, the 1m bar cannot say which '
+         + 'came first and it is scored as the LOSS.',
+  open: 'STILL OPEN — the order filled and has reached neither the target nor '
+      + 'the stop yet. It has no result, so it is counted but excluded from '
+      + 'every average until it ends.',
+  none: 'NONE FILLED — this cell has posted tickets and not one of them opened; '
+      + 'they all expired. Nothing was risked and there is nothing to score.',
+  never: 'No ticket from this cell has been scored under the current rule yet. '
+       + 'That means the rule changed recently or the cell has not signalled, '
+       + 'not that it lost.',
+};
+
+/** The lifecycle in order -- the sentence that makes the five words cohere.
+ *
+ * TWO CASINGS, ON PURPOSE. The tooltip version shouts the five terms because
+ * they are the thing being defined; the strip version is a sentence a reader
+ * skims, and `.toLowerCase()` on the first was not the answer -- it produced
+ * "...expires. a fill ends...", lowercasing the start of the second sentence. */
+const LIFECYCLE = 'A ticket is POSTED, then either FILLS or EXPIRES. '
+  + 'A fill ends WON, STOPPED, or is STILL OPEN.';
+const LIFECYCLE_INLINE = 'a ticket is posted, then either fills or expires; '
+  + 'a fill ends won, stopped, or still open';
+
+function liveCell(scored, c, expected) {
+  const v = scored ? scored.byCell.get(`${c.symbol}|${c.tf}`) : null;
+  const has = !!(v && (v.n || v.expired || v.open));
+
+  let text = '—';
+  let cls = 'dim';
+  if (has && v.mean !== null) {
+    text = `${v.mean >= 0 ? '+' : ''}${v.mean.toFixed(4)} (${v.n})`;
+    cls = v.mean >= 0 ? 'up' : 'down';
+  } else if (has && v.n) {
+    text = `${v.n} fill${v.n === 1 ? '' : 's'}`;
+  } else if (has && v.open) {
+    text = `${v.open} open`;
+  } else if (has && v.expired) {
+    text = 'none filled';
+  }
+
+  const td = el('td', { class: `${cls} sb-why`, text });
+  /* aria-label, NOT title. A `title` here would make the OS draw its own plain
+     tooltip on top of the card. */
+  td.setAttribute('aria-label', `live record for ${c.symbol} ${c.tf}`);
+  hoverCard(td, () => liveCard(c, v, expected));
+  return td;
+}
+
+/**
+ * The `Live` hover: the ticket lifecycle as a table, for one cell.
+ *
+ * THE ROWS ARE ORDERED AS THE LIFECYCLE RUNS -- posted, filled, expired, then
+ * how the fills ended -- because the counts only mean anything in that order.
+ * Read top to bottom it answers "what happened to everything this cell
+ * proposed", which is the question a bare average cannot answer at all.
+ */
+function liveCard(c, v, expected) {
+  const box = el('div', { class: 'hc' });
+  box.append(el('div', { class: 'hc-head' },
+    el('b', { text: `${c.symbol} ${c.tf}` }),
+    el('span', { class: 'dim', text: 'live record' })));
+
+  if (!v || (!v.n && !v.expired && !v.open)) {
+    box.append(el('div', { class: 'hc-empty', text: WORDS.never }));
+    return box;
+  }
+
+  const posted = v.n + v.expired + v.open;
+  const rows = [
+    /* NOT "posted". The rule reposts the same pending order on nearly every
+       bar, so tickets POSTED runs to thousands; the scorer takes ONE AT A TIME
+       and skips the reposts, and this is that count. Calling it "posted" would
+       overstate the sample by two orders of magnitude. */
+    ['tickets taken', posted,
+     'one live order at a time — reposts of the same idea are skipped'],
+    ['— filled', v.n + v.open, 'price traded through the entry'],
+    ['— expired', v.expired, 'entry never reached; no position existed'],
+    [null, null, null],
+    ['won', v.wins, 'reached the 0.9R target first'],
+    ['stopped', Math.max(0, v.n - v.wins), 'reached the stop first'],
+    ['still open', v.open, 'filled, not finished — excluded from the average'],
+  ];
+  const t = el('table', { class: 'hc-t' });
+  for (const [k, n, why] of rows) {
+    if (k === null) { t.append(el('tr', { class: 'hc-rule' }, el('td', { colspan: '3' }))); continue; }
+    t.append(el('tr', {},
+      el('td', { class: 'hc-k', text: k }),
+      el('td', { class: 'hc-n', text: String(n) }),
+      el('td', { class: 'hc-y', text: why })));
+  }
+  box.append(t);
+
+  const t2 = el('table', { class: 'hc-t hc-t2' });
+  t2.append(el('tr', {},
+    el('td', { class: 'hc-k', text: 'mean net R' }),
+    el('td', { class: 'hc-n' + (v.mean === null ? ' dim' : (v.mean >= 0 ? ' up' : ' down')),
+               text: v.mean === null ? 'withheld'
+                     : `${v.mean >= 0 ? '+' : ''}${v.mean.toFixed(4)}` }),
+    el('td', { class: 'hc-y',
+               text: v.mean === null
+                 ? `needs ${MIN_LIVE_N} fills, has ${v.n}`
+                 : `over ${v.n} fills, ${v.winPct.toFixed(0)}% won` })));
+  t2.append(el('tr', {},
+    el('td', { class: 'hc-k', text: 'registered' }),
+    el('td', { class: 'hc-n',
+               text: Number.isFinite(expected)
+                 ? `${expected >= 0 ? '+' : ''}${expected.toFixed(4)}` : '—' }),
+    el('td', { class: 'hc-y', text: 'median of four sub-eras, same cost basis' })));
+  box.append(t2);
+
+  box.append(el('div', { class: 'hc-foot', text: LIFECYCLE }));
+  return box;
+}
+
 const digitsFor = (sym) => (/JPY/i.test(sym) ? 3 : /XAU|XAG/i.test(sym) ? 2 : 5);
 
 export class SignalBoard {
@@ -195,6 +338,17 @@ export class SignalBoard {
        retired Donchian. `scalp` is the board's only state. */
     this.scalp = new Map();     // 'SYM|tf' -> live Rayo ticket
     this.scalpCells = null;
+    /* NO GATE UNTIL THE CONFIG SAYS SO. An unloaded gate must not hide rows. */
+    this.gate = { enforce: false, maxAge: null };
+    loadGate().then((g) => { this.gate = g; });
+    /* THE FORWARD RECORD, filtered to the stop the registry was measured at so
+       the board never shows the old rule's outcomes against the new rule's
+       expectation. Null until it lands; the board paints without it. */
+    this.scored = null;
+    loadMeasurement()
+      .then((m) => loadScored(m.stopAtr))
+      .then((sc) => { this.scored = sc; })
+      .catch(() => { this.scored = null; });
     /* Off by default: the journalled and control cells are part of the
        forward test and hiding them by default would make the board look
        like a list of recommendations. */
@@ -303,6 +457,13 @@ export class SignalBoard {
         const t = this.scalp.get(`${c.symbol}|${c.tf}`);
         return c.tradeable && t && !t.error && t.side;
       });
+      /* THE GATE IS ON THE HEADLINE, because the headline answers "what is
+         there to do right now" and a gated ticket is one nothing is sent for.
+         Counting all ten while Telegram sends five would make this line a
+         different claim from the one the alerts make. */
+      const sending = acting.filter(
+        (c) => !gated(this.gate, this.scalp.get(`${c.symbol}|${c.tf}`)));
+      const held = acting.length - sending.length;
 
       /* ---- the one line that matters, pinned ----
          A COUNT AND THE NEAREST ONE, not a list of all of them. This line was
@@ -317,7 +478,7 @@ export class SignalBoard {
 
          What varies, and so what is worth pinning, is which ticket is CLOSE TO
          FIRING. Distance is in ATR so gold and the yen are comparable. */
-      const near = acting
+      const near = sending
         .map((c) => {
           const t = this.scalp.get(`${c.symbol}|${c.tf}`);
           const d = (t && t.now && t.atr > 0)
@@ -326,9 +487,9 @@ export class SignalBoard {
         })
         .sort((a, b) => a.d - b.d)[0];
 
-      head.append(acting.length
+      head.append(sending.length
         ? el('div', { class: 'sb-call' },
-            el('span', { class: 'sb-k', text: `${acting.length} resting` }),
+            el('span', { class: 'sb-k', text: `${sending.length} resting` }),
             ...(near && Number.isFinite(near.d) ? [
               el('span', { class: 'sb-k', text: 'nearest' }),
               el('b', { class: near.t.side === 'sell' ? 'down' : 'up',
@@ -342,12 +503,23 @@ export class SignalBoard {
               el('span', { class: 'dim',
                            text: `${near.d.toFixed(2)} ATR away` }),
             ] : []),
+            ...(held ? [el('span', {
+              class: 'dim',
+              title: `The trend-age gate is on: a ticket whose EMA20/50 cross is `
+                     + `more than ${this.gate.maxAge} bars old is journalled, not `
+                     + `sent. Measured on a one-position account: +20.7% to `
+                     + `+23.7% CAGR, chance of a losing year 22% to 16%.`,
+              text: `${held} held back (stale trend)` })] : []),
             el('span', { class: 'dim',
                          text: '— pending orders, not positions. One at a time.' }))
         : el('div', { class: 'sb-call dim',
                       text: this.busy ? 'computing tickets…'
-                                      : 'no tradeable cell has a ticket — outside the '
-                                        + 'session, or no trend to join' }));
+                            : acting.length
+                              ? `all ${acting.length} tradeable tickets are held back `
+                                + `by the trend-age gate (> ${this.gate.maxAge} bars `
+                                + `since the cross)`
+                              : 'no tradeable cell has a ticket — outside the '
+                                + 'session, or no trend to join' }));
 
       const btn = (label, on, fn) => el('button', {
         class: 'sb-btn' + (on ? ' on' : ''), onclick: fn,
@@ -395,19 +567,63 @@ export class SignalBoard {
           el('span', { class: 'sb-sub-note',
             text: 'pending orders — fills only if price trades through the entry. '
                   + 'Greyed rows are journalled, not traded.' })));
+
+        /* WHAT HAS ACTUALLY HAPPENED, IN COUNTS. Counts are honest at any
+           sample size -- they do not pretend to estimate anything -- which is
+           why this strip ships even though the per-cell averages beside it are
+           still withheld. `expired` is deliberately shown: half of all tickets
+           never fill, and a reader who does not know that reads the fill count
+           as the signal count. */
+        if (this.scored && this.scored.rows.length) {
+          const t = this.scored.totals;
+          const when = this.scored.since
+            ? new Date(this.scored.since).toISOString().slice(0, 10) : null;
+          const NLc = String.fromCharCode(10);
+          wrap.append(el('div', { class: 'sb-scored' },
+            el('span', { class: 'sb-k',
+                         title: LIFECYCLE + NLc + NLc + WORDS.posted + NLc + NLc
+                                + WORDS.fill + NLc + NLc + WORDS.expired,
+                         text: 'forward record' }),
+            when ? el('span', { class: 'dim',
+                                title: 'The first ticket scored under the '
+                                       + 'CURRENT rule. Earlier tickets were '
+                                       + 'posted under a different stop width '
+                                       + 'and are not pooled with these.',
+                                text: `since ${when}` }) : null,
+            el('b', { class: 'up', title: WORDS.won, text: `${t.tp} won` }),
+            el('b', { class: 'down', title: WORDS.stopped,
+                      text: `${t.sl} stopped` }),
+            el('span', { class: 'dim', title: WORDS.expired,
+                         text: `${t.expired} expired` }),
+            el('span', { class: 'dim', title: WORDS.open,
+                         text: `${t.open} still open` }),
+            el('span', { class: 'dim', title: LIFECYCLE,
+                         text: '— ' + LIFECYCLE_INLINE })));
+        }
         const SC = [
           ['Symbol', 'Broker ticker'],
           ['TF', 'Timeframe. Greyed rows are journalled, not traded -- either controls (5m, negative on every instrument) or cells too close to the spread to trust (15m)'],
           ['Expected', 'Pre-registered net R per fill: the MEDIAN of four '
                      + 'sub-eras, not the best of them'],
+          ['Live', 'What this cell has actually done since the current rule was '
+                 + 'registered, on the same cost basis as Expected. '
+                 + LIFECYCLE + ' '
+                 + `The AVERAGE is withheld until ${MIN_LIVE_N} fills, because one `
+                 + 'winning trade reads as beating the backtest tenfold and '
+                 + 'means one trade won -- until then the cell shows how many '
+                 + 'fills it has'],
           ['Order', 'A pending order, and where it rests relative to the market. '
                   + 'STOP joins the break, LIMIT fades it -- neither reverses the '
                   + 'side. Hover a cell for that ticket in words'],
+          ['Age', 'Bars since EMA20 crossed EMA50 on this frame. Above the '
+                  + 'configured limit the alert is withheld -- a stale trend is '
+                  + 'not a worse trade on its own, it is one more likely to be '
+                  + 'the trade another cell is already in'],
           ['Entry', 'Fills only if price trades through this within 12 bars'],
           ['To trigger', 'How far price must travel to fill this order, in ATR. '
                        + 'In ATR so instruments are comparable -- 0.2 is close, '
                        + '1.0 probably expires unfilled'],
-          ['SL', '4 ATR from the entry — that is 1R'],
+          ['SL', `${STOP_ATR} ATR from the entry — that is 1R`],
           ['TP1', 'The rung the measurement exits on (0.9R)'],
           ['TP2', 'Drawn, not measured as an exit'],
           ['TP3', 'Drawn, not measured as an exit'],
@@ -429,7 +645,7 @@ export class SignalBoard {
               el('td', { class: 'sym', text: c.symbol }),
               el('td', { text: c.tf }),
               el('td', { class: 'dim', text: exp }),
-              el('td', { class: 'dim', colspan: '8',
+              el('td', { class: 'dim', colspan: '10',
                          text: x ? x.error : '…' })));
             continue;
           }
@@ -450,6 +666,7 @@ export class SignalBoard {
             el('td', { class: 'sym', text: c.symbol }),
             el('td', { text: c.tf }),
             el('td', { class: live ? 'up' : 'down', text: exp }),
+            liveCell(this.scored, c, c.expected),
             /* THE BADGE IN WORDS, ON HOVER -- "Sell at the 20-bar high",
                not "SELL LIMIT". Asked directly whether a sell limit executes a
                buy; it does not, and the answer belongs on the thing that
@@ -458,6 +675,16 @@ export class SignalBoard {
             el('td', { class: (!live ? 'dim' : (buy ? 'up' : 'down')) + ' sb-why',
                        title: orderPhrase(x, (v) => fx(v, d)),
                        text: `${x.side.toUpperCase()} ${x.order.toUpperCase()}` }),
+            /* WHY A TRADEABLE ROW IS NOT IN THE COUNT. Without this the board
+               shows a green ticket and the headline silently omits it. */
+            el('td', {
+              class: !live ? 'dim' : (gated(this.gate, x) ? 'down' : 'up'),
+              title: gated(this.gate, x)
+                ? `Held back: ${x.age} bars since the EMA cross, over the `
+                  + `${this.gate.maxAge}-bar limit. Journalled, not sent.`
+                : 'Bars since the EMA20/50 cross',
+              text: x.age == null ? '—'
+                    : (gated(this.gate, x) ? `${x.age} held` : `${x.age}`) }),
             el('td', { text: fx(x.entry, d) }),
             /* THE COLUMN THAT SAYS WHICH ROW TO LOOK AT. Every row has an
                entry; almost none of them fill. This is the difference. */

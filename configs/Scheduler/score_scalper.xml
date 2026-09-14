@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>DiaNurFx: score the Rayo Scalper's LIVE tickets against what the market actually did. Reads data/scalper_journal.jsonl, resolves each ticket on 1m bars from the bridge with the backtest's own resolver, and writes data/scalper_scored.jsonl. Sends nothing. Added 2026-09-14, when the journal held 1,595 tickets and not one had an outcome.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T00:20:00</StartBoundary>
+      <Repetition>
+        <!-- HOURLY, NOT EVERY FIVE MINUTES. Nothing here is time-critical: a
+             trade that closed at 09:05 is just as scorable at 10:20. The run
+             pulls 20,000 1m bars per instrument, so doing it twelve times an
+             hour would be twelve times the bridge traffic for an answer nobody
+             reads more than once a day. Offset to :20 so it does not land on
+             the same minute as the scalper and the news alerter. -->
+        <Interval>PT1H</Interval>
+        <Duration>P1D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+      <Enabled>true</Enabled>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>TASK_USER</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+    <!-- NO RestartOnFailure. The one failure this task actually has is the
+         bridge being down, which a retry a minute later will hit again; the
+         scalper task restarts because a missed signal is gone, and a missed
+         SCORING run costs nothing because the next hourly pass scores the same
+         tickets. Retrying here would just fill the log. -->
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>PYTHONW_EXE</Command>
+      <Arguments>tools\_run_quiet.py tools\score_scalper.py</Arguments>
+      <WorkingDirectory>PROJECT_DIR</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

@@ -16,12 +16,21 @@
 
 import { el, px } from '../util.js';
 
-const NL = String.fromCharCode(10);
-import { MEASURED, SESSION, UNMEASURED_NOTE, brokerHour, orderPhrase, ticket }
+import { SESSION, STOP_ATR, UNMEASURED_NOTE, brokerHour, orderPhrase, ticket }
   from '../chart/scalper.js';
+import { gated, loadGate, loadScalperCells } from '../chart/graded.js';
+import { tip } from './tips.js';
 
-/* The frames the surviving settings were measured on. */
-const MEASURED_TF = '30m';
+/* THE REGISTRY, FETCHED ONCE AND SHARED WITH THE SIGNAL BOARD. `loadScalperCells`
+   memoises its fetch, so this costs nothing beyond the board's own read and the
+   two surfaces cannot disagree about what was measured. Populated async: the
+   panel renders before it lands and simply says "not registered" until it does,
+   which is the honest state rather than a stale constant. */
+let CELLS = null;
+loadScalperCells().then((cs) => { CELLS = cs; });
+/* The same gate tools/scalper.py applies before sending. */
+let GATE = { enforce: false, maxAge: null };
+loadGate().then((g) => { GATE = g; });
 
 export class ScalperPanel {
   constructor(root, headRoot) {
@@ -37,8 +46,20 @@ export class ScalperPanel {
         this.mode = this.mode === 'break' ? 'fade' : 'break';
         this.render();
       });
-      this.headRoot.title = 'Click to switch break / fade';
+      tip(this.headRoot, 'Entry mode',
+          'BREAK joins the move: a stop order a touch beyond the 20-bar swing. '
+          + 'FADE waits for the pullback: a limit at the opposite swing. Both '
+          + 'take the side of the EMA20/50 trend -- the mode changes WHERE the '
+          + 'order rests, never which way it trades.',
+          'Click to switch. Only BREAK is registered and measured; FADE is a '
+          + 'research view and no cell is graded on it.');
     }
+  }
+
+  /** The registered measurement for the symbol and frame on screen, or null. */
+  cell(tfKey) {
+    if (!CELLS || !this.symbol) return null;
+    return CELLS.find((c) => c.symbol === this.symbol && c.tf === tfKey) || null;
   }
 
   update(symbol, tf, bars, spec, rawTf) {
@@ -100,9 +121,12 @@ export class ScalperPanel {
        like a buy to anyone who has not memorised the vocabulary. Shared with
        the Signal Board so the two cannot drift. */
     r.append(el('div', { class: 'sc-head' },
-      el('span', { class: buy ? 'sc-side up' : 'sc-side down',
-                   title: orderPhrase(t, (v) => px(v, d)) },
-         `${t.side.toUpperCase()} ${t.order.toUpperCase()}`),
+      tip(el('span', { class: buy ? 'sc-side up' : 'sc-side down' },
+             `${t.side.toUpperCase()} ${t.order.toUpperCase()}`),
+          `${t.side.toUpperCase()} ${t.order.toUpperCase()}`,
+          orderPhrase(t, (v) => px(v, d)),
+          `Fills only if price reaches ${px(t.entry, d)}; unfilled after `
+          + `${t.expire} bars it is cancelled.`),
       el('b', { class: 'sc-entry', text: px(t.entry, d) })));
 
     const row = (k, v, cls) => el('div', { class: 'sc-row' },
@@ -112,7 +136,7 @@ export class ScalperPanel {
     r.append(row('SL', px(t.stop, d), 'down'));
     t.tp.forEach((x, i) => r.append(
       row(`TP${i + 1}`, px(x, d), i === 0 ? 'dim' : 'up')));
-    r.append(row('risk', `${px(t.risk, d)}  (4 ATR)`, 'dim'));
+    r.append(row('risk', `${px(t.risk, d)}  (${STOP_ATR} ATR)`, 'dim'));
 
     /* WHY THIS TICKET EXISTS, in the rule's own terms. Which condition fired,
        off which level, and what has to happen for it to fill at all.
@@ -121,8 +145,10 @@ export class ScalperPanel {
        fill, so a rationale that only listed reasons to click would be the
        marketing panel this was built as a corrective to. The last line is the
        arithmetic that decides it, and the full measurement is on hover. */
+    /* THE CELL BEING SHOWN, not a gold-shaped stand-in. Keyed on symbol AND
+       frame, because the measurement is a property of both. */
     const tfKey = String(this.rawTf || '').toLowerCase();
-    const m = MEASURED[tfKey] || null;
+    const m = this.cell(tfKey);
     const away = t.entry - (this.lastClose ?? t.entry);
     const why = el('div', { class: 'sc-why-take' });
 
@@ -133,14 +159,26 @@ export class ScalperPanel {
        halves of history and three EMA pairs while failing about half of those
        checks on XAUUSD, and a gate that works on one instrument is not a rule.
        The reader gets the number and decides. */
-    const fresh = t.age <= 20;
+    /* NOT `t.age <= 20`. The limit lived here as a literal while the same
+       number lived in configs/alerts.json and in tools/scalper.py, so the panel
+       could call a trend fresh that the alerter had just silenced. */
+    const cap = GATE.maxAge != null ? GATE.maxAge : 20;
+    const fresh = t.age <= cap;
+    const held = gated(GATE, t) && m && m.tradeable;
     why.append(el('div', { class: 'snap-line' },
       el('b', { class: t.trend === 'up' ? 'up' : 'down',
                 text: `Trend ${t.trend}` }),
       ` — EMA20 ${t.trend === 'up' ? 'above' : 'below'} EMA50 on ${this.tf}, `,
       el('b', { class: fresh ? 'up' : 'dim',
                 text: `${t.age} bar${t.age === 1 ? '' : 's'}` }),
-      ` since the cross (${fresh ? 'fresh' : 'stale'}).`));
+      ` since the cross (${fresh ? 'fresh' : 'stale'}).`,
+      ...(held ? [tip(el('b', { class: 'down', text: '  No alert sent.' }),
+        'No alert sent',
+        `The trend-age gate is on: over ${cap} bars since the EMA cross the `
+        + 'ticket is journalled and no Telegram message goes out.',
+        'Adopted on a nine-year one-position simulation, where it raised CAGR '
+        + 'and cut the chance of a losing year. It is NOT a prediction about '
+        + 'this particular trade.')] : [])));
 
     if (t.mode === 'break') {
       why.append(el('div', { class: 'snap-line' },
@@ -166,7 +204,7 @@ export class ScalperPanel {
     }
 
     why.append(el('div', { class: 'snap-line' },
-      `Stop 4 ATR (${px(t.risk, d)}) beyond the entry — that is 1R. `
+      `Stop ${STOP_ATR} ATR (${px(t.risk, d)}) beyond the entry — that is 1R. `
       + `Targets sit at 0.9, 1.5 and 2.4R.`));
 
     /* THE EXPECTATION IS NOT ON THE FACE OF THIS PANEL, by request. It lives
@@ -178,19 +216,29 @@ export class ScalperPanel {
        expectation on a measured frame nor the warning on an unmeasured one.
        Both live on the hover below, and the full table is in
        sim/strategies/rayo.py. Recorded so the omission reads as a decision:
-       stop 4 ATR / exit TP1 measured +0.043 R on 30m and +0.218 R on 1h, and
-       was NOT measured on any faster frame. */
+       every figure now comes from configs/alerts.json via graded.js, so there
+       is no number typed into this file to go stale. */
 
     r.append(why);
-    /* The full measurement, one hover away rather than four lines on the rail. */
-    r.title = (m
-      ? `${this.mode} / stop 4 ATR / exit TP1 on ${this.tf}:`
-        + ` net ${m.net >= 0 ? '+' : ''}${m.net.toFixed(4)} R per fill,`
-        + ` ${m.n} fills, ${m.win}% win`
-        + `${NL}worst sub-period ${m.worst.toFixed(3)} R (2017-19, when gold ranged)`
-        + `${NL}${m.eras}; USDJPY was a holdout for the parameter choice`
-      : `not measured on ${this.tf} - ${UNMEASURED_NOTE}`)
-      + `${NL}spread costs ${t.costR(this.spreadPx).toFixed(3)} R of this ticket`
-      + `${NL}exit at 0.9R needs a 52.6% hit rate`;
+    /* THE FULL MEASUREMENT, ONE HOVER AWAY rather than four lines on the
+       rail -- and in the same card every other panel uses, so the heaviest
+       explanation in the rail is not the one that looks least like the app.
+       The NOTE is the live cost of THIS ticket; the body is the cell's
+       standing record. */
+    const costNow = `Spread costs ${t.costR(this.spreadPx).toFixed(3)} R of `
+      + 'this ticket, and exiting at 0.9R needs a 52.6% hit rate to break even.';
+    if (m && Number.isFinite(m.expected)) {
+      tip(r, `${this.symbol} ${m.tf}`,
+          `${this.mode} / stop ${STOP_ATR} ATR / exit TP1: net `
+          + `${m.expected >= 0 ? '+' : ''}${m.expected.toFixed(4)} R per fill `
+          + '(the MEDIAN of four sub-eras, not the best of them), '
+          + `${m.perYear >= 0 ? '+' : ''}${m.perYear.toFixed(1)} R per year, `
+          + `worst sub-era ${m.worst >= 0 ? '+' : ''}${m.worst.toFixed(4)} R. `
+          + m.note,
+          costNow);
+    } else {
+      tip(r, `${this.symbol || 'This symbol'} ${this.tf}`,
+          `Not registered - ${UNMEASURED_NOTE}`, costNow);
+    }
   }
 }

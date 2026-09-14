@@ -161,7 +161,7 @@ def render(df, ticket, symbol, tf, digits=2, bars=90, expected=None,
     tps = list(ticket.get('tp') or [])
 
     # ---- THE VERTICAL RANGE, and why it is not "fit everything". ----
-    # TP3 sits 2.4R from the entry, which on a 4 ATR stop is nearly ten ATR
+    # TP3 sits 2.4R from the entry, which on a 5 ATR stop is twelve ATR
     # away. Letting it set the axis squashed every candle into the top third
     # and the picture stopped showing the one thing it is for: the structure
     # being broken. The frame is fitted to the candles, the entry, the stop and

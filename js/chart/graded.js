@@ -25,12 +25,41 @@ const ALERTS = 'configs/alerts.json';
  * rests pending orders that fill intrabar and ladders three targets, and that
  * engine models neither. The board computes its tickets in the browser.
  */
+let _raw = null;
 let _scalper = null;
+
+/* ONE FETCH OF alerts.json FOR THE WHOLE PAGE. The cells, the gate and the
+   measurement block are three views of one file, and fetching it per view is
+   the second-reader problem this module was written to avoid -- stated at the
+   top and then almost reintroduced when the forward scores needed to know which
+   stop the registry was measured at. */
+function raw(url) {
+  if (!_raw) {
+    _raw = fetch(url, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return _raw;
+}
+
+/**
+ * The settings the registry was measured under -- `{stopAtr, measuredOn}`.
+ *
+ * THE FORWARD LEDGER NEEDS THIS TO AVOID POOLING TWO RULES. Tickets journalled
+ * before 2026-09-14 were posted at a 4.0 ATR stop; showing their outcomes
+ * beside a cell's registered figure would compare the new rule's expectation
+ * against the old rule's results.
+ */
+export function loadMeasurement(url = ALERTS) {
+  return raw(url).then((d) => {
+    const m = (d && d.scalper && d.scalper.measurement) || {};
+    return { stopAtr: m.stop_atr, measuredOn: m.measured_on };
+  });
+}
 
 export function loadScalperCells(url = ALERTS) {
   if (!_scalper) {
-    _scalper = fetch(url, { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
+    _scalper = raw(url)
       .then((d) => {
         const sc = (d && d.scalper) || {};
         return ((sc.watch) || []).filter((c) => c.enabled).map((c) => ({
@@ -55,6 +84,31 @@ export function loadScalperCells(url = ALERTS) {
       .catch(() => []);
   }
   return _scalper;
+}
+
+/**
+ * The trend-age gate, as the live tool applies it.
+ *
+ * ONE DEFINITION FOR BOTH SURFACES. `tools/scalper.py` withholds the Telegram
+ * message when a tradeable cell's ticket carries age > max_age; a board that
+ * did not know that would announce ten resting orders while five were being
+ * sent, which is the surface disagreement this module exists to prevent.
+ *
+ * Returns `{enforce, maxAge}` -- `enforce: false` until the fetch lands, so a
+ * board painted before the config arrives shows everything rather than hiding
+ * signals on the strength of a value it has not read yet.
+ */
+export function loadGate(url = ALERTS) {
+  return loadScalperCells(url).then((cs) => {
+    const q = (cs[0] && cs[0].quality) || null;
+    return { enforce: !!(q && q.enforce), maxAge: (q && q.max_age) };
+  });
+}
+
+/** Is this ticket silenced for being a stale trend? */
+export function gated(gate, t) {
+  return !!(gate && gate.enforce && gate.maxAge != null
+            && t && t.age != null && t.age > gate.maxAge);
 }
 
 /** Bullish/neutral/bearish colouring, matching the Signal Board's columns. */

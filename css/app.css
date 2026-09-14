@@ -1005,6 +1005,106 @@ td.sb-why{cursor:help; text-decoration:underline dotted currentColor;
 .sb-call b[title]{cursor:help}
 .sc-side[title]{cursor:help}
 
+/* The forward-record strip: counts of what actually happened, under the board's
+   sub-heading. Quieter than the headline -- it is history, not a call to act. */
+.sb-scored{display:flex; flex-wrap:wrap; align-items:baseline; gap:10px;
+  margin:2px 10px 8px; padding:6px 10px; font-size:11px;
+  background:var(--surface-2); border:1px solid var(--line); border-radius:7px}
+.sb-scored b{font-weight:700}
+.sb-scored [title]{cursor:help}
+
+/* ---- hover card: a hint with enough structure to be a table ---- */
+.hovercard{position:fixed; z-index:9000; max-width:min(460px, 92vw);
+  background:var(--surface-2); border:1px solid var(--line); border-radius:9px;
+  box-shadow:0 10px 30px rgba(0,0,0,.45); padding:10px 12px;
+  /* LOAD-BEARING: the card can sit over the row it describes, and a tooltip
+     that eats the click meant for the row underneath is worse than none. */
+  pointer-events:none}
+.hc-head{display:flex; gap:8px; align-items:baseline; margin-bottom:7px;
+  padding-bottom:6px; border-bottom:1px solid var(--line)}
+.hc-head b{font-size:12px; letter-spacing:.02em}
+.hc-head .dim{font-size:10px; text-transform:uppercase; letter-spacing:.07em}
+.hc-t{border-collapse:collapse; font-size:11px; width:100%}
+.hc-t td{padding:2px 0; vertical-align:baseline}
+.hc-k{color:var(--text); white-space:nowrap; padding-right:12px !important}
+/* TABULAR FIGURES so the counts line up as a column instead of drifting with
+   the glyph widths -- the whole reason `title` could not do this job. */
+.hc-n{text-align:right; font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum"; white-space:nowrap; font-weight:700;
+  padding-right:12px !important}
+.hc-y{color:var(--text-faint); font-size:10px; line-height:1.35}
+.hc-rule td{border-top:1px solid var(--line); padding:0 !important; height:6px}
+.hc-t2{margin-top:7px; padding-top:6px; border-top:1px solid var(--line)}
+.hc-foot{margin-top:8px; padding-top:6px; border-top:1px solid var(--line);
+  color:var(--text-faint); font-size:10px; line-height:1.4}
+.hc-empty{font-size:11px; color:var(--text-faint); line-height:1.45; max-width:320px}
+
+/* ---- the dial and the axis bars (js/ui/gauge.js) ----
+   DECORATION, AND COLOURED LIKE IT. The bands are washes rather than the solid
+   --up / --down the ticket uses, so a full needle never reads as loudly as a
+   live SL or TP. The rail is 246px, so everything here is sized to ~220. */
+.gauge-wrap{padding:2px 10px 8px}
+.gauge-title{font-size:10px; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--text-dim); margin:2px 0 1px}
+.gauge-title .dim{text-transform:none; letter-spacing:0; font-size:10px}
+.gauge{display:block; width:100%; height:auto; overflow:visible}
+
+.g-band{stroke:var(--bg); stroke-width:1}
+/* AN INTENSITY RAMP, NOT FIVE FLAT BANDS. "selling" and "strong selling" were
+   the same pink at the same opacity, so the scale only showed its steps when a
+   zone happened to be the active one -- the dial read as three zones, not
+   five. The outer pair is denser than the inner pair, so intensity is visible
+   at rest. */
+.g-z0{fill:var(--text-faint); opacity:.20}
+.g-z1, .g-z3{opacity:.26}
+.g-z2, .g-z4{opacity:.50}
+.g-z1, .g-z2{fill:var(--up)}
+.g-z3, .g-z4{fill:var(--down)}
+.g-band.on{opacity:.88}
+.g-z2.on, .g-z4.on{opacity:1}
+
+.g-needle{stroke:var(--text); stroke-width:2.5; stroke-linecap:round}
+.g-hub{fill:var(--text); stroke:var(--bg); stroke-width:2}
+.g-tick{fill:var(--text-faint); font:400 7.5px var(--mono); text-anchor:middle}
+/* Zone names live inside their bands. Dim until the needle is in one. */
+/* --text-dim, not --text-faint: at the rail's 236px the band is 30 units deep
+   and the type is 7.5, so the faint grey disappeared into the wash behind it. */
+.g-name{fill:var(--text-dim); font:700 7.5px var(--sans); text-anchor:middle;
+  letter-spacing:.05em}
+.g-name.on{fill:var(--text)}
+.g-val{fill:var(--text); font:700 26px var(--sans); text-anchor:middle;
+  font-variant-numeric:tabular-nums}
+.g-val-none{fill:var(--text-faint)}
+.g-zone{fill:var(--text-dim); font:700 8.5px var(--sans); text-anchor:middle;
+  letter-spacing:.09em}
+
+.axes{padding:0 10px 10px}
+.axis{display:grid; grid-template-columns:62px 1fr 22px; align-items:center;
+  gap:7px; margin:5px 0 0}
+.axis-k{font-size:10px; color:var(--text-dim); white-space:nowrap}
+.axis-track{position:relative; height:6px; border-radius:3px;
+  background:var(--surface); border:1px solid var(--line); overflow:hidden}
+/* The whole row is the hover target, not just the bar: the label is what a
+   reader points at when they want to know what the row means. */
+.axis[title]{cursor:help}
+.axis[title]:hover .axis-k{color:var(--text)}
+.head-help{cursor:help; text-decoration:underline dotted var(--text-faint);
+  text-underline-offset:3px}
+.axis-fill{position:absolute; inset:0 auto 0 0; border-radius:3px; opacity:.55}
+.axis-fill.hi{background:var(--up)}
+.axis-fill.lo{background:var(--down)}
+/* No polarity, no opinion: conditions that are merely high or low. */
+.axis-fill.neutral{background:var(--text-dim)}
+.axis-mid{position:absolute; left:50%; top:0; bottom:0; width:1px;
+  background:var(--line-soft)}
+.axis-v{font:700 10px var(--mono); text-align:right; color:var(--text);
+  font-variant-numeric:tabular-nums}
+.axis-ends{display:flex; justify-content:space-between; font-size:9px;
+  color:var(--text-faint); margin:1px 29px 4px 69px}
+.cond-foot{padding:2px 10px 10px; font-size:9px; color:var(--text-faint);
+  line-height:1.35}
+.rail-note{font-size:10px; color:var(--text-faint); font-family:var(--mono)}
+
 table.grid tr.sb-row{cursor:pointer}
 table.grid tr.sb-row:hover td{background:var(--surface-2)}
 /* A cell asking for a trade is the whole point of the tab; it gets the rail. */

@@ -24,7 +24,15 @@
  * that number is the thing this project spent the week not building.
  */
 
-const TPS = [0.9, 1.5, 2.4];      // the ladder, matching tools/scalper.py
+const TPS = [0.9, 1.5, 2.4];
+
+/** The stop, in ATR of the execution frame. Mirrors DEFAULTS in rayo.py.
+ *
+ * EXPORTED BECAUSE THE UI USED TO SPELL IT OUT. "Stop 4 ATR" was written into
+ * the panel, the risk row, the hover and the Signal Board's SL tooltip, so
+ * moving 4.0 to 5.0 meant finding five copies of a number that is one fact.
+ * Read it from here and a future change is one line. */
+export const STOP_ATR = 5.0;      // the ladder, matching tools/scalper.py
 
 /**
  * The session window, or null for 24 hours — matching `DEFAULTS['session']` in
@@ -79,25 +87,21 @@ export function brokerHour(msUtc) {
   return new Date(msUtc + (summer ? 3 : 2) * 3600000).getUTCHours();
 }
 
-/**
- * Measured net R per fill, break mode, stop 4.0 ATR, exit at TP1 (0.9R).
- *
- * PER TIMEFRAME, because the number is not a property of the rule -- it is a
- * property of the rule ON A FRAME. Cost is (spread + slippage) / risk and risk
- * is 4 ATR of THAT frame, so 5m pays five times what 1h does. A single figure
- * reused across the rail would have flattered every fast frame by exactly the
- * amount that makes it untradeable.
- *
- * `worst` is the weakest of the four measured sub-periods, not the average:
- * 2017-19 is negative everywhere and is the regime this rule has no answer to.
- */
-export const MEASURED = {
-  '30m': { net: +0.0434, worst: -0.046, win: 56, n: 968, eras: '12 of 16 sub-periods positive' },
-  '1h': { net: +0.2179, worst: -0.029, win: 65, n: 330, eras: '12 of 16 sub-periods positive' },
-};
-/** The old default, kept so the panel can say why a frame is not measured. */
-export const UNMEASURED_NOTE = 'stop 4.0 ATR / exit TP1 was measured on 30m and '
-  + '1h only; faster frames pay several times the cost fraction';
+/* THE MEASURED TABLE USED TO LIVE HERE, hand-typed, gold-only, per timeframe:
+   `{'30m': {net: +0.0434, worst: -0.046, ...}}`. It was a SECOND COPY of numbers
+   that configs/alerts.json already holds per symbol AND timeframe, and the
+   re-registration on 2026-09-14 moved every one of them -- which is exactly the
+   drift js/chart/graded.js exists to prevent ("NOTHING IS COMPUTED HERE").
+
+   The panel now reads the cell it is actually showing, through
+   `loadScalperCells()`, so gold's numbers can no longer be displayed over a yen
+   chart and a re-registration cannot leave the rail quoting last month's
+   measurement. */
+
+/** What the panel says when the registry has nothing for this symbol/frame. */
+export const UNMEASURED_NOTE = 'this frame is not registered in '
+  + 'configs/alerts.json; only 30m and 1h clear the cost fraction on any '
+  + 'instrument, and nothing faster survives a wider spread';
 
 function emaLast(vals, n, endExclusive) {
   const k = 2 / (n + 1);
@@ -168,7 +172,7 @@ function atrLast(bars, n, endExclusive) {
  * hundred overlapping ladders for what was one idea.
  */
 export function signals(bars, {
-  mode = 'break', swing = 20, fast = 20, slow = 50, stopAtr = 4.0, expire = 12,
+  mode = 'break', swing = 20, fast = 20, slow = 50, stopAtr = STOP_ATR, expire = 12,
   session = SESSION, max = 6,
 } = {}) {
   const out = [];
@@ -211,7 +215,7 @@ export function signals(bars, {
  * reacting to, which reads as prescience and is just look-ahead.
  */
 export function ticket(bars, {
-  mode = 'break', swing = 20, fast = 20, slow = 50, stopAtr = 4.0, expire = 12,
+  mode = 'break', swing = 20, fast = 20, slow = 50, stopAtr = STOP_ATR, expire = 12,
   session = SESSION,
 } = {}) {
   if (!bars || bars.length < Math.max(swing, slow) + 4) return null;
