@@ -22,6 +22,7 @@
 
 import { donchianRule } from './donchian.js';
 import { emaCrossRule } from './emacross.js';
+import { rayoRule } from './rayorule.js';
 
 export const STRATEGIES = [
   {
@@ -63,6 +64,24 @@ export const STRATEGIES = [
       + 'teaches nothing.',
   },
 ];
+
+/* THE LIVE CHART'S RAYO. Appended so byKey's fallback stays Donchian; the
+   replay itself opens on Rayo by request (js/ui/strategyreplay.js). Same
+   walker as the right-rail panel and TP bands: fixed 12, as the live scorer. */
+STRATEGIES.push({
+  ...rayoRule,
+  status: 'untested',
+  /* The four cells the stop-5 rule was measured on -- without the filter. */
+  cells: ['XAUUSD.a 30m', 'XAUUSD.a 1h', 'USDJPY.a 30m', 'USDJPY.a 1h'],
+  record: {},
+  notes: 'The live Rayo Scalper under the live scorer rule (fixed 12): the ticket '
+    + 'of a closed bar rests with its own levels for 12 bars, fills when price trades '
+    + 'through the entry, then races the 5 ATR stop against TP1 (0.9R), ties to the '
+    + 'stop; only then is the next ticket taken. Where the live journal and scored '
+    + 'ledger exist, their tickets and outcomes are used; elsewhere the same rule is '
+    + 'simulated on the replayed bars. The right-rail panel and TP bands run the '
+    + 'same walker. Re-issuing every bar measured worse on all 8 gold frames.',
+});
 
 export const byKey = (key) => STRATEGIES.find((s) => s.key === key) || STRATEGIES[0];
 

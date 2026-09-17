@@ -73,12 +73,20 @@ JOURNAL = os.path.join(ROOT, 'data', 'scalper_journal.jsonl')
 SCORED = os.path.join(ROOT, 'data', 'scalper_scored.jsonl')
 BRIDGE = 'http://127.0.0.1:8765'
 
-TF_MIN = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240,
-          '1d': 1440}
+# EVERY FRAME IN scalper.watch MUST HAVE A KEY HERE. `expire_ms` below indexes
+# this dict directly, so a journalled ticket on a frame that is missing kills
+# the hourly scoring task rather than skipping one row. 3m and 2h joined the
+# registry 2026-09-17 disabled, which makes them unreachable today and a live
+# crash the moment anyone enables one; the two keys are the guardrail, not a
+# decision to trade those frames.
+TF_MIN = {'1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60,
+          '2h': 120, '4h': 240, '1d': 1440}
 
-#: Hours before an unresolved trade is abandoned. Matches tools/scalp_register.
-HORIZON_H = {'1m': 24, '5m': 24, '15m': 24, '30m': 24, '1h': 24,
-             '4h': 120, '1d': 720}
+#: NOT USED FOR SCORING -- a live trade is followed until it resolves or the
+#: bars run out (see main()). Kept equal to tools/scalp_register.HORIZON_H,
+#: the horizon the registered numbers were measured at.
+HORIZON_H = {'1m': 240, '3m': 240, '5m': 240, '15m': 240, '30m': 240,
+             '1h': 240, '2h': 240, '4h': 720, '1d': 2160}
 
 
 def load_jsonl(path):
@@ -184,7 +192,16 @@ def main():
     done, keep = set(), []
     if not args.all:
         for r in load_jsonl(args.out):
-            if r.get('outcome') in ('sl', 'tp1', 'tp2', 'tp3', 'expired'):
+            if r.get('outcome') in ('sl', 'tp1', 'tp2', 'tp3', 'be', 'expired'):
+                # AN EXPIRY WRITTEN BEFORE THE WINDOW HAD RUN is not one. The
+                # scorer used to call a ticket `expired` whenever the 1m bars
+                # ran out first -- an 18:45 15m ticket was written expired at
+                # 19:07 -- and then kept it for ever. Those are rescored.
+                if r.get('outcome') == 'expired':
+                    tfm = TF_MIN.get(r.get('tf'), 0) * 60000
+                    need = int(r.get('ms', 0)) + 12 * tfm - 60000
+                    if not r.get('end_ms') or int(r['end_ms']) < need:
+                        continue
                 done.add(r.get('id'))
                 keep.append(r)
 
@@ -211,34 +228,67 @@ def main():
         groups[(s['symbol'], s['tf'], s.get('mode', 'break'),
                 s.get('stop_atr'))].append(s)
 
+    # THE LEDGER IS REBUILT FROM THE BUSY CURSOR ON EVERY PASS. Closed rows keep
+    # their stored values, but only when the cursor still TAKES that ticket: a
+    # row scored while an earlier trade was wrongly treated as finished (the
+    # 24h horizon bug, below) is dropped rather than left beside the trade that
+    # should have blocked it. A closed row whose ticket is now older than the
+    # bars pulled is kept as stored, and its end still advances the cursor.
+    kept = {r.get('id'): r for r in keep}
     scored, fresh = [], 0
-    if not args.all:
-        scored = keep
 
     for key in sorted(groups, key=lambda k: (k[0], TF_MIN.get(k[1], 0), k[3] or 0)):
         sym, tf, mode, stop = key
         rows = sorted(groups[key], key=lambda r: r['ms'])
         cost = costs_for(sym, tf)
-        horizon_ms = HORIZON_H.get(tf, 24) * 3600 * 1000
+        # NO HORIZON. This used HORIZON_H (24h for 1m-1h): a filled trade that
+        # had hit neither stop nor TP1 a day after its signal was written
+        # `open` with end_ms at the horizon, which RELEASED the busy cursor --
+        # so the next ticket was scored as a second trade while the first was
+        # still running, and the first never resolved, because every pass
+        # stopped looking at the same 24h mark. At a 5 ATR stop that is a large
+        # share of 15m-1h trades (see [[rayo-24h-horizon-dropped-unresolved-
+        # trades]]). A live trade is now followed to the latest 1m bar.
+        horizon_ms = 3650 * 24 * 3600 * 1000
         busy = -1
         for r in rows:
             if r['ms'] < busy:
                 continue                     # one live order at a time, per cell
             SC.EXIT_TP[0] = int(r.get('exit_tp') or 1)
             expire_ms = int(r.get('expire_bars') or 12) * TF_MIN[tf] * 60 * 1000
-            res = SC.resolve(r, M[sym], expire_ms, horizon_ms)
+            # THE BREAK-EVEN STOP applies to tickets posted under it, which say
+            # so (`breakeven_r`, journalled from 2026-09-17). Older tickets keep
+            # the rule they were posted under.
+            res = SC.resolve(r, M[sym], expire_ms, horizon_ms,
+                             be_r=r.get('breakeven_r'))
             if not res:
+                old = kept.get(r.get('id'))
+                if old is not None:          # older than the bars pulled
+                    scored.append(old)
+                    busy = old.get('end_ms') or r['ms']
                 continue                     # before the bars we can see
-            busy = res.get('end_ms', r['ms'])
-            if r.get('id') in done:
+            # NOT EXPIRED YET. An unfilled ticket whose 12-bar window reaches
+            # past the last 1m bar is still RESTING; calling it expired is
+            # the bug the load above repairs. It blocks the cell, like an
+            # open trade, and is not written until its window has run.
+            if (res['outcome'] == 'expired'
+                    and r['ms'] + expire_ms > int(M[sym][0][-1])):
+                busy = float('inf')
+                continue
+            # STILL OPEN BLOCKS THE CELL. Nothing after it is taken until it
+            # resolves on a later pass.
+            busy = float('inf') if res['outcome'] == 'open' else res.get('end_ms', r['ms'])
+            if r.get('id') in done and r.get('id') in kept:
+                scored.append(kept[r.get('id')])
                 continue
             out = {'id': r.get('id'), 'symbol': sym, 'tf': tf, 'mode': mode,
                    'stop_atr': stop, 'side': r['side'], 'age': r.get('age'),
                    't': r.get('t'), 'ms': r['ms'],
                    'outcome': res['outcome'], 'gross_r': res.get('r'),
                    'ambiguous': bool(res.get('ambiguous')),
-                   'fill_ms': res.get('fill_ms'), 'end_ms': res.get('end_ms')}
-            if res['outcome'] in ('sl', 'tp1', 'tp2', 'tp3'):
+                   'fill_ms': res.get('fill_ms'), 'end_ms': res.get('end_ms'),
+                   'be_ms': res.get('be_ms'), 'breakeven_r': r.get('breakeven_r')}
+            if res['outcome'] in ('sl', 'tp1', 'tp2', 'tp3', 'be'):
                 cr = (cost['spread_px'] + 2 * 0.02 * float(r['atr'])) / float(r['risk'])
                 sw = swap_r(cost, r['side'], float(r['risk']),
                             res['fill_ms'], res['end_ms'])

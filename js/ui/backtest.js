@@ -599,7 +599,7 @@ export class Backtest {
       bySymbol.get(b.symbol).set(b.tf, b);
     }
     const allSymbols = [...bySymbol.keys()].sort();
-    const TF_ORDER = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
+    const TF_ORDER = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'];
     const allTfs = TF_ORDER.filter((tf) =>
       allSymbols.some((sym) => bySymbol.get(sym).has(tf)));
 
@@ -965,7 +965,7 @@ export class Backtest {
       onChange: () => this.render(),
     });
 
-    const TF_ORDER = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
+    const TF_ORDER = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'];
     const tfChips = el('div', { class: 'bt-chips' }, ...TF_ORDER.map((tf) => {
       const have = [...this.dl.symbols].filter((sym) => onDisk.get(sym)?.has(tf));
       return el('button', {

@@ -14,12 +14,15 @@
  * panel marks it rather than quietly reusing it.
  */
 
-import { el, px } from '../util.js';
+import { dmy, el, hhmm, px } from '../util.js';
+import { scalpMode, setScalpMode } from '../chart/scalpmode.js';
 
-import { SESSION, STOP_ATR, UNMEASURED_NOTE, brokerHour, orderPhrase, ticket }
+import { SESSION, STOP_ATR, brokerHour, orderPhrase, ticket }
   from '../chart/scalper.js';
 import { gated, loadGate, loadScalperCells } from '../chart/graded.js';
 import { tip } from './tips.js';
+import { restingRayo } from '../chart/rayorule.js';
+import { onRayoLedger, rayoLedgerFor } from '../chart/rayoledger.js';
 
 /* THE REGISTRY, FETCHED ONCE AND SHARED WITH THE SIGNAL BOARD. `loadScalperCells`
    memoises its fetch, so this costs nothing beyond the board's own read and the
@@ -32,18 +35,39 @@ loadScalperCells().then((cs) => { CELLS = cs; });
 let GATE = { enforce: false, maxAge: null };
 loadGate().then((g) => { GATE = g; });
 
+/** Date and time in the app's display zone (util.js setZone). */
+/* FADE IS NOT LIVE. Only BREAK is journalled, scored, alerted and shown on the
+   Signal Board, so in FADE mode everything this panel shows is simulated on the
+   chart's bars. Said on the face of the panel because an IN TRADE badge with no
+   such note was read as a live trade the board had lost. */
+function fadeNote() {
+  return el('div', { class: 'sc-fade-note',
+    title: 'Switch the panel back to BREAK (click the mode) to see what the live '
+           + 'rule, the Signal Board and Telegram are doing.',
+    text: 'FADE -- simulated on these bars. Not journalled, scored, alerted or on '
+          + 'the Signal Board.' });
+}
+
+function stamp(ms) {
+  return Number.isFinite(ms) ? `${dmy(ms)} ${hhmm(ms)}` : '—';
+}
+
 export class ScalperPanel {
   constructor(root, headRoot) {
     this.root = root;
     this.headRoot = headRoot;
-    this.mode = 'break';
+    /* The live journal/ledger reloads every minute; the resting ticket can
+       change with it (a fill, an expiry the scorer recorded). */
+    onRayoLedger(() => this.render());
+    /* THE MODE IS THE PAGE'S, not this panel's -- see scalpmode.js. It was a
+       field here, which is exactly why the TP bands could disagree with it. */
     this.symbol = null;
     this.tf = null;
     this.bars = null;
     this.spreadPx = 0;
     if (this.headRoot) {
       this.headRoot.addEventListener('click', () => {
-        this.mode = this.mode === 'break' ? 'fade' : 'break';
+        setScalpMode(scalpMode() === 'break' ? 'fade' : 'break');
         this.render();
       });
       tip(this.headRoot, 'Entry mode',
@@ -80,9 +104,23 @@ export class ScalperPanel {
     const r = this.root;
     if (!r) return;
     r.innerHTML = '';
-    if (this.headRoot) this.headRoot.textContent = this.mode.toUpperCase();
+    if (this.headRoot) this.headRoot.textContent = scalpMode().toUpperCase();
 
-    const t = this.bars && ticket(this.bars, { mode: this.mode });
+    /* FIXED 12, NOT A FRESH TICKET EVERY BAR. The panel shows the ticket the
+       live scorer's rule has RESTING -- taken once, left at its own levels
+       for 12 bars -- or the trade it filled into, from the same walker the TP
+       bands and the Strategy Replay use (js/chart/rayorule.js restingRayo).
+       Re-issuing every bar measured worse on every gold frame
+       (logs/rayo_reissue_eval.txt). */
+    const rawTf = String(this.rawTf || '').toLowerCase();
+    const rest = this.bars && restingRayo(this.bars, {
+      tf: rawTf, mode: scalpMode(), ledger: rayoLedgerFor(this.symbol, rawTf) });
+    if (scalpMode() === 'fade') r.append(fadeNote());
+    if (rest && rest.position) {
+      this._renderHeld(rest.position);
+      return;
+    }
+    const t = rest && rest.pending;
     /* OFF-SESSION THERE IS NO TICKET, and the panel says which it is: "no
        ticket" and "not enough bars" are different facts.
 
@@ -108,7 +146,7 @@ export class ScalperPanel {
         text: offSession
           ? `outside the measured session (broker ${String(SESSION[0]).padStart(2, '0')}:00-`
             + `${String(SESSION[1]).padStart(2, '0')}:00) — the rule does not trade here`
-          : 'no ticket' }));
+          : 'no ticket resting' }));
       return;
     }
     const d = /JPY/i.test(this.symbol || '') ? 3
@@ -185,7 +223,8 @@ export class ScalperPanel {
         `Joins a break of the 20-bar ${t.trend === 'up' ? 'high' : 'low'} `,
         el('b', { text: px(t.level, d) }),
         `. Fills only if price trades ${t.trend === 'up' ? 'up through' : 'down through'} `
-        + `${px(t.entry, d)} within ${t.expire} bars, else it is cancelled.`));
+        + `${px(t.entry, d)} in the next ${t.barsLeft} bar${t.barsLeft === 1 ? '' : 's'} `
+        + `(ticket from ${stamp(t.barTime)}, levels fixed), else it is cancelled.`));
     } else {
       /* t.entry, NOT t.level. `level` is `H if up else L` -- the swing the
          TREND was read off -- and fade rests the order at the OPPOSITE one, so
@@ -199,8 +238,9 @@ export class ScalperPanel {
         `${buy ? 'Buys' : 'Sells'} the pullback to the 20-bar `
         + `${t.trend === 'up' ? 'low' : 'high'} `,
         el('b', { text: px(t.entry, d) }),
-        `. Fills only if price comes back to ${px(t.entry, d)} within `
-        + `${t.expire} bars, else it is cancelled.`));
+        `. Fills only if price comes back to ${px(t.entry, d)} in the next `
+        + `${t.barsLeft} bar${t.barsLeft === 1 ? '' : 's'} (ticket from `
+        + `${stamp(t.barTime)}, levels fixed), else it is cancelled.`));
     }
 
     why.append(el('div', { class: 'snap-line' },
@@ -220,25 +260,92 @@ export class ScalperPanel {
        is no number typed into this file to go stale. */
 
     r.append(why);
-    /* THE FULL MEASUREMENT, ONE HOVER AWAY rather than four lines on the
-       rail -- and in the same card every other panel uses, so the heaviest
-       explanation in the rail is not the one that looks least like the app.
-       The NOTE is the live cost of THIS ticket; the body is the cell's
-       standing record. */
-    const costNow = `Spread costs ${t.costR(this.spreadPx).toFixed(3)} R of `
-      + 'this ticket, and exiting at 0.9R needs a 52.6% hit rate to break even.';
-    if (m && Number.isFinite(m.expected)) {
-      tip(r, `${this.symbol} ${m.tf}`,
-          `${this.mode} / stop ${STOP_ATR} ATR / exit TP1: net `
-          + `${m.expected >= 0 ? '+' : ''}${m.expected.toFixed(4)} R per fill `
-          + '(the MEDIAN of four sub-eras, not the best of them), '
-          + `${m.perYear >= 0 ? '+' : ''}${m.perYear.toFixed(1)} R per year, `
-          + `worst sub-era ${m.worst >= 0 ? '+' : ''}${m.worst.toFixed(4)} R. `
-          + m.note,
-          costNow);
-    } else {
-      tip(r, `${this.symbol || 'This symbol'} ${this.tf}`,
-          `Not registered - ${UNMEASURED_NOTE}`, costNow);
+    /* NO PANEL-WIDE CARD. There was one here carrying the cell's nine-year
+       record and the cost of this ticket; it was removed by request. The
+       numbers still live in configs/alerts.json and in the Signal Board's
+       Expected column, which is where measurement belongs -- the rail shows
+       the ticket. The per-element cards stay: the order badge, the entry mode
+       and the gate badge each explain the thing under the cursor rather than
+       the panel as a whole. */
+  }
+
+  /** The trade the resting ticket filled into: entry, stop, the ladder. */
+  _renderHeld(pos) {
+    const r = this.root;
+    const d = /JPY/i.test(this.symbol || '') ? 3
+      : /XAU|XAG/i.test(this.symbol || '') ? 2 : 5;
+    const buy = pos.side > 0;
+    r.append(el('div', { class: 'sc-head' },
+      tip(el('span', { class: buy ? 'sc-side up' : 'sc-side down' },
+             `IN TRADE ${buy ? 'BUY' : 'SELL'}`),
+          'In trade',
+          'The resting ticket filled. No new ticket is taken until this trade '
+          + 'reaches its stop or TP1 -- one trade at a time, as the live scorer counts.'),
+      el('b', { class: 'sc-entry', text: px(pos.entryPrice, d) })));
+    const row = (k, v, cls) => el('div', { class: 'sc-row' },
+      el('span', { class: 'sc-k', text: k }),
+      el('span', { class: 'sc-v' + (cls ? ' ' + cls : ''), text: v }));
+    r.append(row('SL', px(pos.stop, d), 'down'));
+    (pos.tp || []).forEach((x, i) => r.append(
+      row(`TP${i + 1}`, px(x, d), i === 0 ? 'dim' : 'up')));
+    r.append(row('risk', `${px(pos.risk, d)}  (${STOP_ATR} ATR)`, 'dim'));
+    r.append(el('div', { class: 'sc-why-take' },
+      el('div', { class: 'snap-line' },
+        `Filled ${stamp(pos.entryTime)}${pos.id ? ' (live record)'
+          : (scalpMode() === 'fade' ? ' (FADE simulation, not live)' : '')}. `
+        + 'Exits at the stop or TP1; the next ticket waits until then.')));
+
+    /* WHAT THE RULE WANTS NOW, while the cell is busy holding something else.
+       -----------------------------------------------------------------------
+       Asked for after a confirmed reversal on a held SELL, where the rule's own
+       setup had already turned long and nothing on the rail said so. The
+       position badge above cannot say it -- it names what the ACCOUNT HOLDS,
+       and a badge reading BUY over a short is a lie about the account, not a
+       stronger warning.
+
+       "SETUP", NOT "NEXT TICKET". It is what the rule would post on the last
+       closed bar if the cell were free; the ticket actually taken when this
+       trade closes is derived at THAT bar and may differ or not exist. Naming
+       it a promise would make a forecast out of a reading.
+
+       PER-BAR, AND SAID SO. `ticket()` re-derives every bar, which is NOT how
+       the cell trades -- the live rule rests one fixed ticket for 12 bars, and
+       re-issuing per bar measured worse on every gold frame
+       (logs/rayo_reissue_eval.txt). This line is a read on the current bar, not
+       the order that will be placed.
+
+       AND IT IS NOT A REASON TO CLOSE. Freeing the cell early to take the other
+       side is the `close_free` arm: it beat holding on 0 of 5 gold frames, lost
+       to a RANDOM exit on 4 of 5, and the trades the freed cell then took
+       scored worse on 5 of 5 (logs/rayo_flip_stage1.py, logs/rayo_flip_stage1.txt).
+       The hover says so, because a line naming a better-looking trade is an
+       invitation unless it is told not to be. */
+    const d2 = /JPY/i.test(this.symbol || '') ? 3
+      : /XAU|XAG/i.test(this.symbol || '') ? 2 : 5;
+    let setup = null;
+    try {
+      setup = ticket(this.bars, { mode: scalpMode(), tf: this.rawTf });
+    } catch (e) { setup = null; }
+    if (setup && setup.side) {
+      const opposed = (setup.side === 'buy') !== (pos.side > 0);
+      r.append(tip(
+        el('div', { class: 'sc-next' + (opposed ? ' sc-next-opposed' : '') },
+           el('span', { class: 'sc-k', text: 'setup now' }),
+           el('span', { class: 'sc-v ' + (setup.side === 'buy' ? 'up' : 'down'),
+                        text: `${setup.side.toUpperCase()} ${px(setup.entry, d2)}` }),
+           el('span', { class: 'sc-next-state', text: 'blocked' })),
+        'What the rule wants now',
+        `On the last closed bar the rule's setup is ${setup.side.toUpperCase()} at `
+        + `${px(setup.entry, d2)}${opposed ? ', the OPPOSITE side to the trade you '
+          + 'are holding' : ', the same side as the trade you are holding'}. It is `
+        + 'blocked: this cell takes one trade at a time, so nothing is posted '
+        + 'until the open trade reaches its stop or TP1.',
+        'A READING, NOT A QUEUED ORDER. It is re-derived every bar, while the '
+        + 'live rule rests ONE ticket for 12 bars -- so the order actually taken '
+        + 'when this trade closes is decided then, and may differ. Closing early '
+        + 'to take the other side was measured over 2017-2026: it beat holding on '
+        + 'none of five gold frames, lost to closing at a RANDOM bar on four of '
+        + 'them, and the trades the freed cell then took scored worse on all five.'));
     }
   }
 }

@@ -54,6 +54,10 @@ import { openSymbolSearch } from './search.js';
 import { FLAT, LONG, instruction, runRule, tally } from '../chart/rules.js';
 import { latestDimensions } from '../chart/regime.js';
 import { STATUS_TEXT, STRATEGIES, byKey, coversCell } from '../chart/strategies.js';
+import { trendAt, trendFrames, trendRef } from '../chart/htftrend.js';
+import { WARN, reversalFor, reversalTag } from '../chart/reversal.js';
+import { scalpMode, onScalpMode } from '../chart/scalpmode.js';
+import { rayoLedgerFor, refreshRayoLedger } from '../chart/rayoledger.js';
 import {
   STOP_ATR, ruleVerdictNote, setStopEnabled, stopEnabled, stopMultiples,
   stopOption,
@@ -121,7 +125,8 @@ export class StrategyReplay {
     this.tf = '4h';
     /* Which rule is loaded. The registry decides what is available;
        adding one there adds it here with no change to this file. */
-    this.strategyKey = STRATEGIES[0].key;
+    /* Rayo by default, by request -- the rule the live chart is running. */
+    this.strategyKey = 'rayo';
     this.full = [];
     this.i = 0;
     /* Structure settings, taken from the SAME constant the live chart's auto
@@ -176,6 +181,10 @@ export class StrategyReplay {
        survives. Document-bound listeners must therefore be released first or
        they stack one per render. */
     this._teardown();
+    /* The live panel's BREAK/FADE toggle drives Rayo here too. */
+    this._offMode = onScalpMode(() => {
+      if (this.chart && this.full.length && this.strategyKey === 'rayo') this._apply();
+    });
     this.host = host;
     host.innerHTML = '';
     this.bar = el('div', { class: 'sr-bar' });
@@ -213,6 +222,8 @@ export class StrategyReplay {
     this.stop();
     if (this._keys) document.removeEventListener('keydown', this._keys);
     this._keys = null;
+    if (this._offMode) this._offMode();
+    this._offMode = null;
   }
 
   unmount() {
@@ -444,6 +455,8 @@ export class StrategyReplay {
         }));
     }
 
+    await Promise.all([this._loadTrend(), refreshRayoLedger(true)]);
+
     this._news = [];
     if (this.full.length) {
       try {
@@ -456,6 +469,35 @@ export class StrategyReplay {
     this.loading = false;
     if (this.chart) this._apply();
     this._paintBar();
+  }
+
+  /**
+   * THE HIGHER-FRAME TREND FOR RAYO, COVERING THE WHOLE WINDOW.
+   *
+   * The live chart's trend cache holds only the last few hundred higher-frame
+   * bars, which says nothing about a cursor months back -- every older bar
+   * would read as "no trend" and post nothing. So the replay fetches enough of
+   * each frame to span its own window, plus the EMA50 warmup, and builds the
+   * refs with the same trendRef() the live chart uses. `false` is a disabled
+   * frame (1d/1w), `null` a failed fetch; the walker posts nothing for either.
+   */
+  async _loadTrend() {
+    this._trend = null;
+    if (!this.full.length) return;
+    const frames = trendFrames(this.tf);
+    if (frames === null) { this._trend = false; return; }
+    const spanMs = this.full[this.full.length - 1].t - this.full[0].t;
+    const refs = {};
+    try {
+      await Promise.all(frames.map(async (f) => {
+        const need = Math.ceil(spanMs / (TF_MS[f] || 36e5)) + 150;
+        const p = await api.bars(this.symbol, f, Math.min(60000, need), this.months || 0);
+        const ref = trendRef((p && p.bars) || [], f);
+        if (!ref) throw new Error(`no ${f} bars`);
+        refs[f] = ref;
+      }));
+      this._trend = refs;
+    } catch { this._trend = null; }
   }
 
   /** The params this rule resolves to on the current timeframe. */
@@ -567,8 +609,65 @@ export class StrategyReplay {
       upto: slice.length - 1, tf: this.tf,
       ...(atrMult ? { atrMult } : {}),
       ...(exitTrail ? { exitTrail } : {}),
+      /* Rayo reads the live panel's BREAK/FADE toggle and the higher-frame
+         trend refs fetched for this window; other rules ignore both. */
+      ...(rule.key === 'rayo'
+        ? { mode: scalpMode(), trend: this._trend,
+            ledger: rayoLedgerFor(this.symbol, this.tf) } : {}),
     });
     this.sig = sig;
+
+    /* THE REVERSAL LAMP, ON THE CAUSAL SLICE.
+     * ------------------------------------------------------------------
+     * The same reading the live chart and the Trend read panel show
+     * (js/chart/reversal.js), so a bar replayed here and the same bar seen
+     * live say the same thing. RAYO ONLY: the witnesses are that rule's own
+     * EMA pair and its fill, and hanging them on Donchian or EMA-cross would
+     * be a light driven by a rule nobody is watching.
+     *
+     * CAUSAL, AND THAT IS THE WHOLE POINT OF DOING IT HERE. `slice` stops at
+     * the cursor and `reversalFor` drops its last bar, so the reading is the
+     * one a reader had on the last CLOSED bar -- the same convention
+     * scalper.js decides on. The higher-frame sign comes from `this._trend`,
+     * the refs fetched for THIS window, read with trendAt at the cursor's
+     * time; reaching for the live trend cache instead would put tomorrow's
+     * trend on today's bar, which is the one thing a replay must never do.
+     *
+     * IT CLOSES NOTHING HERE EITHER. The walker's exits are unchanged: this
+     * only labels what the walk already did. */
+    let rev = null;
+    const _held = sig.position;
+    if (_held && this.strategyKey === 'rayo' && slice.length) {
+      const at = slice[slice.length - 1].t;
+      let htfSign = 0;
+      let htfSince;
+      const refs = this._trend;
+      if (refs && typeof refs === 'object') {
+        const list = Object.values(refs);
+        const signs = list.map((r) => trendAt(r, at));
+        if (signs.length && signs.every((x) => x === signs[0])) {
+          htfSign = signs[0];
+          /* The last flip AT OR BEFORE the cursor -- a flip in the window's
+             future is not something this bar could have known. */
+          let flip = -Infinity;
+          for (const r of list) {
+            for (let i = r.sign.length - 1; i > 0; i--) {
+              if (r.close[i] > at) continue;
+              if (r.sign[i] !== r.sign[i - 1]) { flip = Math.max(flip, r.close[i]); break; }
+            }
+          }
+          if (Number.isFinite(flip)) htfSince = flip;
+        }
+      }
+      const fillBar = this.full[_held.entryI];
+      if (fillBar) {
+        rev = reversalFor(slice, {
+          side: _held.side > 0 ? 'buy' : 'sell', fillMs: fillBar.t,
+        }, { htfSign, htfSince });
+      }
+    }
+    const confirmed = !!rev && rev.level === WARN;
+    this.rev = rev;
     /* Kept for the panel and the sidecar so neither re-fits: both want to say
        WHICH numbers this walk used, and computing them a second time is how a
        screen ends up quoting a stop the walker did not use. */
@@ -720,7 +819,11 @@ export class StrategyReplay {
         this.levelsCleared = found.length > 0 && ahead.length === 0;
       }
     }
-    this.chart.setRuleTargets(this.levels.length ? {
+    /* TPxx TAGS OFF ONCE THE REVERSAL IS CONFIRMED. They are the same claim
+       the room-ahead band makes -- levels the trade is supposed to reach --
+       and leaving them on the scale after the chart has withdrawn that claim
+       is the clutter this whole change is removing. */
+    this.chart.setRuleTargets((!confirmed && this.levels.length) ? {
       levels: this.levels,
       entry: sig.position ? sig.position.entryPrice
         : (sig.pending ? sig.pending.signalPrice : NaN),
@@ -756,9 +859,13 @@ export class StrategyReplay {
      * ratchet -- which is the thing worth watching and the reason this is a
      * line and not a row. */
     this.trail = null;
-    if (sig.position) {
+    /* Rayo has no channel exit -- it leaves at the stop or TP1 -- so there is
+       no moving line to trace. */
+    const exitSeries = sig.position && sig.series
+      && (sig.position.side === LONG ? sig.series.exitLo : sig.series.exitHi);
+    if (sig.position && exitSeries) {
       const long = sig.position.side === LONG;
-      const lvl = long ? sig.series.exitLo : sig.series.exitHi;
+      const lvl = exitSeries;
       const closes = slice.map((b) => b.c);
       const pts = [];
       let held = null;
@@ -813,18 +920,43 @@ export class StrategyReplay {
     const pend = (!held && sig.pending && sig.pending.side !== FLAT)
       ? sig.pending : null;
     this.chart.setPositions([]);
-    if (held || pend) {
+
+
+    /* NOTHING OF THE TRADE IS DRAWN ONCE THE REVERSAL IS CONFIRMED -- entry
+       included, by request. On the live chart the entry line survives because
+       it is what carries the reversal tag and the confirmation triangle; here
+       there is no triangle and the label rides on this same zone, so keeping
+       the zone only to hold a label would put back the line it was asked to
+       remove. The state moves to the panel instead (see `sr-reversal`), which
+       is the replay's equivalent of the rail's REVERSAL CONFIRMED banner.
+       THE WALK IS UNCHANGED: the position is still open and still exits where
+       it always did. This is what is DRAWN, not what is held. */
+    if (confirmed) {
+      this.chart.setRuleZone(null);
+    } else if (held || pend) {
       const long = (held ? held.side : pend.side) > 0;
       this.chart.setRuleZone({
         entry: held ? held.entryPrice : pend.signalPrice,
+        /* THE RISK BLOCK AND THE ROOM-AHEAD BLOCK BOTH GO ONCE THE REVERSAL IS
+           CONFIRMED, leaving the entry line and its label -- the same thing the
+           live chart is left with when it takes SL and TP1-3 off.
+           `_ruleZone` guards each block on `> 0`, so zero is how you say "do
+           not draw this one" without touching the renderer.
+           THE STOP IS STILL WHERE IT WAS and the walk still exits on it; this
+           only stops DRAWING it, exactly as on the live chart, and for the
+           reason recorded there: it was argued for and overruled. */
         stop: held ? held.stop : pend.stop,
-        ref: this.levels.length ? this.levels[0].price : 0,
+        /* Rayo's target is the rule's own TP1, not the next level ahead. */
+        ref: (held && Number.isFinite(held.target)) ? held.target
+          : (pend && pend.tp && Number.isFinite(pend.tp[0])) ? pend.tp[0]
+          : (this.levels.length ? this.levels[0].price : 0),
         i0: held ? held.entryI : pend.signalI,
         label: held ? (long ? 'RULE holding LONG' : 'RULE holding SHORT')
                     : (long ? 'RULE would BUY' : 'RULE would SELL'),
       });
     } else {
       this.chart.setRuleZone(null);
+      this.rev = null;
     }
 
     /* Park the window on the cursor with a little of the future showing, so a
@@ -982,7 +1114,7 @@ export class StrategyReplay {
          at 8.3). Stepping through a rule that loses is worth more than not
          being able to look at it -- the replay is where you see WHY, and the
          per-cell verdict badge already says the measurement. */
-      sel(['1m', '5m', '15m', '1h', '4h', '1d'], this.tf,
+      sel(['1m', '3m', '5m', '15m', '1h', '2h', '4h', '1d'], this.tf,
           (v) => { this.tf = v; this.full = []; this.load(); }),
       /* Beside the timeframe, because the two answer one question together:
          WHICH BARS am I looking at. The timeframe picks their size and the
@@ -1940,6 +2072,23 @@ export class StrategyReplay {
       const dir = (ins.side === 'BUY' || ins.side === 'LONG') ? 'sr-up'
         : (ins.side === 'SELL' || ins.side === 'SHORT') ? 'sr-down' : '';
       rows.push(['side', el('span', { class: dir, text: ins.side })]);
+    }
+
+    /* THE REVERSAL, WHICH IS NO LONGER ANYWHERE ON THE CHART. Once confirmed
+       the replay stops drawing the trade entirely, so this row is the only
+       thing left saying the thesis has turned -- the replay's counterpart to
+       the rail's REVERSAL CONFIRMED banner.
+
+       CONFIRMED BY, not firing now: reversal.js latches the state for the life
+       of the trade and names the witnesses that crossed it, so this row does
+       not flicker as the live evidence thins.
+
+       AND IT IS NOT AN EXIT. The walk's exits are untouched; closing on this
+       was measured over 2017-2026 and beat holding on none of five gold
+       frames. See js/chart/reversal.js. */
+    if (this.rev && this.rev.level === WARN) {
+      rows.push(['reversal', el('span', { class: 'sr-reversal',
+        text: `CONFIRMED · ${(this.rev.confirmedBy || []).join('+') || 'n/a'}` })]);
     }
 
     /* THE ESTIMATED FILL, on an entry bar only. The rule fires on a close and

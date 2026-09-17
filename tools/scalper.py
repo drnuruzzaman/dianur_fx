@@ -149,10 +149,10 @@ def _spec_digits(symbol, tf, default=2):
 # THE RULE LIVES IN sim/strategies/rayo.py, not here. This file is the harness
 # -- fills, the ladder race, expiry, costs -- and a copy of the rule beside a
 # copy of the scorer is how the two quietly stop describing the same thing.
-from sim.strategies.rayo import TPS, tickets                     # noqa: E402
+from sim.strategies.rayo import TPS, tickets, breakeven_r         # noqa: E402
 
 
-def resolve(tk, M, expire_ms, horizon_ms):
+def resolve(tk, M, expire_ms, horizon_ms, be_r=None):
     """Fill on 1m bars, then race the stop against the ladder. Ties go to the loss.
 
     NUMPY AND A BOUNDED WINDOW. The first version filtered the whole 1m frame
@@ -195,6 +195,29 @@ def resolve(tk, M, expire_ms, horizon_ms):
         tp_hit = np.flatnonzero(L[hs:he] <= tgt)
     i_sl = hs + int(sl_hit[0]) if sl_hit.size else None
     i_tp = hs + int(tp_hit[0]) if tp_hit.size else None
+
+    # ---- 2b. BREAK-EVEN (be_r, in R; see sim/strategies/rayo.py BREAKEVEN) --
+    # Once the favourable excursion reaches be_r, the stop is the ENTRY from
+    # the NEXT minute on: the minute that triggers it cannot also be stopped by
+    # it, because nothing inside a 1m bar says which came first. A trade that
+    # hits its original stop or TP1 before the trigger is untouched.
+    be_ms = None
+    if be_r:
+        fav = (H[hs:he] - entry) if side > 0 else (entry - L[hs:he])
+        trig = np.flatnonzero(fav >= be_r * risk)
+        i_tr = hs + int(trig[0]) if trig.size else None
+        first_end = min(x for x in (i_sl, i_tp, he) if x is not None)
+        if i_tr is not None and i_tr < first_end:
+            be_ms = int(ms[i_tr])
+            b0 = i_tr + 1
+            be_hit = (np.flatnonzero(L[b0:he] <= entry) if side > 0
+                      else np.flatnonzero(H[b0:he] >= entry))
+            i_be = b0 + int(be_hit[0]) if be_hit.size else None
+            if i_be is not None and (i_tp is None or i_be < i_tp):
+                return {'outcome': 'be', 'r': 0.0, 'ambiguous': False,
+                        'fill_ms': fill_ms, 'end_ms': int(ms[i_be]), 'be_ms': be_ms}
+            i_sl = None                    # the original stop can no longer be hit
+
     if i_sl is not None and i_tp is not None and i_sl == i_tp:
         return {'outcome': 'sl', 'r': -1.0, 'ambiguous': True,
                 'fill_ms': fill_ms, 'end_ms': int(ms[i_sl])}
@@ -202,11 +225,17 @@ def resolve(tk, M, expire_ms, horizon_ms):
         return {'outcome': 'sl', 'r': -1.0, 'ambiguous': False,
                 'fill_ms': fill_ms, 'end_ms': int(ms[i_sl])}
     if i_tp is not None:
-        return {'outcome': 'tp%d' % EXIT_TP[0],
-                'r': round(abs(tgt - entry) / risk, 4),
-                'ambiguous': False, 'fill_ms': fill_ms, 'end_ms': int(ms[i_tp])}
-    return {'outcome': 'open', 'r': round((C[he - 1] - entry) * side / risk, 4),
-            'ambiguous': False, 'fill_ms': fill_ms, 'end_ms': int(ms[he - 1])}
+        out = {'outcome': 'tp%d' % EXIT_TP[0],
+               'r': round(abs(tgt - entry) / risk, 4),
+               'ambiguous': False, 'fill_ms': fill_ms, 'end_ms': int(ms[i_tp])}
+        if be_ms is not None:
+            out['be_ms'] = be_ms
+        return out
+    out = {'outcome': 'open', 'r': round((C[he - 1] - entry) * side / risk, 4),
+           'ambiguous': False, 'fill_ms': fill_ms, 'end_ms': int(ms[he - 1])}
+    if be_ms is not None:
+        out['be_ms'] = be_ms
+    return out
 
 
 def _safe_print(text):
@@ -285,6 +314,136 @@ def should_notify(key, t, st):
     return False, 'unchanged'
 
 
+SCORED = os.path.join(ROOT, 'data', 'scalper_scored.jsonl')
+
+
+def _jsonl(path):
+    out = []
+    if not os.path.exists(path):
+        return out
+    with io.open(path, encoding='utf-8') as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+    return out
+
+
+def resting(bars, tf_ms, journal, scored, now_ms, exit_tp=1):
+    """The cell's state under FIXED 12: ('pending', row, bars_left),
+    ('open', row, fill_ms) or ('flat', None, None).
+
+    THE TWIN OF js/chart/rayorule.js run() IN LEDGER MODE, so the Telegram
+    message, the right-rail panel, the TP bands and the Strategy Replay all
+    name the same order. A journalled ticket is taken when the cell is free,
+    rests with its own levels for `expire_bars` bars counted from its own bar,
+    fills when a bar trades through the entry, then races its stop against
+    TP1 (a tie is the loss); the next ticket is taken only after that. A ticket
+    tools/score_scalper.py has resolved fills and ends on the bars it named.
+
+    `bars` are the bridge's bars for the cell INCLUDING the forming one (a fill
+    can happen there); only CLOSED bars post a ticket. `journal` and `scored`
+    are this cell's rows at this stop and mode.
+
+    Re-issuing the order every bar measured worse on all 8 gold frames
+    (tools/rayo_reissue_eval.py, logs/rayo_reissue_eval.txt).
+    """
+    if not bars:
+        return ('flat', None, None)
+    by_ms = {int(j['ms']): j for j in journal if j.get('ms') is not None}
+    sc_by_id = {r.get('id'): r for r in scored}
+    rows = {j.get('id'): j for j in journal}
+    # Inside the scored span only a ticket the scorer TOOK is taken; past it,
+    # any journalled ticket, under the same cursor (as rayorule.js).
+    scored_until = max((int(r.get('ms', 0)) for r in scored), default=float('-inf'))
+    k = max(1, min(3, int(exit_tp or 1))) - 1
+    first = int(bars[0]['t'])
+
+    pos, order, free_from = None, None, float('-inf')
+    # WHAT WAS LIVE BEFORE THE WINDOW. The bridge serves a few hundred bars;
+    # the ledger says what the cell was doing when they begin.
+    prior = sorted((r for r in scored if int(r.get('ms', 0)) < first),
+                   key=lambda r: r['ms'])
+    if prior:
+        last = prior[-1]
+        if last.get('outcome') == 'open' and last.get('id') in rows:
+            pos = {'row': rows[last['id']], 'sc': last}
+        elif last.get('end_ms'):
+            free_from = int(last['end_ms'])
+
+    for i, b in enumerate(bars):
+        t0 = int(b['t'])
+        closed = t0 + tf_ms <= now_ms
+        if pos is None and order is not None:
+            sc = order['sc']
+            gone = ((sc.get('outcome') == 'expired' and t0 + tf_ms > int(sc.get('end_ms') or 0))
+                    if sc else i >= order['exp_i'])
+            if gone:
+                order = None
+                free_from = max(free_from, t0)
+        for pas in (0, 1):
+            freed = free_from
+            if pos is None and order is None and t0 >= free_from and closed:
+                j = by_ms.get(t0)
+                if j is not None and (j.get('id') in sc_by_id or t0 > scored_until):
+                    order = {'row': j, 'exp_i': i + int(j.get('expire_bars') or 12),
+                             'sc': sc_by_id.get(j.get('id'))}
+            if order is not None and pos is None:
+                sc, e = order['sc'], float(order['row']['entry'])
+                if sc:
+                    fm = sc.get('fill_ms')
+                    fills = (sc.get('outcome') != 'expired' and fm is not None
+                             and t0 <= int(fm) < t0 + tf_ms)
+                else:
+                    fills = float(b['l']) <= e <= float(b['h'])
+                if fills:
+                    pos = {'row': order['row'], 'sc': sc, 'fill_ms': t0}
+                    order = None
+            if pos is not None:
+                row, sc = pos['row'], pos['sc']
+                long = row['side'] == 'buy'
+                entry = float(row['entry'])
+                sl, tgt = float(row['sl']), float(row['tp'][k])
+                # BREAK-EVEN (row['breakeven_r']): once a bar's favourable
+                # excursion reaches the trigger, the stop is the entry from the
+                # NEXT bar -- the bar-level twin of resolve()'s next-minute rule.
+                if pos.get('be'):
+                    sl = entry
+                hit_sl = float(b['l']) <= sl if long else float(b['h']) >= sl
+                hit_tp = float(b['h']) >= tgt if long else float(b['l']) <= tgt
+                ber = row.get('breakeven_r')
+                if ber and not pos.get('be'):
+                    fav = (float(b['h']) - entry) if long else (entry - float(b['l']))
+                    if fav >= float(ber) * abs(entry - float(row['sl'])) and not hit_sl:
+                        pos['be'] = True
+                        pos['be_ms'] = t0
+                if (sc and sc.get('be_ms') is not None and not pos.get('be')
+                        and int(sc['be_ms']) < t0 + tf_ms):
+                    pos['be'], pos['be_ms'] = True, int(sc['be_ms'])
+                if sc and sc.get('outcome') != 'open':
+                    em = sc.get('end_ms')
+                    ends = em is not None and t0 <= int(em) < t0 + tf_ms
+                    hit_sl = ends and sc.get('outcome') == 'sl'
+                    hit_tp = ends and sc.get('outcome') != 'sl'
+                if hit_sl or hit_tp:
+                    em = sc.get('end_ms') if sc else None
+                    free_from = t0 if (em is not None and int(em) == t0) else t0 + 1
+                    pos = None
+            if pas or free_from != t0 or freed == t0:
+                break
+
+    if pos is not None:
+        return ('open', pos['row'], {
+            'fill_ms': (pos['sc'] or {}).get('fill_ms') or pos.get('fill_ms'),
+            'be': bool(pos.get('be')), 'be_ms': pos.get('be_ms')})
+    if order is not None:
+        return ('pending', order['row'], max(0, order['exp_i'] - (len(bars) - 1)))
+    return ('flat', None, None)
+
+
 def compose_scalper(symbol, tf, t, expected=None):
     """The ticket, in the same shape signal_alert.py posts."""
     pretty = symbol.replace('.a', '').replace('XAUUSD', 'XAU/USD')                    .replace('USDJPY', 'USD/JPY')
@@ -296,8 +455,9 @@ def compose_scalper(symbol, tf, t, expected=None):
     for i, tp in enumerate(t['tp'], start=1):
         out.append('🔵   TP%d     ' % i + f % tp)
     out.append('🔴   SL      ' + f % t['sl'])
+    left = t.get('bars_left', t.get('expire_bars', 12))
     out.append('_pending: fills only if price trades through the entry within '
-               '%d bars_' % t.get('expire_bars', 12))
+               '%d bar%s -- levels fixed, not re-issued_' % (left, '' if left == 1 else 's'))
     # IN THE TEXT AS WELL AS ON THE IMAGE, and the duplication is deliberate:
     # the chart render is non-fatal, so a ticket can go out text-only, and that
     # is exactly the message that must not be the one without a warning.
@@ -329,6 +489,7 @@ def do_live(args):
                                 'count': 400, 'months': 0})
     with urllib.request.urlopen('%s/bars?%s' % (args.base, q), timeout=120) as r:
         rows = json.load(r).get('bars') or []
+    all_rows = list(rows)                  # the forming bar included, for fills
     df = pd.DataFrame(rows)
     df['ts'] = pd.to_datetime(df['t'], unit='ms')
     df = df.set_index('ts')[['o', 'h', 'l', 'c']].rename(
@@ -375,26 +536,108 @@ def do_live(args):
         print('  bar %s   expires in %d bars' % (t['t'], args.expire))
         print('  YOU place this order. This tool cannot and does not.')
 
-        if args.notify and (args.symbol, args.tf) not in TRADEABLE                 and not args.notify_untradeable:
-            print('  (no message: %s %s is journalled, not traded -- '
-                  'expected %s R per fill)'
-                  % (args.symbol, args.tf,
-                     ('%+.4f' % EXPECTED[(args.symbol, args.tf)])
-                     if (args.symbol, args.tf) in EXPECTED else 'un-measured'))
-        elif args.notify and not age_gate(t)[0]:
-            # SILENCED, NOT SUPPRESSED -- the ticket was printed above and, with
-            # --journal, is recorded. Only the message is withheld.
-            print('  (no message: %s)' % age_gate(t)[1])
-        elif args.notify:
+        if args.journal:
+            key = '%s|%s|%s|%s' % (args.symbol, args.tf, m, t['t'])
+            if key in seen:
+                print('  (already journalled)')
+            else:
+                # A UNIQUE ID. `t['id']` is the index of the ticket within its
+                # generation run, so all four cells journalled the same '347' and
+                # no signal could be referred to afterwards.
+                rec = dict(t, id='%s-%s-%s-%s' % (args.symbol.replace('.', ''),
+                                                  args.tf, m, t['t'][:16]),
+                           symbol=args.symbol, tf=args.tf,
+                           expire_bars=args.expire, exit_tp=args.exit_tp,
+                           stop_atr=args.stop_atr,
+                           breakeven_r=breakeven_r(args.tf),
+                           logged_at=datetime.now(timezone.utc).isoformat())
+                os.makedirs(os.path.dirname(JOURNAL), exist_ok=True)
+                with io.open(JOURNAL, 'a', encoding='utf-8') as fh:
+                    fh.write(json.dumps(rec) + chr(10))
+                seen.add(key)
+                print('  -> journalled to %s' % os.path.relpath(JOURNAL, ROOT))
+        # ---------------------------------------------------------------- #
+        # THE MESSAGE: FIXED 12, NOT THE LATEST TICKET.                    #
+        # ---------------------------------------------------------------- #
+        # A message goes out ONCE per ticket, when it becomes the order the
+        # cell has RESTING under the live scorer's rule -- taken when the cell
+        # is free, left at its own levels for 12 bars. While it rests, fills,
+        # or its trade runs, later tickets are not announced. This replaced
+        # `should_notify` (a message whenever the latest ticket moved by half
+        # the risk), which was the re-issue rule in message form; re-issue
+        # measured worse on all 8 gold frames (logs/rayo_reissue_eval.txt).
+        # The right-rail panel and TP bands show the same order.
+        if args.notify:
+            frame_min = {'1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60,
+                         '2h': 120, '4h': 240, '1d': 1440}.get(args.tf)
+            mine = lambda r: (r.get('symbol') == args.symbol and r.get('tf') == args.tf
+                              and (r.get('mode') or 'break') == m
+                              and r.get('stop_atr') == args.stop_atr)
+            jrows = [r for r in _jsonl(JOURNAL) if mine(r)]
+            if not any(int(r.get('ms', -1)) == int(t['ms']) for r in jrows):
+                # not journalled this run (--journal off): the fresh ticket
+                # still counts as posted on its bar
+                jrows.append(dict(t, id='%s-%s-%s-%s' % (args.symbol.replace('.', ''),
+                                                         args.tf, m, t['t'][:16]),
+                                  expire_bars=args.expire))
+            srows = [r for r in _jsonl(SCORED) if mine(r)]
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            state, rt, extra = (resting(all_rows, frame_min * 60000, jrows, srows,
+                                        now_ms, args.exit_tp)
+                                if frame_min else ('flat', None, None))
             nkey = '%s|%s|%s' % (args.symbol, args.tf, m)
             st = _notify_state()
-            go, why = should_notify(nkey, t, st)
-            if not go:
-                print('  (no message: %s)' % why)
+            if (state == 'open' and extra and extra.get('be')
+                    and ((args.symbol, args.tf) in TRADEABLE or args.notify_untradeable)
+                    and (st.get(nkey + '|be') or {}).get('id') != rt.get('id')):
+                # MOVE THE STOP TO ENTRY -- once per ticket. The bridge is
+                # read-only, so this is an instruction to the reader; the rule,
+                # the scorer and the chart already count the stop as moved.
+                _f = '%%.%df' % _spec_digits(args.symbol, args.tf)
+                pretty = (args.symbol.replace('.a', '').replace('XAUUSD', 'XAU/USD')
+                          .replace('USDJPY', 'USD/JPY'))
+                text = chr(10).join([
+                    '*%s %s*  %s  ·  rayo scalper',
+                    '🟡   MOVE SL TO ENTRY  ' + _f,
+                    '_the trade reached +%sR -- stop to break-even; TP1 unchanged_'])
+                text = text % (pretty, args.tf, rt['side'].upper(), float(rt['entry']),
+                               ('%g' % float(rt.get('breakeven_r') or 0)))
+                if args.dry_run:
+                    print('  WOULD SEND (break-even, ticket %s):' % rt.get('id'))
+                    _safe_print(text)
+                else:
+                    try:
+                        from tools import notify
+                        res = notify.deliver('scalper', text)
+                        print('  -> break-even sent to %d destination(s)' % res['sent'])
+                        if res['sent']:
+                            st[nkey + '|be'] = {'id': rt.get('id'),
+                                                'at': datetime.now(timezone.utc).isoformat()}
+                            _notify_save(st)
+                    except Exception as exc:                # noqa: BLE001
+                        print('  ! break-even notify failed: %s' % exc, file=sys.stderr)
+            elif state != 'pending':
+                print('  (no message: %s)' % (
+                    ('a trade is open from ticket %s%s' % (rt.get('id'),
+                     ', stop at break-even' if extra and extra.get('be') else ''))
+                    if state == 'open' else 'no ticket resting'))
+            elif (args.symbol, args.tf) not in TRADEABLE and not args.notify_untradeable:
+                print('  (no message: %s %s is journalled, not traded -- '
+                      'expected %s R per fill)'
+                      % (args.symbol, args.tf,
+                         ('%+.4f' % EXPECTED[(args.symbol, args.tf)])
+                         if (args.symbol, args.tf) in EXPECTED else 'un-measured'))
+            elif not age_gate(rt)[0]:
+                print('  (no message: %s)' % age_gate(rt)[1])
+            elif (st.get(nkey) or {}).get('id') == rt.get('id'):
+                print('  (no message: ticket %s already announced, %d bar(s) left)'
+                      % (rt.get('id'), extra))
             else:
+                why = 'resting ticket %s, %d bar(s) left' % (rt.get('id'), extra)
                 exp = EXPECTED.get((args.symbol, args.tf))
                 text = compose_scalper(args.symbol, args.tf,
-                                       dict(t, expire_bars=args.expire), exp)
+                                       dict(rt, expire_bars=args.expire,
+                                            bars_left=extra), exp)
 
                 # THE CHART OF THE FRAME THE SIGNAL IS ON, drawn from the very
                 # bars the rule just read -- not re-fetched, so the picture
@@ -402,15 +645,14 @@ def do_live(args):
                 #
                 # NEVER FATAL. A message with no chart is worth far more than
                 # no message, so a rendering failure is reported and stepped
-                # over. matplotlib on a headless scheduled task is exactly the
-                # kind of thing that breaks quietly one day.
+                # over.
                 png = None
                 if not args.no_chart:
                     try:
                         from tools.chartshot import render
                         digits = 2 if 'XAU' in args.symbol.upper() else (
                             3 if 'JPY' in args.symbol.upper() else 5)
-                        png = render(df, dict(t), args.symbol, args.tf,
+                        png = render(df, dict(rt), args.symbol, args.tf,
                                      digits=digits, expected=exp)
                     except Exception as exc:                # noqa: BLE001
                         print('  ! chart not drawn (%s) -- sending text only'
@@ -423,12 +665,9 @@ def do_live(args):
                     _safe_print(text)
                 else:
                     try:
-                        # ROUTED, not sent directly: destinations live in
-                        # configs/alerts.json and a Scalper ticket goes only to
-                        # the ones that asked for `scalper`. Sending straight to
-                        # TELEGRAM_CHAT_ID here would ignore that list and put
-                        # every ticket in every chat, which is the reason this
-                        # was centralised in tools/notify.py.
+                        # ROUTED: destinations live in configs/alerts.json and
+                        # a Scalper ticket goes only to the ones that asked for
+                        # `scalper` (tools/notify.py).
                         from tools import notify
                         res = notify.deliver('scalper', text, image=png)
                         if res['sent']:
@@ -439,39 +678,15 @@ def do_live(args):
                                   file=sys.stderr)
                     except Exception as exc:                # noqa: BLE001
                         print('  ! notify failed: %s' % exc, file=sys.stderr)
-                # RECORDED AFTER THE ATTEMPT so a failed send is retried next poll.
-                # NOT AFTER A DRY RUN. `--dry-run` is documented as "print the
-                # message, send nothing", and it fell through to here -- so a
-                # dry run recorded the ticket as announced and the next REAL run
-                # called it unchanged and stayed silent. Previewing a message
-                # was enough to cancel it. Found on 2026-09-14 when a preview of
-                # the corrected 5.0-ATR stops swallowed the announcement of
-                # those very stops.
+                # RECORDED AFTER THE ATTEMPT so a failed send is retried next
+                # poll, and NOT AFTER A DRY RUN, so a preview cannot cancel the
+                # real message.
                 if not args.dry_run:
-                    st[nkey] = {'side': t['side'], 'entry': t['entry'],
-                                'sl': t['sl'], 'risk': t['risk'],
+                    st[nkey] = {'id': rt.get('id'), 'side': rt['side'],
+                                'entry': rt['entry'], 'sl': rt['sl'],
+                                'risk': rt['risk'],
                                 'at': datetime.now(timezone.utc).isoformat()}
                     _notify_save(st)
-
-        if args.journal:
-            key = '%s|%s|%s|%s' % (args.symbol, args.tf, m, t['t'])
-            if key in seen:
-                print('  (already journalled)')
-                continue
-            # A UNIQUE ID. `t['id']` is the index of the ticket within its
-            # generation run, so all four cells journalled the same '347' and
-            # no signal could be referred to afterwards.
-            rec = dict(t, id='%s-%s-%s-%s' % (args.symbol.replace('.', ''),
-                                              args.tf, m, t['t'][:16]),
-                       symbol=args.symbol, tf=args.tf,
-                       expire_bars=args.expire, exit_tp=args.exit_tp,
-                       stop_atr=args.stop_atr,
-                       logged_at=datetime.now(timezone.utc).isoformat())
-            os.makedirs(os.path.dirname(JOURNAL), exist_ok=True)
-            with io.open(JOURNAL, 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(rec) + chr(10))
-            seen.add(key)
-            print('  -> journalled to %s' % os.path.relpath(JOURNAL, ROOT))
     return 0
 
 

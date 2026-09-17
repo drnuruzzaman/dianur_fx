@@ -66,6 +66,10 @@ export function loadScalperCells(url = ALERTS) {
           symbol: c.symbol, tf: c.tf,
           expected: c.expected_net_r,
           perYear: c.total_r_per_year,
+          /* THE SAME RULE AT ZERO COST -- no spread, slippage or swap, from
+             `tools/scalp_register.py --zero-cost`. A ceiling, not a forecast:
+             a raw ECN account still pays commission. Null until measured. */
+          zero: c.zero_cost || null,
           worst: c.worst_era_net_r,
           control: !!c.control,
           /* TRADEABLE IS NOT `expected > 0`, and conflating them was a real

@@ -79,6 +79,9 @@ export function emaSeries(values, n) {
  * which one is loaded.
  */
 export function runRule(bars, rule, opts = {}) {
+  /* A RULE WITH ITS OWN WALKER (Rayo: resting stop orders, intrabar fills,
+     TP1 exit) runs that walker. It returns the same shape. */
+  if (typeof rule.run === 'function') return rule.run(bars, { ...rule.defaults, ...opts });
   /* THREE LAYERS, and the order is the whole point.
    *
    * defaults  what the rule is when nobody says otherwise.
@@ -321,7 +324,9 @@ export function instruction(sig) {
     out.action = 'hold';
     out.side = sig.position.side === LONG ? 'LONG' : 'SHORT';
     out.stop = sig.position.stop;
-    out.note = 'stop is fixed; exit moves with each bar';
+    out.note = Number.isFinite(sig.position.target)
+      ? 'stop is fixed; exits at the stop or TP1 (0.9R)'
+      : 'stop is fixed; exit moves with each bar';
   }
   return out;
 }

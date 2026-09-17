@@ -42,8 +42,8 @@ import { findPivots } from './trendlines.js';
 /* Base pivot window per timeframe. Higher timeframes carry fewer, larger
    swings, so a wider window costs little and rejects more noise. */
 export const BASE_STRENGTH = {
-  '1m': 3, '5m': 3, '15m': 3, '30m': 4,
-  '1h': 4, '4h': 5, '1d': 5, '1w': 5,
+  '1m': 3, '3m': 3, '5m': 3, '15m': 3, '30m': 4,
+  '1h': 4, '2h': 4, '4h': 5, '1d': 5, '1w': 5,
 };
 
 export const CALM = 'calm', NORMAL = 'normal', HIGH = 'high', EXTREME = 'extreme';

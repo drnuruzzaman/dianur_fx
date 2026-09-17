@@ -76,8 +76,12 @@ from tools import scalper as SC                                 # noqa: E402
 # daily bar (stamped broker hour 0) was rejected and the registry recorded 1d
 # as 'not measurable'; with the gate off those bars produce tickets, and a
 # missing key crashed the registration run rather than skipping the row.
-TF_MIN = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240,
-          '1d': 1440, '1w': 10080}
+# 3m AND 2h JOINED THE REGISTRY 2026-09-17 (journal only, both negative). They
+# are here because scalp_register.py walks EVERY row in scalper.watch and builds
+# a Cell for it, so a frame in the config and not in this dict crashes the next
+# registration run -- which is exactly how the first run died on a missing '1d'.
+TF_MIN = {'1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60,
+          '2h': 120, '4h': 240, '1d': 1440, '1w': 10080}
 DAY_MS = 24 * 3600 * 1000
 N_BOOT = 2000
 
@@ -262,14 +266,20 @@ def run_arm(cells, age_max, horizon_ms=DAY_MS, priority='arrival', seed=7,
                 break
             ms, c, t = choose(cand, priority, rnd)
             batch = [x for x in batch if x[2] is not t]
-            r = SC.resolve(t, c.M, c.expire_ms, horizon_ms)
+            r = SC.resolve(t, c.M, c.expire_ms, horizon_ms,
+                           be_r=getattr(c, 'be_r', None))
             if not r:
                 # A ticket the 1m frame cannot even reach is not a decision the
                 # account made; the slot is still free for the next candidate.
                 continue
             open_pos.append((r.get('end_ms', ms), c.symbol))
-            if r['outcome'] not in ('sl', 'tp1', 'tp2', 'tp3'):
-                continue                   # expired or still open: no money moved
+            # OPEN AT THE HORIZON IS CLOSED AT MARKET AND COUNTED. It used to
+            # be skipped as "no money moved", which is false -- an account
+            # holds that trade -- and at a 5 ATR stop it silently discarded
+            # 40-70% of 15m-1h fills (memory:
+            # rayo-24h-horizon-dropped-unresolved-trades).
+            if r['outcome'] == 'expired' or r.get('r') is None:
+                continue                   # never filled: no money moved
             net = r['r'] - c.cost_r(t) + c.swap_r(t, r['fill_ms'], r['end_ms'])
             out.append({'ms': ms, 'end_ms': r['end_ms'], 'symbol': c.symbol,
                         'tf': c.tf, 'side': t['side'], 'age': t.get('age'),

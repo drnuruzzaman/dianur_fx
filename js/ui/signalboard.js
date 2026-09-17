@@ -38,13 +38,27 @@
 
 import { api } from '../api.js';
 import { gated, loadGate, loadMeasurement, loadScalperCells } from '../chart/graded.js';
-import { MIN_LIVE_N, loadScored } from '../chart/scored.js';
+import { MIN_LIVE_N, loadScored, refreshScored } from '../chart/scored.js';
+import { restingRayo } from '../chart/rayorule.js';
+import { rayoLedgerFor, refreshRayoLedger } from '../chart/rayoledger.js';
+import { loadJournal } from '../chart/journal.js';
+import { endedOn } from '../chart/opentrades.js';
 import { attach as hoverCard } from './hovercard.js';
 import { ticket as scalpTicket, orderPhrase, STOP_ATR } from '../chart/scalper.js';
 import { TF, el, load, num, px, relTime, save, stamp } from '../util.js';
 
 const ALERTS = 'configs/alerts.json';
-const REFRESH_MS = 60000;
+/* HOW OFTEN THE PENDING ORDERS ARE RE-ASKED.
+ *
+ * 30s, DOWN FROM 60. A pending order changes when a bar closes, and the fastest
+ * cells on this board close a bar every minute -- so a 60s cycle could show a
+ * minute-old order on a minute timeframe, which is the whole lifetime of the
+ * thing. The floor is not this number anyway: the poll walks every cell with
+ * one bridge request each, sequentially, because MT5 serves history one request
+ * at a time. Thirty cells is a cycle of real seconds, and asking more often
+ * than a cycle takes would only queue inside the terminal. Rows paint as each
+ * answer lands, so a cell is current the moment its own answer does. */
+const REFRESH_MS = 30000;
 
 /* A newline, as a constant. Twice now a backslash-n written into this file by a
    patch script arrived as a REAL newline inside a string literal and took the
@@ -238,6 +252,27 @@ const LIFECYCLE = 'A ticket is POSTED, then either FILLS or EXPIRES. '
 const LIFECYCLE_INLINE = 'a ticket is posted, then either fills or expires; '
   + 'a fill ends won, stopped, or still open';
 
+/** The zero-cost median, coloured by sign, with R/yr and the eras on hover. */
+function zeroCell(z) {
+  if (!z || !Number.isFinite(z.expected_net_r)) {
+    return el('td', { class: 'dim', text: '—',
+                      title: 'Not measured at zero cost yet' });
+  }
+  const v = z.expected_net_r;
+  const eras = Object.entries(z.eras || {})
+    .map(([k, x]) => `${k} ${x >= 0 ? '+' : ''}${Number(x).toFixed(4)}`).join('  ·  ');
+  return el('td', {
+    class: v > 0 ? 'up' : 'down',
+    text: `${v >= 0 ? '+' : ''}${v.toFixed(4)}`,
+    title: `Zero cost (no spread, slippage or swap; commission not charged)
+`
+      + `median ${v >= 0 ? '+' : ''}${v.toFixed(4)} R per fill  ·  `
+      + `${z.total_r_per_year >= 0 ? '+' : ''}${Number(z.total_r_per_year).toFixed(1)} R/yr  ·  `
+      + `${z.n} fills  ·  ${z.win_pct}% win  ·  drawdown ${z.drawdown_r} R
+${eras}`,
+  });
+}
+
 function liveCell(scored, c, expected) {
   const v = scored ? scored.byCell.get(`${c.symbol}|${c.tf}`) : null;
   const has = !!(v && (v.n || v.expired || v.open));
@@ -337,6 +372,11 @@ export class SignalBoard {
     /* No `rows` or `recent` map any more: both held /signal payloads for the
        retired Donchian. `scalp` is the board's only state. */
     this.scalp = new Map();     // 'SYM|tf' -> live Rayo ticket
+    /* THE BARS THE POLL ALREADY PAID FOR. The loop below fetches 400 bars per
+       cell to compute its ticket and threw them away; an `open` row can be
+       checked against them for nothing, which is the difference between the
+       board waiting an hour for the scorer and the board being right now. */
+    this.cellBars = new Map();  // 'SYM|tf' -> bars from the last poll
     this.scalpCells = null;
     /* NO GATE UNTIL THE CONFIG SAYS SO. An unloaded gate must not hide rows. */
     this.gate = { enforce: false, maxAge: null };
@@ -349,6 +389,12 @@ export class SignalBoard {
       .then((m) => loadScored(m.stopAtr))
       .then((sc) => { this.scored = sc; })
       .catch(() => { this.scored = null; });
+    /* EAGERLY NOW, not on the first click. The journal carries the stop price,
+       and without a stop price an `open` row cannot be re-checked -- so the
+       headline counts need it, not just the list. It is still one fetch per
+       page and still the largest thing this tab asks for. */
+    loadJournal().then((j) => { this.journal = j; if (this.repaint) this.repaint(); })
+      .catch(() => { this.journal = new Map(); });
     /* Off by default: the journalled and control cells are part of the
        forward test and hiding them by default would make the board look
        like a list of recommendations. */
@@ -362,9 +408,353 @@ export class SignalBoard {
     this.showDisabled = load('sigShowDisabled', false);
     this.entriesOnly = load('sigEntriesOnly', false);
     this.open = new Set();      // expanded rows, by key
+    /* THE RESULTS LIST. Closed by default: it is a log, and a board that
+       opens with a log pushed between the summary and the cells buries the
+       thing the reader came for. `resultsFilter` is one of
+       all/won/stopped/expired/open and is set by clicking the count. */
+    this.resultsOpen = load('sbResultsOpen', false);
+    this.resultsFilter = load('sbResultsFilter', 'all');
+    /* THE POSTED PRICES, fetched only once the list is opened -- see
+       journal.js. Null means "not asked for yet", an empty Map means "asked
+       and there was nothing", and the two must not collapse or the table
+       would retry the fetch on every repaint. */
+    this.journal = null;
+    /* THE SYMBOL FILTER, shared by the results list and the cell table.
+       Stored lower-cased and matched as a substring, so "xau", "jpy" and
+       "USDJPY.a" all work and nobody has to remember the `.a` suffix. */
+    this.symQ = load('sbSymQ', '');
   }
 
   key(c) { return `${c.symbol}|${c.tf}`; }
+
+  /**
+   * The instrument filter.
+   *
+   * IT FILTERS ON EVERY KEYSTROKE and does NOT repaint the whole board to do
+   * it. A full `paint()` rebuilds the header, which destroys the input the
+   * reader is typing into and takes the caret with it -- the first version did
+   * exactly that and dropped every character after the first. So the handler
+   * hides rows directly and only calls `paint` when the results list needs
+   * rebuilding, which cannot steal focus because the list is below the header.
+   *
+   * NOT DEBOUNCED. Nothing here is fetched; it is a substring test over at most
+   * a few thousand rows already in memory.
+   */
+  searchBox(paint) {
+    const input = el('input', {
+      class: 'sb-search',
+      type: 'search',
+      value: this.symQ || '',
+      placeholder: 'filter symbol…',
+      title: 'Show only these instruments, on the cell table and in the '
+             + 'results list. Matches any part of the ticker, so "xau" finds '
+             + 'XAUUSD.a and the ".a" suffix is optional. Comma-separate for '
+             + 'more than one: "xau, jpy". Empty shows everything.',
+    });
+    input.oninput = () => {
+      this.symQ = input.value;
+      save('sbSymQ', this.symQ);
+      paint();
+      /* PUT THE CARET BACK. `paint` replaced this element with a new one, so
+         focus is restored on the node that now exists rather than on the one
+         this closure is holding. */
+      const live = document.querySelector('.sb-search');
+      if (live && live !== input) {
+        live.focus();
+        live.setSelectionRange(live.value.length, live.value.length);
+      }
+    };
+    return input;
+  }
+
+  /**
+   * What this scored row ACTUALLY is, given bars the ledger has not seen.
+   *
+   * THE LEDGER IS HOURLY AND THE MARKET IS NOT. `score_scalper.py` runs at :20,
+   * so a trade stopped at 10:05 stays written as `open` until 11:20 and the
+   * board reported a live position for over an hour after the candles had gone
+   * through the stop. The chart already re-checks this against its own bars;
+   * this is the same check on the same rule, so the two surfaces cannot say
+   * different things about one trade.
+   *
+   * ONLY `open` ROWS ARE RE-EXAMINED, and they can only CLOSE. Nothing here
+   * invents a trade, reopens a closed one, or revises a number the scorer
+   * wrote: the ledger stays the authority on everything except the one question
+   * it is provably late on.
+   *
+   * NO PRICES OR NO BARS MEANS NO CHANGE. A cell that has not been polled yet,
+   * or a row whose journal ticket is missing, reads exactly as the ledger wrote
+   * it -- late, but never invented.
+   */
+  effective(r) {
+    if (r.outcome !== 'open') return r.outcome;
+    const j = this.journal && this.journal.get(r.id);
+    if (!j || typeof j.sl !== 'number') return r.outcome;
+    const bars = this.cellBars.get(`${r.symbol}|${r.tf}`);
+    if (!bars || !bars.length) return r.outcome;
+    const end = endedOn({ side: r.side, sl: j.sl, tp: j.tp || [],
+                          fillMs: r.fill_ms || r.ms }, bars, 0);
+    /* `tp` here is the EXIT rung, which is TP1 -- the same rung the rule trades
+       and the same one the ledger would have written. */
+    return end === 'sl' ? 'sl' : end === 'tp' ? 'tp1' : 'open';
+  }
+
+  /**
+   * Fetch bars for every cell holding an `open` row, board or no board.
+   *
+   * THE RE-CHECK MUST COVER THE WHOLE LEDGER, not just what is on screen. The
+   * poll walks `scalpCells`, which is the ENABLED cells; the ledger also holds
+   * open trades from cells since switched off, and from frames the reader has
+   * filtered out of view. Those rows were reading "open" for ever -- correct
+   * against the ledger and wrong against the market, which is the failure this
+   * whole check exists to remove. Every instrument, every timeframe, one rule.
+   *
+   * ONE FETCH PER CELL PER PAGE, and only for cells that actually have an open
+   * row: thirteen of thirty-five today. Cells the poll has already paid for are
+   * skipped, so this adds nothing for anything on the board.
+   */
+  async resolveOpen(repaint) {
+    if (!this.scored || this.resolving) return;
+    const want = new Set();
+    for (const r of this.scored.rows) {
+      if (r.outcome !== 'open') continue;
+      const k = `${r.symbol}|${r.tf}`;
+      if (!this.cellBars.has(k)) want.add(k);
+    }
+    if (!want.size) return;
+    this.resolving = true;
+    try {
+      for (const k of want) {
+        const [symbol, tf] = k.split('|');
+        try {
+          const payload = await api.bars(symbol, tf, 400);
+          this.cellBars.set(k, (payload && payload.bars) || []);
+        } catch (exc) {
+          /* AN EMPTY ARRAY IS NOT A RESULT. `effective` treats "no bars" as
+             "no change", and caching [] here would make that permanent for the
+             page -- the row would read open for ever because one fetch failed
+             once. Left unset, so the next pass retries. */
+        }
+        repaint();
+      }
+    } finally { this.resolving = false; }
+  }
+
+  /** Did `effective` overrule the ledger on this row? */
+  late(r) { return r.outcome === 'open' && this.effective(r) !== 'open'; }
+
+  /** Does this symbol pass the search box? An empty box passes everything. */
+  matches(symbol) {
+    const q = (this.symQ || '').trim().toLowerCase();
+    if (!q) return true;
+    /* COMMA-SEPARATED IS AN OR, so "xau, jpy" is two instruments rather than a
+       query that matches nothing. Whitespace alone is not a separator: a bare
+       space is far more likely to be a typo than an intent to widen. */
+    return q.split(',').map((t) => t.trim()).filter(Boolean)
+      .some((t) => symbol.toLowerCase().includes(t));
+  }
+
+
+  /**
+   * One clickable count in the forward-record strip.
+   *
+   * CLICKING A NUMBER FILTERS THE LIST TO THAT NUMBER, and clicking the one
+   * already selected closes the list again -- so the same control opens,
+   * switches and dismisses, and there is no separate "show results" button
+   * competing with it for the reader's attention.
+   */
+  countBtn(kind, n, cls, why) {
+    const on = this.resultsOpen && this.resultsFilter === kind;
+    const b = el('button', {
+      class: `sb-count ${cls}${on ? ' on' : ''}`,
+      title: why + NL + NL + (n ? 'Click to list them.' : 'Nothing to list yet.'),
+      text: `${n} ${kind === 'open' ? 'still open' : kind}`,
+    });
+    /* A ZERO IS NOT A BUTTON. Disabled rather than hidden: "0 stopped" is
+       information, and removing it would make a clean run look like a
+       rendering fault. */
+    if (!n) b.disabled = true;
+    else {
+      b.onclick = () => {
+        if (on) this.resultsOpen = false;
+        else {
+          this.resultsOpen = true;
+          this.resultsFilter = kind;
+          /* THE PRICES ARRIVE AFTER THE LIST DOES, and that is fine: the
+             table renders dashes in the price columns for the fraction of a
+             second the fetch takes, then repaints. Blocking the open would
+             make the click feel broken to save a flicker. */
+          if (!this.journal) {
+            loadJournal().then((j) => { this.journal = j; this.repaint(); })
+              .catch(() => { this.journal = new Map(); });
+          }
+        }
+        save('sbResultsOpen', this.resultsOpen);
+        save('sbResultsFilter', this.resultsFilter);
+        this.repaint();
+      };
+    }
+    return b;
+  }
+
+  /**
+   * Every scored ticket, newest first, as a table.
+   *
+   * THIS READS THE SAME ROWS THE COUNTS ARE COUNTED FROM -- `scored.rows`,
+   * already filtered to the current stop width by scored.js. A second query
+   * against the ledger would be a second chance for the list and the total
+   * above it to disagree, which is exactly the bug this board exists to avoid.
+   *
+   * TRADED AND JOURNALLED ARE MARKED, NOT MIXED. Much of the forward record
+   * comes from cells the registry does not mark tradeable -- the 1m and 5m
+   * controls, which fire tens of times more often than anything else. A list
+   * that pooled them would report the controls' record as the rule's.
+   */
+  resultsTable(cells) {
+    if (!this.resultsOpen || !this.scored) return null;
+    /* FETCH HERE, NOT ONLY ON THE CLICK. `resultsOpen` is restored from the
+       last session, so a reader who left the list open came back to a table
+       with three columns of dashes -- the click that would have asked for the
+       journal never happened. Asking where the table is BUILT covers both
+       paths, and `loadJournal` is memoised so the click path costs nothing. */
+    if (!this.journal) {
+      loadJournal().then((j) => { this.journal = j; this.repaint(); })
+        .catch(() => { this.journal = new Map(); });
+    }
+    const eff = (r) => this.effective(r);
+    const KIND = {
+      won: (r) => eff(r) === 'tp1' || eff(r) === 'tp2' || eff(r) === 'tp3',
+      stopped: (r) => eff(r) === 'sl',
+      expired: (r) => eff(r) === 'expired',
+      open: (r) => eff(r) === 'open',
+      all: () => true,
+    };
+    const want = KIND[this.resultsFilter] || KIND.all;
+    const trade = new Map(cells.map((c) => [`${c.symbol}|${c.tf}`, !!c.tradeable]));
+    const rows = this.scored.rows.filter(want)
+      .filter((r) => this.matches(r.symbol))
+      /* Sorted by the FILL, not the post: two tickets posted an hour apart can
+         fill in the other order, and the question this list answers is when
+         money was at risk. An expiry never filled, so it falls back to `ms`. */
+      .sort((a, b) => (b.fill_ms || b.ms) - (a.fill_ms || a.ms));
+
+    const box = el('div', { class: 'sb-results' });
+    if (!rows.length) {
+      box.append(el('div', { class: 'empty', text: 'nothing in this category' }));
+      return box;
+    }
+
+    const HEAD = [
+      ['Filled', 'When the order opened, on the same clock as the rest of the app. '
+               + 'An expired ticket '
+               + 'never opened, so for those this is when it was posted'],
+      ['Symbol', 'Broker ticker'],
+      ['TF', 'The cell that posted it'],
+      ['Side', 'BUY or SELL'],
+      ['Result', LIFECYCLE],
+      ['Entry', 'The price the pending order rested at. It filled here, or '
+              + 'expired without ever being touched'],
+      ['SL', `The stop: ${STOP_ATR} ATR from the entry, which is 1R by definition`],
+      ['TP1', 'The rung the rule exits on, 0.9R from the entry. Hover for the '
+            + 'two rungs above it, which are drawn but never traded'],
+      ['Net R', 'Result in units of the risk taken, AFTER spread, slippage and '
+              + 'overnight financing. About +0.9 is the target, about -1.0 the stop'],
+      ['Traded', 'Whether the registry marks this cell tradeable. A journalled '
+               + 'cell is measured and recorded but is not a recommendation. '
+               + 'A dash means the cell has since been switched off the board'],
+    ];
+    const t = el('table', { class: 'grid sb-grid sb-res-grid' });
+    t.append(el('thead', {}, el('tr', {}, HEAD.map(
+      ([l, why]) => el('th', { text: l, title: why, class: 'sb-th' })))));
+
+    const body = el('tbody');
+    let sum = 0;
+    let closed = 0;
+    for (const r of rows) {
+      /* THREE STATES, NOT TWO. `loadScalperCells` drops DISABLED cells, so a
+         ticket scored before its cell was switched off has no entry here at
+         all -- and `undefined` read as `false` labelled real tradeable cells
+         "journal", which is the one thing this column exists to get right. */
+      const isTrade = trade.has(`${r.symbol}|${r.tf}`)
+        ? trade.get(`${r.symbol}|${r.tf}`) : null;
+      const o = this.effective(r);
+      const won = o !== 'sl' && o !== 'expired' && o !== 'open';
+      /* NO NET R ON A ROW THE LEDGER HAS NOT SCORED YET. The bars can say a
+         trade is over; only the scorer can say what it cost, because the
+         number owes spread, slippage and swap that the browser does not
+         model. An estimate here would be a second opinion on a figure that
+         must have exactly one. */
+      const hasR = typeof r.net_r === 'number' && !this.late(r)
+                   && r.outcome !== 'open' && r.outcome !== 'expired';
+      if (hasR) { sum += r.net_r; closed += 1; }
+      /* THE TICKET BEHIND THE RESULT. Absent only while the journal is still
+         in flight, or if a scored row ever outlives its journal row. */
+      const j = this.journal ? this.journal.get(r.id) : null;
+      const d = digitsFor(r.symbol);
+      const price = (v) => (typeof v === 'number' ? v.toFixed(d) : '\u2014');
+      const word = won ? 'won' : (o === 'sl' ? 'stopped'
+                                  : (o === 'expired' ? 'expired' : 'open'));
+      body.append(el('tr', { class: isTrade === false ? 'sb-journal' : '' },
+        el('td', { class: 'dim', text: stamp(r.fill_ms || r.ms) }),
+        el('td', { text: r.symbol }),
+        el('td', { text: r.tf }),
+        el('td', { class: r.side === 'buy' ? 'up' : 'down',
+                   text: String(r.side || '').toUpperCase() }),
+        /* THE RUNG IS PART OF THE ANSWER. The rule exits at TP1, so a `tp2` in
+           here means the resolver saw the ladder run past the measured exit --
+           worth seeing, not worth flattening into "won". */
+        el('td', { class: won ? 'up' : (o === 'sl' ? 'down' : 'dim'),
+                   title: WORDS[word] + (this.late(r)
+                     ? NL + NL + 'Read off this chart’s own bars: price '
+                       + 'reached this level before the scorer last ran (every 5 minutes), '
+                       + 'so the ledger still says open. The result is settled; '
+                       + 'the net R is not, and is withheld until the scorer '
+                       + 'agrees.' : ''),
+                   /* AN ASTERISK, NOT A SILENT REWRITE. The row is ahead of the
+                      ledger and a reader comparing it against the .jsonl needs
+                      to know why they differ. */
+                   text: (won ? `won ${o}` : (o === 'sl' ? 'stopped' : o))
+                         + (this.late(r) ? ' *' : '') }),
+        el('td', { class: 'num', text: price(j && j.entry) }),
+        el('td', { class: 'num down', text: price(j && j.sl) }),
+        /* THE LADDER IS ON THE HOVER, NOT IN THREE MORE COLUMNS. TP2 and TP3
+           are drawn on the chart and were never measured as exits, so putting
+           them on the face of a RESULTS table would invite reading them as
+           outcomes that were available. */
+        el('td', { class: 'num up',
+                   title: (j && j.tp && j.tp.length > 1)
+                     ? `Drawn but not traded — TP2 ${price(j.tp[1])}, `
+                       + `TP3 ${price(j.tp[2])}` : null,
+                   text: price(j && j.tp && j.tp[0]) }),
+        el('td', { class: `num ${hasR ? (r.net_r >= 0 ? 'up' : 'down') : 'dim'}`,
+                   text: hasR
+                     ? `${r.net_r >= 0 ? '+' : ''}${r.net_r.toFixed(3)}`
+                     : '—' }),
+        el('td', { class: 'dim',
+                   title: isTrade === null
+                     ? 'This cell is no longer on the board -- it was switched '
+                       + 'off after this ticket was scored, so the registry has '
+                       + 'nothing to say about it now.' : null,
+                   text: isTrade === null ? '—'
+                         : (isTrade ? 'traded' : 'journal') })));
+    }
+    t.append(body);
+    box.append(t);
+    /* THE TOTAL IS OVER FILLS THAT ENDED, and says so. Summing R over a list
+       that includes expiries and open trades would divide by the wrong thing
+       in the reader's head. */
+    box.append(el('div', { class: 'sb-res-foot' },
+      el('span', { class: 'dim', text: `${rows.length} shown` }),
+      closed ? el('span', {
+        class: sum >= 0 ? 'up' : 'down',
+        title: `Sum of net R over the ${closed} of these that reached the `
+               + 'target or the stop. Expiries and open trades contribute '
+               + 'nothing, because nothing was booked.',
+        text: `${sum >= 0 ? '+' : ''}${sum.toFixed(2)} R over ${closed} closed`,
+      }) : null));
+    return box;
+  }
+
 
   /** Ask the bridge for every visible cell, one after another. */
   async poll(repaint) {
@@ -380,6 +770,16 @@ export class SignalBoard {
 
       /* THE RAYO CELLS, computed in the browser from bars. No /signal call:
          that endpoint runs sim.Strategy objects and the scalper is not one. */
+      /* THE LIVE RECORD, RE-READ EVERY POLL. The forward record used the
+         ledger as it was when the page opened, so a trade the scorer opened an
+         hour later never appeared; and the fixed-12 walker below needs the
+         journal as of now to know which ticket is resting. */
+      refreshScored();
+      try {
+        const m = await loadMeasurement();
+        this.scored = await loadScored(m.stopAtr);
+      } catch { /* keep the previous copy */ }
+      await refreshRayoLedger(true);
       for (const c of (this.scalpCells || [])) {
         try {
           /* `api.bars` returns the ENVELOPE, not the array -- {bars, digits,
@@ -387,7 +787,22 @@ export class SignalBoard {
              "bars.map is not a function" on every cell. */
           const payload = await api.bars(c.symbol, c.tf, 400);
           const bars = (payload && payload.bars) || [];
-          const t = scalpTicket(bars, { mode: 'break' });
+          this.cellBars.set(`${c.symbol}|${c.tf}`, bars);
+          /* FIXED 12, AS THE PANEL, TP BANDS, REPLAY AND TELEGRAM: the ticket
+             actually RESTING (taken once, levels fixed for 12 bars) or the
+             trade it filled into -- not a fresh ticket every poll. */
+          const rest = restingRayo(bars, { tf: c.tf, mode: 'break',
+                                           ledger: rayoLedgerFor(c.symbol, c.tf) });
+          let t = null;
+          if (rest && rest.position) {
+            const p = rest.position, tk = p.ticket || {};
+            t = { ...tk, held: true, side: p.side > 0 ? 'buy' : 'sell',
+                  entry: p.entryPrice, stop: p.stop, tp: p.tp,
+                  fillMs: p.entryTime, barTime: tk.barTime ?? bars[p.signalI]?.t,
+                  fromLedger: !!p.id };
+          } else if (rest && rest.pending) {
+            t = rest.pending;
+          }
           /* THE LIVE PRICE RIDES ALONG, and it is deliberately the FORMING
              bar's close rather than the decision bar's. The ticket is decided
              on the last CLOSED bar -- that is the rule, and it must not drift
@@ -407,6 +822,10 @@ export class SignalBoard {
       this.asOf = Date.now();
       repaint();
     }
+    /* AFTER the cells on the board, never instead of them: the board's own
+       rows are what the reader is waiting for, and the ledger re-check is
+       catching up on history. */
+    this.resolveOpen(repaint);
   }
 
   /**
@@ -435,6 +854,10 @@ export class SignalBoard {
            : `${net > 0 ? '+' : ''}${num(net, 2)}`;
     };
 
+    /* PAINT, EXPOSED. The results list is toggled from a button inside the
+       board rather than from the tab that owns it, so the handler needs the
+       same repaint every other control here calls. Assigned rather than made
+       a method because `paint` closes over `head` and `wrap`. */
     const paint = () => {
       if (!wrap.isConnected) return;
       head.innerHTML = '';
@@ -442,6 +865,23 @@ export class SignalBoard {
       if (this.error) {
         head.append(el('div', { class: 'sb-note down', text: this.error }));
         return;
+      }
+
+      /* THE STOP-LOSS WARNING, as on Positions, Orders and History. The rule's
+         own tickets always carry a 5 ATR stop, so the warning here is about the
+         ACCOUNT: broker positions (on the symbols the search box shows) that
+         have none. Hidden with the account eye -- `.acct-private`, see
+         css/app.css -- because a count of positions is the account talking. */
+      const bare = (getPos() || []).filter((p) => !p.sl && this.matches(p.symbol));
+      if (bare.length) {
+        const bySym = bare.reduce((a, p) => { a[p.symbol] = (a[p.symbol] || 0) + 1; return a; }, {});
+        head.append(el('div', {
+          class: 'sb-note down acct-private',
+          title: Object.entries(bySym).map(([s, n]) => `${s}: ${n}`).join(NL)
+                 + NL + NL + 'Open the Positions tab for the list.',
+          text: `⚠ ${bare.length} broker position${bare.length === 1 ? '' : 's'} `
+                + 'without a stop loss',
+        }));
       }
 
       /* THE LIVE LIST IS THE SCALPER'S. `visible()` reads the retired Donchian
@@ -455,7 +895,12 @@ export class SignalBoard {
          reader actually has: what is there to do right now. */
       const acting = cells.filter((c) => {
         const t = this.scalp.get(`${c.symbol}|${c.tf}`);
-        return c.tradeable && t && !t.error && t.side;
+        /* An IN TRADE row is not an order to place; it is counted apart. */
+        return c.tradeable && t && !t.error && t.side && !t.held;
+      });
+      const inTrade = cells.filter((c) => {
+        const t = this.scalp.get(`${c.symbol}|${c.tf}`);
+        return c.tradeable && t && t.held;
       });
       /* THE GATE IS ON THE HEADLINE, because the headline answers "what is
          there to do right now" and a gated ticket is one nothing is sent for.
@@ -510,8 +955,15 @@ export class SignalBoard {
                      + `sent. Measured on a one-position account: +20.7% to `
                      + `+23.7% CAGR, chance of a losing year 22% to 16%.`,
               text: `${held} held back (stale trend)` })] : []),
+            ...(inTrade.length ? [el('span', { class: 'sb-k',
+              title: inTrade.map((c) => {
+                const t = this.scalp.get(`${c.symbol}|${c.tf}`);
+                return `${c.symbol} ${c.tf} ${t.side.toUpperCase()} from `
+                  + fx(t.entry, digitsFor(c.symbol));
+              }).join(NL),
+              text: `${inTrade.length} in trade` })] : []),
             el('span', { class: 'dim',
-                         text: '— pending orders, not positions. One at a time.' }))
+                         text: '— resting orders (fixed 12), not positions. One at a time.' }))
         : el('div', { class: 'sb-call dim',
                       text: this.busy ? 'computing tickets…'
                             : acting.length
@@ -538,6 +990,7 @@ export class SignalBoard {
           this.tradeableOnly = !this.tradeableOnly;
           save('sbTradeableOnly', this.tradeableOnly); paint();
         }),
+        this.searchBox(paint),
         el('button', { class: 'sb-btn', onclick: () => this.poll(paint) },
            this.busy ? 'asking…' : 'refresh')));
 
@@ -565,8 +1018,7 @@ export class SignalBoard {
       {
         wrap.append(el('div', { class: 'sb-sub' }, 'Rayo Scalper',
           el('span', { class: 'sb-sub-note',
-            text: 'pending orders — fills only if price trades through the entry. '
-                  + 'Greyed rows are journalled, not traded.' })));
+            text: 'the project’s only signal generator' })));
 
         /* WHAT HAS ACTUALLY HAPPENED, IN COUNTS. Counts are honest at any
            sample size -- they do not pretend to estimate anything -- which is
@@ -575,7 +1027,24 @@ export class SignalBoard {
            never fill, and a reader who does not know that reads the fill count
            as the signal count. */
         if (this.scored && this.scored.rows.length) {
-          const t = this.scored.totals;
+          /* THE COUNTS FOLLOW THE FILTER. Leaving them at the full totals while
+             the list below showed a subset would have the strip and the table
+             disagreeing on screen, which is the one thing this board must not
+             do. Recomputed rather than stored, because the filter is a string
+             the reader is still typing. */
+          /* COUNTED OFF `effective`, NEVER off `scored.totals`. The stored
+             totals are the ledger's, and the ledger is up to an hour behind on
+             `open`; a strip that said "5 still open" over a list showing four
+             would be the board disagreeing with itself. */
+          const t = this.scored.rows.filter((r) => this.matches(r.symbol))
+            .reduce((acc, r) => {
+              const o = this.effective(r);
+              if (o === 'expired') acc.expired += 1;
+              else if (o === 'open') acc.open += 1;
+              else if (o === 'sl') acc.sl += 1;
+              else acc.tp += 1;
+              return acc;
+            }, { tp: 0, sl: 0, expired: 0, open: 0 });
           const when = this.scored.since
             ? new Date(this.scored.since).toISOString().slice(0, 10) : null;
           const NLc = String.fromCharCode(10);
@@ -590,21 +1059,30 @@ export class SignalBoard {
                                        + 'posted under a different stop width '
                                        + 'and are not pooled with these.',
                                 text: `since ${when}` }) : null,
-            el('b', { class: 'up', title: WORDS.won, text: `${t.tp} won` }),
-            el('b', { class: 'down', title: WORDS.stopped,
-                      text: `${t.sl} stopped` }),
-            el('span', { class: 'dim', title: WORDS.expired,
-                         text: `${t.expired} expired` }),
-            el('span', { class: 'dim', title: WORDS.open,
-                         text: `${t.open} still open` }),
+            this.countBtn('won', t.tp, 'up', WORDS.won),
+            this.countBtn('stopped', t.sl, 'down', WORDS.stopped),
+            this.countBtn('expired', t.expired, 'dim', WORDS.expired),
+            this.countBtn('open', t.open, 'dim', WORDS.open),
             el('span', { class: 'dim', title: LIFECYCLE,
                          text: '— ' + LIFECYCLE_INLINE })));
+          /* THE LIST, UNDER THE COUNTS. A count answers "how did it go"; the
+             only follow-up anyone ever has is "which ones", and until this
+             existed the answer was to open a .jsonl in a text editor. */
+          /* GUARDED, because `ParentNode.append(null)` does not skip the
+             argument -- it inserts the literal text "null", which is exactly
+             what the closed list rendered above the cell table. */
+          const list = this.resultsTable(cells2);
+          if (list) wrap.append(list);
         }
         const SC = [
           ['Symbol', 'Broker ticker'],
           ['TF', 'Timeframe. Greyed rows are journalled, not traded -- either controls (5m, negative on every instrument) or cells too close to the spread to trust (15m)'],
           ['Expected', 'Pre-registered net R per fill: the MEDIAN of four '
                      + 'sub-eras, not the best of them'],
+          ['Zero cost', 'The same measurement with NO spread, NO slippage and NO '
+                      + 'swap (a raw ECN, swap-free account): median of four '
+                      + 'sub-eras, net R per fill. Commission is not charged, so '
+                      + 'this is a ceiling. Hover for R/yr and the eras'],
           ['Live', 'What this cell has actually done since the current rule was '
                  + 'registered, on the same cost basis as Expected. '
                  + LIFECYCLE + ' '
@@ -635,16 +1113,19 @@ export class SignalBoard {
         const r2 = [];
         for (const c of cells2) {
           if (this.tradeableOnly && !c.tradeable) continue;
+          if (!this.matches(c.symbol)) continue;
           const k = `${c.symbol}|${c.tf}`;
           const x = this.scalp.get(k);
           const d = digitsFor(c.symbol);
           const exp = Number.isFinite(c.expected)
             ? `${c.expected >= 0 ? '+' : ''}${c.expected.toFixed(4)}` : '—';
+          const zc = zeroCell(c.zero);
           if (!x || x.error) {
             r2.push(el('tr', { class: 'sb-row' },
               el('td', { class: 'sym', text: c.symbol }),
               el('td', { text: c.tf }),
               el('td', { class: 'dim', text: exp }),
+              zc,
               el('td', { class: 'dim', colspan: '10',
                          text: x ? x.error : '…' })));
             continue;
@@ -659,22 +1140,33 @@ export class SignalBoard {
              column exists to prevent, so the ticket itself is greyed and only
              the tradeable rows are shown in live colours. */
           const live = c.tradeable;
-          const trg = (x.now && x.atr > 0)
+          const trg = (!x.held && x.now && x.atr > 0)
             ? Math.abs(x.entry - x.now) / x.atr : null;
           r2.push(el('tr', { class: live ? 'sb-row' : 'sb-row sb-muted',
                              title: c.note },
             el('td', { class: 'sym', text: c.symbol }),
             el('td', { text: c.tf }),
             el('td', { class: live ? 'up' : 'down', text: exp }),
+            zc,
             liveCell(this.scored, c, c.expected),
             /* THE BADGE IN WORDS, ON HOVER -- "Sell at the 20-bar high",
                not "SELL LIMIT". Asked directly whether a sell limit executes a
                buy; it does not, and the answer belongs on the thing that
                prompted the question. `title` on the cell beats the row's note
                here, which is what we want. */
-            el('td', { class: (!live ? 'dim' : (buy ? 'up' : 'down')) + ' sb-why',
-                       title: orderPhrase(x, (v) => fx(v, d)),
-                       text: `${x.side.toUpperCase()} ${x.order.toUpperCase()}` }),
+            x.held
+              ? el('td', { class: (!live ? 'dim' : (buy ? 'up' : 'down')) + ' sb-why',
+                           title: `The resting ticket filled at ${fx(x.entry, d)} on `
+                             + `${stamp(x.fillMs)}. No new `
+                             + 'order until it reaches its stop or TP1.'
+                             + (x.fromLedger ? '' : ' Not in the scored ledger yet '
+                                + '(the scorer runs every 5 minutes); seen on these bars.'),
+                           text: `IN TRADE ${x.side.toUpperCase()}` })
+              : el('td', { class: (!live ? 'dim' : (buy ? 'up' : 'down')) + ' sb-why',
+                           title: orderPhrase(x, (v) => fx(v, d))
+                             + (Number.isFinite(x.barsLeft)
+                               ? ` -- ${x.barsLeft} bar(s) left, levels fixed` : ''),
+                           text: `${x.side.toUpperCase()} ${x.order.toUpperCase()}` }),
             /* WHY A TRADEABLE ROW IS NOT IN THE COUNT. Without this the board
                shows a green ticket and the headline silently omits it. */
             el('td', {
@@ -688,19 +1180,36 @@ export class SignalBoard {
             el('td', { text: fx(x.entry, d) }),
             /* THE COLUMN THAT SAYS WHICH ROW TO LOOK AT. Every row has an
                entry; almost none of them fill. This is the difference. */
-            el('td', { class: trg === null ? 'dim' : (trg < 0.25 ? 'up' : 'dim'),
-                       text: trg === null ? '—' : `${trg.toFixed(2)} ATR` }),
+            x.held
+              ? el('td', { class: 'dim', title: 'Filled',
+                           text: `filled ${stamp(x.fillMs)}` })
+              : el('td', { class: trg === null ? 'dim' : (trg < 0.25 ? 'up' : 'dim'),
+                           text: trg === null ? '—' : `${trg.toFixed(2)} ATR` }),
             el('td', { class: 'down', text: fx(x.stop, d) }),
             el('td', { class: 'up', text: fx(x.tp[0], d) }),
             el('td', { class: 'dim', text: fx(x.tp[1], d) }),
             el('td', { class: 'dim', text: fx(x.tp[2], d) }),
-            el('td', { class: 'dim', text: new Date(x.barTime).toISOString().slice(0, 16) })));
+            el('td', { class: 'dim', text: stamp(x.barTime) })));
         }
         t2.append(el('tbody', {}, r2));
+        /* THE TABLE SAYS WHAT IT IS. It had carried the rule's name and the
+           reader's reasonable conclusion was that it listed the rule's
+           SIGNALS -- so an open trade drawn on the chart, or a filled one in
+           the forward record, looked like something the table had lost. It
+           lists PENDING ORDERS: one row per cell, the order the rule wants
+           next, and nothing that has already filled. Naming it that is the
+           whole fix. */
+        wrap.append(el('div', { class: 'sb-sub' }, 'Orders and open trades',
+          el('span', { class: 'sb-sub-note',
+            text: 'one per cell, fixed 12: the ticket resting (levels fixed for '
+                  + '12 bars from its own bar) or IN TRADE when it has filled -- '
+                  + 'the same order the chart panel and Telegram name. Greyed '
+                  + 'rows are journalled, not traded.' })));
         wrap.append(t2);
       }
     };
 
+    this.repaint = paint;
     paint();
     /* THE POLL WAITS FOR THE CELLS IT POLLS, and it did not always have to.
        This used to fire off the Donchian load, and the Donchian poll ran a

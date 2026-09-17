@@ -61,10 +61,11 @@ passes 1 and 2 with +0.0548 R on 243 fills and was marked journal-only anyway,
 correctly, because 26 trades a year at +1.4 R/yr cannot carry an account. Cells
 excluded ONLY by thinness are marked `thin` so the reason is legible.
 
-THE HORIZON IS PER TIMEFRAME. A trade unresolved after the horizon is scored
-`open` and contributes nothing. 24h is right for 1m-1h and absurd for 4h, where
-it is six bars -- the trades would be abandoned rather than resolved. 1d needs a
-month.
+THE HORIZON IS PER TIMEFRAME, AND A TRADE STILL OPEN AT IT IS CLOSED AT MARKET
+AND COUNTED. It used to be 24h for 1m-1h with the open trade dropped, which
+discarded 40-70% of 15m-1h fills at a 5 ATR stop and inflated every registered
+figure (memory: rayo-24h-horizon-dropped-unresolved-trades). Now 240h to 2h,
+720h for 4h, 2160h for 1d.
 
 1d IS MEASURABLE NOW AND WAS NOT BEFORE. It was registered `measurable: false`
 because the session gate rejected every daily bar (all of them are stamped at
@@ -89,6 +90,7 @@ import pandas as pd                                             # noqa: E402
 
 from tools.scalp_portfolio import Cell, run_arm                 # noqa: E402
 from tools import scalper as SC                                 # noqa: E402
+from sim.strategies.rayo import breakeven_r                     # noqa: E402
 
 CFG = os.path.join(ROOT, 'configs', 'alerts.json')
 
@@ -100,8 +102,8 @@ ERAS = [('2017-19', '2017-01-01', '2019-01-01'),
         ('2023-26', '2023-01-01', '2026-09-14')]
 
 #: Hours before an unresolved trade is abandoned, by execution frame.
-HORIZON_H = {'1m': 24, '5m': 24, '15m': 24, '30m': 24, '1h': 24,
-             '4h': 120, '1d': 720}
+HORIZON_H = {'1m': 240, '3m': 240, '5m': 240, '15m': 240, '30m': 240,
+             '1h': 240, '2h': 240, '4h': 720, '1d': 2160}
 
 #: The thinness floor, about 42 fills a year over a nine-year window.
 MIN_FILLS = 400
@@ -130,6 +132,14 @@ def measure(symbol, tf, start, end, session, args):
     h = HORIZON_H.get(tf, 24)
     c = Cell(symbol, tf, start, end, session, args.stop_atr, args.swing,
              args.fast, args.slow, args.expire)
+    # THE LIVE RULE'S BREAK-EVEN STOP on the frames that use it
+    # (sim/strategies/rayo.py BREAKEVEN), so the registry measures what trades.
+    c.be_r = breakeven_r(tf)
+    if getattr(args, 'zero_cost', False):
+        # ZERO COST: no spread, no slippage, no swap -- the rule's gross R.
+        # Same tickets, same fills and exits; only the charges are removed.
+        c.cost_r = lambda t: 0.0
+        c.swap_r = lambda t, fill_ms, exit_ms: 0.0
     if not c.tk:
         return {'measurable': False, 'n': 0}
     tr = run_arm([c], None, horizon_ms=h * 3600 * 1000, slots=1)
@@ -143,12 +153,15 @@ def measure(symbol, tf, start, end, session, args):
         hi = int(pd.Timestamp(b).value // 10 ** 6)
         sel = [t['net'] for t in tr if lo <= t['ms'] < hi]
         if sel:
-            eras[name] = round(sum(sel) / len(sel), 4)
-    vals = list(eras.values())
+            # float() FIRST: round() on a numpy float64 rounds its binary
+            # value, so the stored median could disagree with the median of
+            # the stored eras by 0.0001.
+            eras[name] = round(float(sum(sel)) / len(sel), 4)
+    vals = [float(x) for x in eras.values()]
     years = (pd.Timestamp(end) - pd.Timestamp(start)).days / 365.25
     return {
         'measurable': True,
-        'expected_net_r': round(statistics.median(vals), 4) if vals else None,
+        'expected_net_r': round(float(statistics.median(vals)), 4) if vals else None,
         'total_r_per_year': round(sum(nets) / years, 2),
         'worst_era_net_r': min(vals) if vals else None,
         'best_era_net_r': max(vals) if vals else None,
@@ -171,6 +184,7 @@ def stress_median(symbol, tf, start, end, session, args):
     h = HORIZON_H.get(tf, 24)
     c = Cell(symbol, tf, start, end, session, args.stop_atr, args.swing,
              args.fast, args.slow, args.expire, 0.0, STRESS)
+    c.be_r = breakeven_r(tf)
     tr = run_arm([c], None, horizon_ms=h * 3600 * 1000, slots=1)
     if not tr:
         return None
@@ -257,6 +271,71 @@ def _save(args, rows):
                             ensure_ascii=False) + '\n')
 
 
+def zero_cost_main(args, cfg, watch, session):
+    """Measure every cell at zero cost and record it beside the real numbers.
+
+    A SECOND BLOCK, NOT A REPLACEMENT. `expected_net_r` and the verdict stay
+    the costed measurement; `zero_cost` answers a different question -- what
+    the entry and exit are worth before anyone is paid -- asked for 2026-09-17
+    for a RAW ECN, Islamic (swap-free) account. It still excludes that
+    account's commission, so it is an upper bound, not a forecast.
+    """
+    done = {}
+    if args.resume and os.path.exists(args.out):
+        with io.open(args.out, encoding='utf-8') as fh:
+            done = {(r['symbol'], r['tf']): r for r in json.load(fh).get('watch', [])}
+    rows = []
+    print('ZERO COST (no spread, no slippage, no swap)')
+    print('%-12s %-4s %7s %7s %10s %9s %8s'
+          % ('symbol', 'tf', 'fills', 'win%', 'median R', 'R/yr', 'dd R'))
+    print('-' * 64)
+    for c in watch:
+        sym, tf = c['symbol'], c['tf']
+        if (sym, tf) in done:
+            row = done[(sym, tf)]
+        else:
+            sys.stderr.write('  measuring %s %s (zero cost) ...\n' % (sym, tf))
+            m = measure(sym, tf, args.start, args.end, session, args)
+            row = dict(symbol=sym, tf=tf, **m)
+        rows.append(row)
+        if row.get('measurable'):
+            print('%-12s %-4s %7d %6.1f%% %+10.4f %+9.1f %8.1f'
+                  % (sym, tf, row['n'], row['win_pct'], row['expected_net_r'],
+                     row['total_r_per_year'], row['drawdown_r']))
+        else:
+            print('%-12s %-4s %7s  not measurable' % (sym, tf, '-'))
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with io.open(args.out, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps({'meta': dict(_meta(args), costs='zero'),
+                                 'watch': rows}, indent=2, ensure_ascii=False) + '\n')
+        sys.stdout.flush()
+
+    if not args.apply:
+        print('\nnothing written to configs/alerts.json -- pass --apply')
+        return 0
+    stamp = date.today().isoformat()
+    shutil.copy2(CFG, CFG + '.pre-zero-cost-%s.bak' % stamp)
+    meta = dict(_meta(args), costs='zero: no spread, no slippage, no swap; '
+                                   'commission not charged')
+    meta['command'] = meta['command'] + ' --zero-cost' + (
+        ' --symbols ' + args.symbols if args.symbols else '')
+    by_key = {(r['symbol'], r['tf']): r for r in rows}
+    for c in cfg['scalper']['watch']:
+        r = by_key.get((c['symbol'], c['tf']))
+        if r is None:
+            continue
+        c['zero_cost'] = {k: r[k] for k in (
+            'measurable', 'expected_net_r', 'total_r_per_year', 'worst_era_net_r',
+            'best_era_net_r', 'n', 'win_pct', 'drawdown_r', 'horizon_hours', 'eras')
+            if k in r}
+    cfg['scalper']['zero_cost_measurement'] = meta
+    with io.open(CFG, 'w', encoding='utf-8') as fh:
+        fh.write(json.dumps(cfg, indent=2, ensure_ascii=False) + '\n')
+    print('recorded zero_cost for %d row(s) in configs/alerts.json (backup alongside)'
+          % len(rows))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -274,6 +353,15 @@ def main():
                     help='keep cells already measured in --out')
     ap.add_argument('--apply', action='store_true',
                     help='merge the measurement into configs/alerts.json')
+    ap.add_argument('--zero-cost', action='store_true',
+                    help='measure with NO spread, slippage or swap and, with '
+                         '--apply, record it as each row\'s `zero_cost` block '
+                         'without touching anything else')
+    ap.add_argument('--tfs', default=None,
+                    help='comma list: measure and merge ONLY these timeframes')
+    ap.add_argument('--symbols', default=None,
+                    help='comma list: measure and merge ONLY these instruments; '
+                         'every other row in the registry is left untouched')
     args = ap.parse_args()
 
     SC.EXIT_TP[0] = args.exit_tp
@@ -294,6 +382,16 @@ def main():
             done = {(r['symbol'], r['tf']): r for r in prev.get('watch', [])}
             print('resuming: %d cell(s) already measured at stop %g'
                   % (len(done), args.stop_atr))
+
+    only = set(x.strip() for x in args.symbols.split(',')) if args.symbols else None
+    if only:
+        watch = [c for c in watch if c['symbol'] in only]
+    only_tfs = set(x.strip() for x in args.tfs.split(',')) if args.tfs else None
+    if only_tfs:
+        watch = [c for c in watch if c['tf'] in only_tfs]
+
+    if args.zero_cost:
+        return zero_cost_main(args, cfg, watch, session)
 
     rows = []
     print('%-12s %-4s %7s %7s %10s %9s %8s %9s  %s'
@@ -358,6 +456,44 @@ def main():
 
     if not args.apply:
         print('\nnothing written to configs/alerts.json -- pass --apply')
+        return 0
+
+    if only or only_tfs:
+        # A PARTIAL MERGE. Only these instruments' rows are replaced, in place;
+        # the global `measurement` block still describes the other rows, so
+        # each merged row carries its own. `tradeable` is NOT recomputed on a
+        # partial merge: the enabled/tradeable decision is the user's
+        # (scalper.tradeable_override), so the row keeps the flag it had and
+        # `verdict_measured` records what the four tests said.
+        stamp = date.today().isoformat()
+        shutil.copy2(CFG, CFG + '.pre-%s-%s.bak'
+                     % ('-'.join(sorted(o.split('.')[0].lower() for o in only)), stamp))
+        by_key = {(r['symbol'], r['tf']): r for r in rows}
+        merged = []
+        for c in cfg['scalper']['watch']:
+            new = by_key.get((c['symbol'], c['tf']))
+            if new is None:
+                merged.append(c)
+                continue
+            row = dict(new)
+            # KEEP WHAT THIS RUN DID NOT MEASURE -- the zero-cost block is its
+            # own run (--zero-cost) and must survive a re-registration.
+            if 'zero_cost' in c and 'zero_cost' not in row:
+                row['zero_cost'] = c['zero_cost']
+            row['verdict_measured'] = new['tradeable']
+            row['tradeable'] = c.get('tradeable', False)
+            row['enabled'] = c.get('enabled', False)
+            if row['tradeable'] and not new['tradeable']:
+                row['note'] = ('TRADEABLE BY REQUEST (scalper.tradeable_override), '
+                               'not by measurement. What was measured: ' + new['note'])
+            row['measurement'] = dict(meta, command=meta['command']
+                                      + ' --symbols ' + args.symbols)
+            merged.append(row)
+        cfg['scalper']['watch'] = merged
+        with io.open(CFG, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps(cfg, indent=2, ensure_ascii=False) + '\n')
+        print('merged %d row(s) for %s into configs/alerts.json (backup alongside)'
+              % (len(rows), args.symbols))
         return 0
 
     shutil.copy2(CFG, CFG + '.pre-stop%g.bak' % args.stop_atr)

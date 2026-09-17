@@ -942,6 +942,19 @@ body.sb-active .panel{display:flex; flex-direction:column; overflow:hidden}
 .sb-btn:hover{border-color:var(--pink); color:var(--text)}
 .sb-btn.on{background:var(--accent-soft); border-color:var(--pink); color:#fff}
 
+/* The instrument filter. Sized to its job -- long enough for "usdjpy.a" and
+   no longer, because it sits in a toolbar of small controls and a wide input
+   would read as the primary thing on the board rather than a narrowing of it. */
+.sb-search{background:var(--bg); border:1px solid var(--line); color:var(--text);
+  border-radius:3px; font-family:var(--mono); font-size:10px; padding:2px 7px;
+  width:13ch}
+.sb-search::placeholder{color:var(--text-dim); opacity:.75}
+.sb-search:focus{outline:none; border-color:var(--pink)}
+/* A FILTER THAT IS ON MUST LOOK ON. The board can be left filtered for days,
+   and a reader coming back to three rows needs to see why before they conclude
+   the rule has stopped signalling. */
+.sb-search:not(:placeholder-shown){border-color:var(--pink); color:var(--text)}
+
 /* THE GRADE IS THE WARNING and reads as one. `below` is the cell measured under
    its own friction floor, so it gets the bearish colour rather than a footnote
    nobody reads twice. */
@@ -992,6 +1005,8 @@ body.sb-active .panel{display:flex; flex-direction:column; overflow:hidden}
   letter-spacing:.06em; color:var(--text); text-transform:uppercase}
 .sb-sub-note{margin-left:10px; font-weight:400; letter-spacing:0;
   text-transform:none; color:var(--text-faint); font-size:10px}
+/* The stop-loss warning on Positions and Orders: red, and not dimmed. */
+.sb-sub-note.down{color:var(--down); margin-left:0}
 
 .sb-th{cursor:help; text-decoration:underline dotted var(--text-faint);
   text-underline-offset:3px}
@@ -1012,6 +1027,36 @@ td.sb-why{cursor:help; text-decoration:underline dotted currentColor;
   background:var(--surface-2); border:1px solid var(--line); border-radius:7px}
 .sb-scored b{font-weight:700}
 .sb-scored [title]{cursor:help}
+
+/* The counts in that strip are BUTTONS -- each one opens the list of the
+   tickets behind it. Styled as text rather than as chrome: a row of five real
+   buttons would read as a toolbar and pull rank over the board underneath. */
+.sb-count{font:inherit; font-weight:700; color:inherit; background:none;
+  border:0; border-bottom:1px dotted currentColor; padding:0 0 1px;
+  cursor:pointer}
+.sb-count:disabled{opacity:.55; cursor:default; border-bottom-color:transparent}
+.sb-count:hover:not(:disabled){border-bottom-style:solid}
+.sb-count.on{border-bottom:2px solid currentColor; padding-bottom:0}
+.sb-count.dim{font-weight:400}
+
+/* ---- the results list: every scored ticket behind the counts ---- */
+.sb-results{margin:0 10px 10px; border:1px solid var(--line); border-radius:7px;
+  overflow:hidden}
+/* CAPPED AND SCROLLED. The ledger grows without limit, and a list that pushes
+   the cell table off the bottom of the page has answered one question by
+   hiding another. */
+.sb-res-grid{font-size:11px}
+.sb-results{max-height:44vh; overflow:auto}
+.sb-results thead th{position:sticky; top:0; z-index:1;
+  background:var(--surface-2)}
+/* A JOURNALLED ROW IS DIMMED, never hidden: it is part of the forward test,
+   and the Traded column says which is which in words for anyone who reads
+   colour differently. */
+tr.sb-journal td{opacity:.62}
+.sb-res-foot{display:flex; justify-content:space-between; align-items:baseline;
+  gap:10px; padding:6px 10px; font-size:11px;
+  background:var(--surface-2); border-top:1px solid var(--line);
+  position:sticky; bottom:0}
 
 /* ---- hover card: a hint with enough structure to be a table ---- */
 .hovercard{position:fixed; z-index:9000; max-width:min(460px, 92vw);
@@ -1118,6 +1163,7 @@ table.grid tr.sb-drow td{background:var(--bg); padding:0}
 .sb-detail pre{margin:0; font-family:var(--mono); font-size:11px; line-height:1.55;
   white-space:pre-wrap; color:var(--text)}
 .sb-note{font-size:11px; color:var(--text-dim); line-height:1.5; text-align:left}
+.sb-note.down{color:var(--down)}
 
 /* ---------------- economic calendar ---------------- */
 body.cal-active .panel{display:flex; flex-direction:column; overflow:hidden}
@@ -1172,6 +1218,44 @@ table.grid tr.cal-now:hover td{background:var(--surface-2)}
 .tr-tf{color:var(--text-faint)}
 .tr-state{display:inline-flex; align-items:baseline; gap:5px; white-space:nowrap}
 .tr-mark{font-style:normal; font-size:9px}
+
+/* REVERSAL CONFIRMED — the open trade on this cell has turned against you.
+   Amber, not red: red in this palette is the DOWN colour and already means
+   "bearish", so a red banner on a reversing SHORT would have read as the trade
+   going well. Amber is the chart's own colour for the same state (the entry
+   line and the confirmation triangle), which is the whole point -- one state,
+   one colour, wherever it is shown.
+
+   BOXED, NOT JUST COLOURED TEXT. It sits between the note and the timeframe
+   rows, and the rail is dense; a tinted line would read as another regime row.
+   The left border is the cheapest thing that says "this is about YOU, not the
+   market" without adding a shape. */
+.tr-reversal{
+  margin-top:8px; padding:5px 8px; display:flex; align-items:baseline; gap:6px;
+  font-size:11px; letter-spacing:.04em; color:var(--orange);
+  background:rgba(255,158,27,.10);
+  border-left:2px solid var(--orange); border-radius:2px}
+.tr-reversal .tr-rev-why{margin-left:auto; color:var(--text-faint);
+  letter-spacing:0}
+
+/* SETUP NOW — what the rule wants while the cell is busy. Sits under the held
+   trade, dimmer than the position rows above it: the position is a fact about
+   the account, this is a reading about the market, and the rail should not
+   give them the same weight. `blocked` is the whole point of the row, so it is
+   the part that stays legible when the eye skims. */
+.sc-next{display:flex; align-items:baseline; gap:8px; margin-top:6px;
+  padding-top:6px; border-top:1px solid var(--line-soft); font-size:11px}
+.sc-next .sc-k{color:var(--text-faint)}
+.sc-next .sc-v{margin-left:auto}
+.sc-next-state{color:var(--text-faint); font-size:10px; letter-spacing:.04em;
+  text-transform:uppercase}
+/* Opposed to the trade you hold — the case this row was added for. Amber, the
+   same colour the reversal lamp uses, because it is the same news. */
+.sc-next-opposed .sc-next-state{color:var(--orange)}
+
+/* The Strategy Replay's reversal row. Amber, the colour the lamp uses on every
+   other surface, so one state reads as one thing wherever it appears. */
+.sr-reversal{color:var(--orange); letter-spacing:.04em}
 
 .tr-facts{
   margin-top:10px; padding-top:8px; border-top:1px solid var(--line-soft);
@@ -1264,27 +1348,15 @@ body.acct-hidden .pos-pl, body.acct-hidden td.mono.pl{visibility:hidden}
 /* The tab counters are the account leaking through a side door: "Positions 3"
    says as much as most people wanted covered. */
 body.acct-hidden #posCount, body.acct-hidden #ordCount{visibility:hidden}
+/* Anything else that is the account speaking, e.g. the Signal Board's
+   stop-loss warning, which counts broker positions. */
+body.acct-hidden .acct-private{display:none}
 .sealed{color:var(--orange)}
 
-/* PRIVATE VALUES, revealed a row at a time.
- *
- * Even once the eye is open, a position's size and P&L are not something to
- * leave standing on a shared screen -- so they are covered by default and each
- * row uncovers only while the pointer is on it. The bar keeps the cell's own
- * width so nothing reflows on hover: a table that jumps as the mouse crosses it
- * announces which row is being read.
- *
- * `color:transparent` rather than `visibility:hidden` so the text still lays
- * the column out, and the covering bar is drawn behind it. While the account is
- * covered entirely these rows are not rendered at all -- see `sealed` in
- * js/ui/panels.js -- so this rule only ever applies in the revealed state. */
-tr .pv{color:transparent; position:relative}
-tr .pv::after{
-  content:''; position:absolute; left:2px; right:2px; top:50%;
-  height:9px; transform:translateY(-50%); border-radius:2px;
-  background:var(--line); opacity:.75}
-tr:hover .pv{color:inherit}
-tr:hover .pv::after{display:none}
+/* PRIVATE VALUES ARE NOT MASKED PER ROW any more, by request (2026-09-17): the
+   hover-to-reveal cover made Positions and Orders unreadable at a glance. The
+   account eye still hides both tabs entirely -- see `sealed` in
+   js/ui/panels.js. `.pv` stays on the cells as a hook. */
 .rp-verdict{
   font-size:9px; letter-spacing:.11em; padding:2px 5px; border-radius:2px;
   cursor:help; white-space:nowrap; border:1px solid}
@@ -1834,3 +1906,7 @@ tr:hover .pv::after{display:none}
    needs these cells visible and scored. */
 .sb-row.sb-muted { opacity: .45; }
 .sb-row.sb-muted td { font-style: italic; }
+
+/* The FADE-mode banner on the Rayo panel: not a live trade. */
+.sc-fade-note{margin:0 0 6px; padding:4px 6px; border-radius:3px; font-size:10px;
+  color:var(--orange); background:rgba(255,166,0,.08); border:1px solid rgba(255,166,0,.35)}

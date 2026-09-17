@@ -43,6 +43,10 @@ let _scored = null;
  * yet, and a board that refused to paint because there were no forward results
  * would be broken on exactly the day the feature shipped.
  */
+/** Forget the cached ledger so the next loadScored() fetches it again. The
+    scorer rewrites the file hourly; a board left open all day must see that. */
+export function refreshScored() { _scored = null; }
+
 export function loadScored(stopAtr, url = LEDGER) {
   if (!_scored) {
     _scored = fetch(url, { cache: 'no-store' })

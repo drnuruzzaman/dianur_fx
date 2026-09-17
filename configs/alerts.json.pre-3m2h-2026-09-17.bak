@@ -1,0 +1,2461 @@
+{
+  "_note": "Written by the Settings modal (live pill -> Settings) and read by tools/scalper.py --registered and tools/event_alert.py on every run. Safe to hand-edit; the UI rewrites the whole file, so a comment added here will not survive a save -- put explanations in the per-cell `note` field, which does. A cell is TRADEABLE only if its median sub-era and its total R/yr agree in sign; only tradeable cells are messaged, the rest are journalled. The retired Donchian forward test lives in configs/retired/donchian_forward_test.json.",
+  "news": {
+    "enabled": true,
+    "lead_minutes": 10,
+    "impact": "low",
+    "fetch_minutes": 360
+  },
+  "scalper": {
+    "registered": "2026-09-14",
+    "rule": "rayo_scalper break mode: swing 20, EMA 20/50, stop 5 ATR, entry 0.10 ATR beyond the swing, exit TP1 (0.9R), expire 12 bars, SESSION OFF (24h) -- the gate measured +42% on total R/yr and is switched off by request; pass --session 7-21 to compare against pre-2026-09-10 numbers.",
+    "journal": "data/scalper_journal.jsonl",
+    "scored_with": "python tools/score_scalper.py -- hourly via the \"DiaNurFx-Score-Scalper\" task. It resolves each journalled ticket on 1m bars FROM THE BRIDGE (true UTC, the clock the journal is in -- not the broker-time archive), reusing tools/scalper.py resolve() so a live number and a registered number cannot disagree for reasons nobody can find. Tickets are grouped by stop_atr so the 4.0 and 5.0 eras are never pooled. tools/score_external.py grades hand-logged THIRD-PARTY signals and is not this.",
+    "why_separate": "not a sim.Strategy -- pending orders that fill intrabar and a three-rung TP ladder, neither of which the engine models -- so it is scored by tools/scalper.py, not polled through the bridge /signal",
+    "watch": [
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1m",
+        "enabled": true,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0274,
+        "total_r_per_year": -106.23,
+        "worst_era_net_r": -0.0726,
+        "best_era_net_r": 0.012,
+        "n": 51116,
+        "win_pct": 57.4,
+        "drawdown_r": 1477.9,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0726,
+          "2019-21": -0.0376,
+          "2021-23": -0.0172,
+          "2023-26": 0.012
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 1m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0274 R per fill, -106.2 R/yr, drawdown 1477.9 R.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0911,
+          "total_r_per_year": 479.39,
+          "worst_era_net_r": 0.0809,
+          "best_era_net_r": 0.1128,
+          "n": 51116,
+          "win_pct": 57.4,
+          "drawdown_r": 40.4,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.1128,
+            "2019-21": 0.0942,
+            "2021-23": 0.088,
+            "2023-26": 0.0809
+          }
+        }
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "5m",
+        "enabled": true,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0324,
+        "total_r_per_year": -20.08,
+        "worst_era_net_r": -0.0475,
+        "best_era_net_r": -0.0089,
+        "n": 7645,
+        "win_pct": 54.5,
+        "drawdown_r": 304.0,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.039,
+          "2019-21": -0.0259,
+          "2021-23": -0.0475,
+          "2023-26": -0.0089
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 5m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0324 R per fill, -20.1 R/yr, drawdown 304.0 R.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0394,
+          "total_r_per_year": 27.35,
+          "worst_era_net_r": 0.0059,
+          "best_era_net_r": 0.0625,
+          "n": 7645,
+          "win_pct": 54.5,
+          "drawdown_r": 38.7,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0625,
+            "2019-21": 0.0495,
+            "2021-23": 0.0059,
+            "2023-26": 0.0294
+          }
+        }
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "15m",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.003,
+        "total_r_per_year": -1.75,
+        "worst_era_net_r": -0.0666,
+        "best_era_net_r": 0.0241,
+        "n": 3014,
+        "win_pct": 55.1,
+        "drawdown_r": 59.3,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0666,
+          "2019-21": 0.0241,
+          "2021-23": -0.0189,
+          "2023-26": 0.0128
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0030 and total R/yr -1.8 do not both clear zero (3014 fills, 55.1% win, drawdown 59.3 R). Signals are recorded, not traded.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0374,
+          "total_r_per_year": 14.39,
+          "worst_era_net_r": 0.0107,
+          "best_era_net_r": 0.0962,
+          "n": 3014,
+          "win_pct": 55.1,
+          "drawdown_r": 17.4,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0107,
+            "2019-21": 0.0962,
+            "2021-23": 0.0281,
+            "2023-26": 0.0466
+          }
+        }
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "30m",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0092,
+        "total_r_per_year": -0.96,
+        "worst_era_net_r": -0.0872,
+        "best_era_net_r": 0.0295,
+        "n": 1669,
+        "win_pct": 55.1,
+        "drawdown_r": 50.3,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0872,
+          "2019-21": -0.0203,
+          "2021-23": 0.0018,
+          "2023-26": 0.0295
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0092 and total R/yr -1.0 do not both clear zero (1669 fills, 55.1% win, drawdown 50.3 R). Signals are recorded, not traded.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0539,
+          "total_r_per_year": 8.53,
+          "worst_era_net_r": 0.0006,
+          "best_era_net_r": 0.0645,
+          "n": 1669,
+          "win_pct": 55.1,
+          "drawdown_r": 20.6,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0006,
+            "2019-21": 0.0586,
+            "2021-23": 0.0493,
+            "2023-26": 0.0645
+          }
+        }
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.048,
+        "total_r_per_year": 0.22,
+        "worst_era_net_r": -0.0797,
+        "best_era_net_r": 0.0907,
+        "n": 892,
+        "win_pct": 56.4,
+        "drawdown_r": 46.1,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0498,
+          "2019-21": -0.0797,
+          "2021-23": -0.0463,
+          "2023-26": 0.0907
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0480 and total R/yr +0.2 do not both clear zero (892 fills, 56.4% win, drawdown 46.1 R). Signals are recorded, not traded.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0329,
+          "total_r_per_year": 6.62,
+          "worst_era_net_r": 0.0179,
+          "best_era_net_r": 0.1371,
+          "n": 892,
+          "win_pct": 56.4,
+          "drawdown_r": 19.1,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.043,
+            "2019-21": 0.0179,
+            "2021-23": 0.0228,
+            "2023-26": 0.1371
+          }
+        }
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "4h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": 0.0474,
+        "total_r_per_year": 1.08,
+        "worst_era_net_r": -0.0974,
+        "best_era_net_r": 0.0992,
+        "n": 254,
+        "win_pct": 60.6,
+        "drawdown_r": 12.2,
+        "horizon_hours": 720,
+        "eras": {
+          "2017-19": 0.0024,
+          "2019-21": -0.0974,
+          "2021-23": 0.0925,
+          "2023-26": 0.0992
+        },
+        "thin": true,
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only -- THIN. Positive on the median sub-era (+0.0474) and on total R/yr (+1.1), but only 254 fills in the window, about 26 a year. Too few to tell from luck, and too little return to carry an account.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.1633,
+          "total_r_per_year": 3.96,
+          "worst_era_net_r": 0.0783,
+          "best_era_net_r": 0.2093,
+          "n": 254,
+          "win_pct": 60.6,
+          "drawdown_r": 5.9,
+          "horizon_hours": 720,
+          "eras": {
+            "2017-19": 0.2093,
+            "2019-21": 0.0783,
+            "2021-23": 0.1652,
+            "2023-26": 0.1614
+          }
+        }
+      },
+      {
+        "symbol": "XAUUSD.a",
+        "tf": "1d",
+        "enabled": false,
+        "tradeable": false,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0355,
+        "total_r_per_year": 0.6,
+        "worst_era_net_r": -0.0866,
+        "best_era_net_r": 0.2957,
+        "n": 58,
+        "win_pct": 69.0,
+        "drawdown_r": 5.0,
+        "horizon_hours": 2160,
+        "eras": {
+          "2017-19": -0.0358,
+          "2019-21": -0.0866,
+          "2021-23": -0.0353,
+          "2023-26": 0.2957
+        },
+        "note": "Journal only. Median sub-era -0.0356 and total R/yr +0.6 do not both clear zero (58 fills, 69.0% win, drawdown 5.0 R). Signals are recorded, not traded.",
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols XAUUSD.a"
+        },
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.1768,
+          "total_r_per_year": 1.66,
+          "worst_era_net_r": 0.0711,
+          "best_era_net_r": 0.4413,
+          "n": 58,
+          "win_pct": 69.0,
+          "drawdown_r": 3.7,
+          "horizon_hours": 2160,
+          "eras": {
+            "2017-19": 0.1696,
+            "2019-21": 0.184,
+            "2021-23": 0.0711,
+            "2023-26": 0.4413
+          }
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1m",
+        "enabled": true,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.1144,
+        "total_r_per_year": -693.2,
+        "worst_era_net_r": -0.1606,
+        "best_era_net_r": -0.0714,
+        "n": 62050,
+        "win_pct": 57.2,
+        "drawdown_r": 6731.5,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.1038,
+          "2019-21": -0.1606,
+          "2021-23": -0.125,
+          "2023-26": -0.0714
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 1m is negative on every instrument -- the cost fraction, not the entry. Measured -0.1144 R per fill, -693.2 R/yr, drawdown 6731.5 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0915,
+          "total_r_per_year": 552.48,
+          "worst_era_net_r": 0.0696,
+          "best_era_net_r": 0.1049,
+          "n": 62050,
+          "win_pct": 57.2,
+          "drawdown_r": 76.8,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0869,
+            "2019-21": 0.096,
+            "2021-23": 0.1049,
+            "2023-26": 0.0696
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "5m",
+        "enabled": true,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0375,
+        "total_r_per_year": -39.47,
+        "worst_era_net_r": -0.0754,
+        "best_era_net_r": -0.0231,
+        "n": 9304,
+        "win_pct": 54.7,
+        "drawdown_r": 396.1,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0431,
+          "2019-21": -0.0754,
+          "2021-23": -0.0231,
+          "2023-26": -0.0319
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 5m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0375 R per fill, -39.5 R/yr, drawdown 396.1 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0352,
+          "total_r_per_year": 37.31,
+          "worst_era_net_r": 0.0268,
+          "best_era_net_r": 0.0678,
+          "n": 9304,
+          "win_pct": 54.7,
+          "drawdown_r": 42.8,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0386,
+            "2019-21": 0.0318,
+            "2021-23": 0.0678,
+            "2023-26": 0.0268
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "15m",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0286,
+        "total_r_per_year": -6.47,
+        "worst_era_net_r": -0.0673,
+        "best_era_net_r": 0.046,
+        "n": 3361,
+        "win_pct": 54.5,
+        "drawdown_r": 96.1,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0365,
+          "2019-21": -0.0673,
+          "2021-23": 0.046,
+          "2023-26": -0.0208
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0286 and total R/yr -6.5 do not both clear zero (3361 fills, 54.5% win, drawdown 96.1 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0209,
+          "total_r_per_year": 12.44,
+          "worst_era_net_r": 0.0087,
+          "best_era_net_r": 0.1042,
+          "n": 3361,
+          "win_pct": 54.5,
+          "drawdown_r": 30.2,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0237,
+            "2019-21": 0.0087,
+            "2021-23": 0.1042,
+            "2023-26": 0.0182
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "30m",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0278,
+        "total_r_per_year": -2.66,
+        "worst_era_net_r": -0.0545,
+        "best_era_net_r": 0.0378,
+        "n": 1828,
+        "win_pct": 54.3,
+        "drawdown_r": 46.2,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0512,
+          "2019-21": -0.0545,
+          "2021-23": 0.0378,
+          "2023-26": -0.0043
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0278 and total R/yr -2.7 do not both clear zero (1828 fills, 54.3% win, drawdown 46.2 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0219,
+          "total_r_per_year": 6.42,
+          "worst_era_net_r": 0.0024,
+          "best_era_net_r": 0.089,
+          "n": 1828,
+          "win_pct": 54.3,
+          "drawdown_r": 16.9,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0024,
+            "2019-21": 0.0149,
+            "2021-23": 0.089,
+            "2023-26": 0.0289
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0214,
+        "total_r_per_year": -1.06,
+        "worst_era_net_r": -0.0483,
+        "best_era_net_r": 0.0695,
+        "n": 973,
+        "win_pct": 54.1,
+        "drawdown_r": 22.4,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0007,
+          "2019-21": -0.0483,
+          "2021-23": 0.0695,
+          "2023-26": -0.042
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0214 and total R/yr -1.1 do not both clear zero (973 fills, 54.1% win, drawdown 22.4 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0369,
+          "total_r_per_year": 3.49,
+          "worst_era_net_r": -0.0114,
+          "best_era_net_r": 0.1128,
+          "n": 973,
+          "win_pct": 54.1,
+          "drawdown_r": 14.9,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0573,
+            "2019-21": 0.0164,
+            "2021-23": 0.1128,
+            "2023-26": -0.0114
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "4h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0346,
+        "total_r_per_year": -1.11,
+        "worst_era_net_r": -0.3033,
+        "best_era_net_r": 0.1561,
+        "n": 245,
+        "win_pct": 52.2,
+        "drawdown_r": 21.8,
+        "horizon_hours": 720,
+        "eras": {
+          "2017-19": -0.0331,
+          "2019-21": -0.3033,
+          "2021-23": 0.1561,
+          "2023-26": -0.0361
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0346 and total R/yr -1.1 do not both clear zero (245 fills, 52.2% win, drawdown 21.8 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0198,
+          "total_r_per_year": 0.22,
+          "worst_era_net_r": -0.2275,
+          "best_era_net_r": 0.2028,
+          "n": 245,
+          "win_pct": 52.2,
+          "drawdown_r": 15.2,
+          "horizon_hours": 720,
+          "eras": {
+            "2017-19": 0.0465,
+            "2019-21": -0.2275,
+            "2021-23": 0.2028,
+            "2023-26": -0.0068
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "USDJPY.a",
+        "tf": "1d",
+        "enabled": false,
+        "tradeable": false,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0809,
+        "total_r_per_year": 0.15,
+        "worst_era_net_r": -0.4963,
+        "best_era_net_r": 0.4921,
+        "n": 50,
+        "win_pct": 64.0,
+        "drawdown_r": 6.3,
+        "horizon_hours": 2160,
+        "eras": {
+          "2017-19": -0.2295,
+          "2019-21": -0.4963,
+          "2021-23": 0.4921,
+          "2023-26": 0.0677
+        },
+        "note": "Journal only. Median sub-era -0.0809 and total R/yr +0.1 do not both clear zero (50 fills, 64.0% win, drawdown 6.3 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": -0.0125,
+          "total_r_per_year": 0.55,
+          "worst_era_net_r": -0.1906,
+          "best_era_net_r": 0.4827,
+          "n": 50,
+          "win_pct": 64.0,
+          "drawdown_r": 3.7,
+          "horizon_hours": 2160,
+          "eras": {
+            "2017-19": -0.1178,
+            "2019-21": -0.1906,
+            "2021-23": 0.4827,
+            "2023-26": 0.0928
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "1m",
+        "enabled": false,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.1187,
+        "total_r_per_year": -687.97,
+        "worst_era_net_r": -0.1348,
+        "best_era_net_r": -0.0669,
+        "n": 59227,
+        "win_pct": 56.2,
+        "drawdown_r": 6678.2,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0669,
+          "2019-21": -0.1348,
+          "2021-23": -0.1116,
+          "2023-26": -0.1257
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 1m is negative on every instrument -- the cost fraction, not the entry. Measured -0.1187 R per fill, -688.0 R/yr, drawdown 6678.2 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0694,
+          "total_r_per_year": 417.82,
+          "worst_era_net_r": 0.0572,
+          "best_era_net_r": 0.0869,
+          "n": 59227,
+          "win_pct": 56.2,
+          "drawdown_r": 61.4,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0869,
+            "2019-21": 0.0716,
+            "2021-23": 0.0672,
+            "2023-26": 0.0572
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "5m",
+        "enabled": false,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0692,
+        "total_r_per_year": -57.65,
+        "worst_era_net_r": -0.0971,
+        "best_era_net_r": -0.0334,
+        "n": 8178,
+        "win_pct": 52.6,
+        "drawdown_r": 572.6,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0334,
+          "2019-21": -0.0971,
+          "2021-23": -0.0644,
+          "2023-26": -0.074
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 5m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0692 R per fill, -57.6 R/yr, drawdown 572.6 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": -0.002,
+          "total_r_per_year": -0.29,
+          "worst_era_net_r": -0.0218,
+          "best_era_net_r": 0.0271,
+          "n": 8178,
+          "win_pct": 52.6,
+          "drawdown_r": 104.7,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0271,
+            "2019-21": -0.0218,
+            "2021-23": -0.0004,
+            "2023-26": -0.0036
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "15m",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0113,
+        "total_r_per_year": -10.21,
+        "worst_era_net_r": -0.1166,
+        "best_era_net_r": 0.0016,
+        "n": 3068,
+        "win_pct": 53.3,
+        "drawdown_r": 115.1,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0063,
+          "2019-21": 0.0016,
+          "2021-23": -0.1166,
+          "2023-26": -0.0163
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0113 and total R/yr -10.2 do not both clear zero (3068 fills, 53.3% win, drawdown 115.1 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0339,
+          "total_r_per_year": 4.31,
+          "worst_era_net_r": -0.0745,
+          "best_era_net_r": 0.0518,
+          "n": 3068,
+          "win_pct": 53.3,
+          "drawdown_r": 56.4,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0364,
+            "2019-21": 0.0518,
+            "2021-23": -0.0745,
+            "2023-26": 0.0313
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "30m",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.023,
+        "total_r_per_year": -3.42,
+        "worst_era_net_r": -0.0402,
+        "best_era_net_r": 0.03,
+        "n": 1768,
+        "win_pct": 53.7,
+        "drawdown_r": 54.1,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0097,
+          "2019-21": 0.03,
+          "2021-23": -0.0363,
+          "2023-26": -0.0402
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0230 and total R/yr -3.4 do not both clear zero (1768 fills, 53.7% win, drawdown 54.1 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0146,
+          "total_r_per_year": 3.85,
+          "worst_era_net_r": -0.0003,
+          "best_era_net_r": 0.073,
+          "n": 1768,
+          "win_pct": 53.7,
+          "drawdown_r": 19.8,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0276,
+            "2019-21": 0.073,
+            "2021-23": -0.0003,
+            "2023-26": 0.0015
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "1h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0115,
+        "total_r_per_year": -2.18,
+        "worst_era_net_r": -0.0827,
+        "best_era_net_r": 0.0429,
+        "n": 936,
+        "win_pct": 53.3,
+        "drawdown_r": 26.3,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0827,
+          "2019-21": 0.0429,
+          "2021-23": 0.0285,
+          "2023-26": -0.0514
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0115 and total R/yr -2.2 do not both clear zero (936 fills, 53.3% win, drawdown 26.3 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0248,
+          "total_r_per_year": 1.45,
+          "worst_era_net_r": -0.047,
+          "best_era_net_r": 0.0841,
+          "n": 936,
+          "win_pct": 53.3,
+          "drawdown_r": 16.6,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": -0.047,
+            "2019-21": 0.0841,
+            "2021-23": 0.0621,
+            "2023-26": -0.0125
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "4h",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.1072,
+        "total_r_per_year": -2.28,
+        "worst_era_net_r": -0.1604,
+        "best_era_net_r": -0.0282,
+        "n": 250,
+        "win_pct": 49.6,
+        "drawdown_r": 29.1,
+        "horizon_hours": 720,
+        "eras": {
+          "2017-19": -0.1567,
+          "2019-21": -0.1604,
+          "2021-23": -0.0577,
+          "2023-26": -0.0282
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.1072 and total R/yr -2.3 do not both clear zero (250 fills, 49.6% win, drawdown 29.1 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": -0.0711,
+          "total_r_per_year": -1.27,
+          "worst_era_net_r": -0.1167,
+          "best_era_net_r": 0.0131,
+          "n": 250,
+          "win_pct": 49.6,
+          "drawdown_r": 21.0,
+          "horizon_hours": 720,
+          "eras": {
+            "2017-19": -0.1126,
+            "2019-21": -0.1167,
+            "2021-23": -0.0296,
+            "2023-26": 0.0131
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "EURUSD.a",
+        "tf": "1d",
+        "enabled": false,
+        "tradeable": false,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0067,
+        "total_r_per_year": -0.07,
+        "worst_era_net_r": -0.407,
+        "best_era_net_r": 0.4494,
+        "n": 44,
+        "win_pct": 52.3,
+        "drawdown_r": 6.8,
+        "horizon_hours": 2160,
+        "eras": {
+          "2017-19": 0.4494,
+          "2019-21": -0.407,
+          "2021-23": 0.17,
+          "2023-26": -0.1835
+        },
+        "note": "Journal only. Median sub-era -0.0067 and total R/yr -0.1 do not both clear zero (44 fills, 52.3% win, drawdown 6.8 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0311,
+          "total_r_per_year": 0.19,
+          "worst_era_net_r": -0.3302,
+          "best_era_net_r": 0.5329,
+          "n": 44,
+          "win_pct": 52.3,
+          "drawdown_r": 5.5,
+          "horizon_hours": 2160,
+          "eras": {
+            "2017-19": 0.5329,
+            "2019-21": -0.3302,
+            "2021-23": 0.1714,
+            "2023-26": -0.1092
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "1m",
+        "enabled": false,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0803,
+        "total_r_per_year": -582.31,
+        "worst_era_net_r": -0.1316,
+        "best_era_net_r": -0.0633,
+        "n": 59078,
+        "win_pct": 55.8,
+        "drawdown_r": 5652.3,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0679,
+          "2019-21": -0.0633,
+          "2021-23": -0.0927,
+          "2023-26": -0.1316
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 1m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0803 R per fill, -582.3 R/yr, drawdown 5652.3 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0726,
+          "total_r_per_year": 370.14,
+          "worst_era_net_r": 0.0332,
+          "best_era_net_r": 0.0855,
+          "n": 59078,
+          "win_pct": 55.8,
+          "drawdown_r": 55.7,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0845,
+            "2019-21": 0.0855,
+            "2021-23": 0.0606,
+            "2023-26": 0.0332
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "5m",
+        "enabled": false,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0441,
+        "total_r_per_year": -35.88,
+        "worst_era_net_r": -0.0679,
+        "best_era_net_r": 0.0076,
+        "n": 8174,
+        "win_pct": 53.5,
+        "drawdown_r": 363.5,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0364,
+          "2019-21": 0.0076,
+          "2021-23": -0.0517,
+          "2023-26": -0.0679
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 5m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0441 R per fill, -35.9 R/yr, drawdown 363.5 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0126,
+          "total_r_per_year": 14.04,
+          "worst_era_net_r": -0.0035,
+          "best_era_net_r": 0.0624,
+          "n": 8174,
+          "win_pct": 53.5,
+          "drawdown_r": 70.1,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0213,
+            "2019-21": 0.0624,
+            "2021-23": 0.004,
+            "2023-26": -0.0035
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "15m",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0092,
+        "total_r_per_year": -3.79,
+        "worst_era_net_r": -0.0523,
+        "best_era_net_r": 0.0631,
+        "n": 3115,
+        "win_pct": 54.1,
+        "drawdown_r": 79.5,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0343,
+          "2019-21": 0.0631,
+          "2021-23": 0.0159,
+          "2023-26": -0.0523
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0092 and total R/yr -3.8 do not both clear zero (3115 fills, 54.1% win, drawdown 79.5 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0298,
+          "total_r_per_year": 9.31,
+          "worst_era_net_r": -0.0083,
+          "best_era_net_r": 0.1012,
+          "n": 3115,
+          "win_pct": 54.1,
+          "drawdown_r": 39.1,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0048,
+            "2019-21": 0.1012,
+            "2021-23": 0.0548,
+            "2023-26": -0.0083
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "30m",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0062,
+        "total_r_per_year": -0.97,
+        "worst_era_net_r": -0.0297,
+        "best_era_net_r": 0.0407,
+        "n": 1764,
+        "win_pct": 54.1,
+        "drawdown_r": 46.3,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0091,
+          "2019-21": 0.0407,
+          "2021-23": -0.0033,
+          "2023-26": -0.0297
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0062 and total R/yr -1.0 do not both clear zero (1764 fills, 54.1% win, drawdown 46.3 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0264,
+          "total_r_per_year": 5.29,
+          "worst_era_net_r": 0.0077,
+          "best_era_net_r": 0.0733,
+          "n": 1764,
+          "win_pct": 54.1,
+          "drawdown_r": 31.5,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0241,
+            "2019-21": 0.0733,
+            "2021-23": 0.0287,
+            "2023-26": 0.0077
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "1h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0315,
+        "total_r_per_year": -2.95,
+        "worst_era_net_r": -0.0639,
+        "best_era_net_r": 0.0325,
+        "n": 961,
+        "win_pct": 52.4,
+        "drawdown_r": 47.2,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0283,
+          "2019-21": 0.0325,
+          "2021-23": -0.0348,
+          "2023-26": -0.0639
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0315 and total R/yr -3.0 do not both clear zero (961 fills, 52.4% win, drawdown 47.2 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": -0.0014,
+          "total_r_per_year": 0.14,
+          "worst_era_net_r": -0.0305,
+          "best_era_net_r": 0.062,
+          "n": 961,
+          "win_pct": 52.4,
+          "drawdown_r": 32.4,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.002,
+            "2019-21": 0.062,
+            "2021-23": -0.0049,
+            "2023-26": -0.0305
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "4h",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": 0.0456,
+        "total_r_per_year": 0.49,
+        "worst_era_net_r": -0.1025,
+        "best_era_net_r": 0.0673,
+        "n": 240,
+        "win_pct": 55.8,
+        "drawdown_r": 11.8,
+        "horizon_hours": 720,
+        "eras": {
+          "2017-19": 0.0426,
+          "2019-21": -0.1025,
+          "2021-23": 0.0487,
+          "2023-26": 0.0673
+        },
+        "thin": true,
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only -- THIN. Positive on the median sub-era (+0.0456) and on total R/yr (+0.5), but only 240 fills in the window, about 25 a year. Too few to tell from luck, and too little return to carry an account.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0778,
+          "total_r_per_year": 1.34,
+          "worst_era_net_r": -0.0728,
+          "best_era_net_r": 0.1075,
+          "n": 240,
+          "win_pct": 55.8,
+          "drawdown_r": 9.7,
+          "horizon_hours": 720,
+          "eras": {
+            "2017-19": 0.0754,
+            "2019-21": -0.0728,
+            "2021-23": 0.0802,
+            "2023-26": 0.1075
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "GBPUSD.a",
+        "tf": "1d",
+        "enabled": false,
+        "tradeable": false,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": 0.0043,
+        "total_r_per_year": -0.3,
+        "worst_era_net_r": -0.3613,
+        "best_era_net_r": 0.3904,
+        "n": 47,
+        "win_pct": 51.1,
+        "drawdown_r": 7.3,
+        "horizon_hours": 2160,
+        "eras": {
+          "2017-19": 0.3904,
+          "2019-21": 0.0018,
+          "2021-23": 0.0069,
+          "2023-26": -0.3613
+        },
+        "note": "Journal only. Median sub-era +0.0043 and total R/yr -0.3 do not both clear zero (47 fills, 51.1% win, drawdown 7.3 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.048,
+          "total_r_per_year": -0.06,
+          "worst_era_net_r": -0.3053,
+          "best_era_net_r": 0.446,
+          "n": 47,
+          "win_pct": 51.1,
+          "drawdown_r": 6.3,
+          "horizon_hours": 2160,
+          "eras": {
+            "2017-19": 0.446,
+            "2019-21": 0.0446,
+            "2021-23": 0.0514,
+            "2023-26": -0.3053
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "1m",
+        "enabled": false,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.1733,
+        "total_r_per_year": -1037.55,
+        "worst_era_net_r": -0.1747,
+        "best_era_net_r": -0.1265,
+        "n": 61643,
+        "win_pct": 55.8,
+        "drawdown_r": 10065.7,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.1733,
+          "2019-21": -0.1747,
+          "2021-23": -0.1265,
+          "2023-26": -0.1732
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 1m is negative on every instrument -- the cost fraction, not the entry. Measured -0.1733 R per fill, -1037.5 R/yr, drawdown 10065.7 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0644,
+          "total_r_per_year": 378.2,
+          "worst_era_net_r": 0.0417,
+          "best_era_net_r": 0.0772,
+          "n": 61643,
+          "win_pct": 55.8,
+          "drawdown_r": 83.5,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.052,
+            "2019-21": 0.0768,
+            "2021-23": 0.0772,
+            "2023-26": 0.0417
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "5m",
+        "enabled": false,
+        "tradeable": true,
+        "control": true,
+        "measurable": true,
+        "expected_net_r": -0.0733,
+        "total_r_per_year": -70.61,
+        "worst_era_net_r": -0.0856,
+        "best_era_net_r": -0.064,
+        "n": 9309,
+        "win_pct": 53.3,
+        "drawdown_r": 692.5,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0753,
+          "2019-21": -0.0856,
+          "2021-23": -0.064,
+          "2023-26": -0.0713
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: CONTROL, expected to lose. 5m is negative on every instrument -- the cost fraction, not the entry. Measured -0.0733 R per fill, -70.6 R/yr, drawdown 692.5 R.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0107,
+          "total_r_per_year": 11.59,
+          "worst_era_net_r": 0.0092,
+          "best_era_net_r": 0.0154,
+          "n": 9309,
+          "win_pct": 53.3,
+          "drawdown_r": 53.5,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0117,
+            "2019-21": 0.0092,
+            "2021-23": 0.0098,
+            "2023-26": 0.0154
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "15m",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.036,
+        "total_r_per_year": -17.83,
+        "worst_era_net_r": -0.0972,
+        "best_era_net_r": 0.0044,
+        "n": 3384,
+        "win_pct": 52.8,
+        "drawdown_r": 176.3,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0559,
+          "2019-21": 0.0044,
+          "2021-23": -0.0162,
+          "2023-26": -0.0972
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0360 and total R/yr -17.8 do not both clear zero (3384 fills, 52.8% win, drawdown 176.3 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0151,
+          "total_r_per_year": 1.5,
+          "worst_era_net_r": -0.0403,
+          "best_era_net_r": 0.0654,
+          "n": 3384,
+          "win_pct": 52.8,
+          "drawdown_r": 66.2,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": -0.0011,
+            "2019-21": 0.0654,
+            "2021-23": 0.0314,
+            "2023-26": -0.0403
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "30m",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": 0.0106,
+        "total_r_per_year": -0.51,
+        "worst_era_net_r": -0.0479,
+        "best_era_net_r": 0.0553,
+        "n": 1720,
+        "win_pct": 54.8,
+        "drawdown_r": 56.4,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": 0.0553,
+          "2019-21": 0.0358,
+          "2021-23": -0.0147,
+          "2023-26": -0.0479
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era +0.0106 and total R/yr -0.5 do not both clear zero (1720 fills, 54.8% win, drawdown 56.4 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0543,
+          "total_r_per_year": 7.4,
+          "worst_era_net_r": -0.002,
+          "best_era_net_r": 0.0994,
+          "n": 1720,
+          "win_pct": 54.8,
+          "drawdown_r": 30.4,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0994,
+            "2019-21": 0.085,
+            "2021-23": 0.0236,
+            "2023-26": -0.002
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "1h",
+        "enabled": true,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0288,
+        "total_r_per_year": -3.77,
+        "worst_era_net_r": -0.08,
+        "best_era_net_r": 0.0087,
+        "n": 917,
+        "win_pct": 52.2,
+        "drawdown_r": 48.0,
+        "horizon_hours": 240,
+        "eras": {
+          "2017-19": -0.0098,
+          "2019-21": 0.0087,
+          "2021-23": -0.0478,
+          "2023-26": -0.08
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0288 and total R/yr -3.8 do not both clear zero (917 fills, 52.2% win, drawdown 48.0 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0069,
+          "total_r_per_year": -0.17,
+          "worst_era_net_r": -0.0406,
+          "best_era_net_r": 0.049,
+          "n": 917,
+          "win_pct": 52.2,
+          "drawdown_r": 26.5,
+          "horizon_hours": 240,
+          "eras": {
+            "2017-19": 0.0287,
+            "2019-21": 0.049,
+            "2021-23": -0.015,
+            "2023-26": -0.0406
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "4h",
+        "enabled": false,
+        "tradeable": true,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.0258,
+        "total_r_per_year": -1.05,
+        "worst_era_net_r": -0.0945,
+        "best_era_net_r": 0.0005,
+        "n": 231,
+        "win_pct": 53.2,
+        "drawdown_r": 17.5,
+        "horizon_hours": 720,
+        "eras": {
+          "2017-19": -0.036,
+          "2019-21": -0.0156,
+          "2021-23": 0.0005,
+          "2023-26": -0.0945
+        },
+        "note": "TRADEABLE BY REQUEST (scalper.tradeable_override), not by measurement. What was measured: Journal only. Median sub-era -0.0258 and total R/yr -1.1 do not both clear zero (231 fills, 53.2% win, drawdown 17.5 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": 0.0116,
+          "total_r_per_year": -0.17,
+          "worst_era_net_r": -0.0559,
+          "best_era_net_r": 0.0347,
+          "n": 231,
+          "win_pct": 53.2,
+          "drawdown_r": 10.3,
+          "horizon_hours": 720,
+          "eras": {
+            "2017-19": 0.0015,
+            "2019-21": 0.0217,
+            "2021-23": 0.0347,
+            "2023-26": -0.0559
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      },
+      {
+        "symbol": "AUDUSD.a",
+        "tf": "1d",
+        "enabled": false,
+        "tradeable": false,
+        "control": false,
+        "measurable": true,
+        "expected_net_r": -0.2465,
+        "total_r_per_year": -0.92,
+        "worst_era_net_r": -0.4566,
+        "best_era_net_r": 0.1777,
+        "n": 49,
+        "win_pct": 42.9,
+        "drawdown_r": 9.6,
+        "horizon_hours": 2160,
+        "eras": {
+          "2017-19": -0.2686,
+          "2019-21": 0.1777,
+          "2021-23": -0.4566,
+          "2023-26": -0.2243
+        },
+        "note": "Journal only. Median sub-era -0.2465 and total R/yr -0.9 do not both clear zero (49 fills, 42.9% win, drawdown 9.6 R). Signals are recorded, not traded.",
+        "zero_cost": {
+          "measurable": true,
+          "expected_net_r": -0.1909,
+          "total_r_per_year": -0.67,
+          "worst_era_net_r": -0.409,
+          "best_era_net_r": 0.22,
+          "n": 49,
+          "win_pct": 42.9,
+          "drawdown_r": 8.0,
+          "horizon_hours": 2160,
+          "eras": {
+            "2017-19": -0.2082,
+            "2019-21": 0.22,
+            "2021-23": -0.409,
+            "2023-26": -0.1736
+          }
+        },
+        "verdict_measured": false,
+        "measurement": {
+          "measured_on": "2026-09-17",
+          "stop_atr": 5.0,
+          "swing": 20,
+          "fast": 20,
+          "slow": 50,
+          "expire": 12,
+          "exit_tp": 1,
+          "session": "none",
+          "window": [
+            "2017-01-01",
+            "2026-09-14"
+          ],
+          "min_fills": 400,
+          "spread_stress_mult": 1.5,
+          "spread_stress_keep": 0.25,
+          "eras": [
+            "2017-19",
+            "2019-21",
+            "2021-23",
+            "2023-26"
+          ],
+          "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --symbols USDJPY.a,EURUSD.a,GBPUSD.a,AUDUSD.a"
+        }
+      }
+    ],
+    "filter_note": "session filter adopted 2026-09-10: +42% on total R/yr across the four candidate cells, keeps ~90% of trades, replicated 3 of 4 on the 5m/15m holdout. A volatility filter improved R PER FILL more (XAU 1h 0.106 -> 0.201) and was REJECTED: 45% fewer trades left total R/yr below baseline.",
+    "clock_note": "The session window is in BROKER SERVER TIME because the stored research bars are (tools/_brokerclock.py). js/chart/scalper.js converts true-UTC bridge bars with the same EET/EEST rule before gating; before 2026-09-10 it compared UTC hours against these numbers and ran a window three hours out.",
+    "swap_note": "expected_net_r now INCLUDES overnight financing, which no earlier number did. Gold pays -82.92 points/lot/night long and receives +30.23 short; 11-17% of trades are held overnight so the drag is 4-18% of the edge. Computed as points x point / risk_price -- lot and contract size cancel. expected_net_r_swapfree is the previous, overstated figure, kept so the forward test can be re-scored against either.",
+    "instruments_note": "ALL FIVE instruments with 1m data are enabled at the frames that clear the four tradeable tests. EURUSD/GBPUSD/AUDUSD 30m and 1h were switched on 2026-09-14, after the stop moved to 5.0 ATR and after the 3-decimal price-rounding bug was fixed -- every earlier number for these three instruments was measured through that rounding and was wrong at every timeframe, so this is their first honest measurement. AUDJPY.a and USDCAD.a are NOT here: they have 15m/1h/4h bars but no 1m, and this rule rests pending orders that fill intrabar, so they cannot be scored honestly rather than merely being unmeasured.",
+    "quality": {
+      "score": "age",
+      "meaning": "bars since EMA20 crossed EMA50, on the execution frame; shipped on every ticket",
+      "enforce": true,
+      "max_age": 20,
+      "enforced_where": "tools/scalper.py --notify only. A tradeable cell whose ticket carries age > max_age is JOURNALLED, NOT MESSAGED. The gate is deliberately NOT in sim/strategies/rayo.py: every expected_net_r in this file was measured ungated, and putting it in the rule would invalidate all of them. It is also not a per-cell improvement -- it makes each gold cell individually worse -- so the rule is the wrong place for it on the merits as well.",
+      "caveat": "THE MEASURED BENEFIT IS A QUEUE EFFECT. It comes from a simulated account holding ONE POSITION AT A TIME, where declining a stale-trend ticket leaves the slot free for a fresher one. A reader who takes several of these signals at once is not running the arm that was measured and should not expect the number.",
+      "scope": "Measured at stop 5.0 ATR on 2026-09-14. The stop-4.0 figures this block used to carry are in superseded_stop_4_0 -- the gate's effect DEPENDS ON THE STOP WIDTH and reverses between the two, so a number from one is not evidence about the other.",
+      "why": "Per-cell it is not a prediction filter: it fails about half its robustness checks on XAUUSD and passes 9 of 9 on USDJPY. On one account with one position, at stop 5.0: roughly NEUTRAL on the 4-cell set (+20.8% -> +19.6% CAGR, 31.4% -> 31.1% drawdown, P(losing year) 22% -> 19%) and MODESTLY POSITIVE on the 10-cell set (+20.7% -> +23.7% CAGR, drawdown unchanged at ~31.5%, P(losing year) 22% -> 16%). At stop 4.0 the same comparison ran the other way on ten cells (+14.5% -> +7.9%), so this is a property of the pair of settings and not of the gate alone. It is still NOT ENABLED anywhere in the live path.",
+      "measured_with": "python tools/scalp_portfolio.py --grid --from 2017-01-01 --to 2026-09-14 --risk 0.02 --equity 10000",
+      "measured_on": "2026-09-14",
+      "measured_portfolio": {
+        "4_cell_baseline": {
+          "cagr_pct": 20.8,
+          "max_dd_pct": 31.4,
+          "p_losing_year_pct": 22,
+          "trades": 1565
+        },
+        "4_cell_age_max_20": {
+          "cagr_pct": 19.6,
+          "max_dd_pct": 31.1,
+          "p_losing_year_pct": 19,
+          "trades": 1100
+        },
+        "10_cell_baseline": {
+          "cagr_pct": 20.7,
+          "max_dd_pct": 31.4,
+          "p_losing_year_pct": 22,
+          "trades": 1567
+        },
+        "10_cell_age_max_20": {
+          "cagr_pct": 23.7,
+          "max_dd_pct": 31.6,
+          "p_losing_year_pct": 16,
+          "trades": 1249
+        }
+      },
+      "superseded_stop_4_0": {
+        "_why": "The same grid at stop 4.0, kept because the age gate's effect reverses between the two stop widths and that is worth being able to see rather than take on trust. 4 cells +14.4 -> +17.8 CAGR (47.8 -> 43.5 DD); 10 cells +14.5 -> +7.9 (47.8 -> 54.9).",
+        "4_cell_baseline": {
+          "cagr_pct": 14.4,
+          "max_dd_pct": 47.8,
+          "p_losing_year_pct": 31,
+          "trades": 2201
+        },
+        "4_cell_age_max_20": {
+          "cagr_pct": 17.8,
+          "max_dd_pct": 43.5,
+          "p_losing_year_pct": 28,
+          "trades": 1588
+        },
+        "10_cell_baseline": {
+          "cagr_pct": 14.5,
+          "max_dd_pct": 47.8,
+          "p_losing_year_pct": 31,
+          "trades": 2203
+        },
+        "10_cell_age_max_20": {
+          "cagr_pct": 7.9,
+          "max_dd_pct": 54.9,
+          "p_losing_year_pct": 39,
+          "trades": 1820
+        }
+      },
+      "superseded_2026_09_10": {
+        "_why": "KEPT, NOT DELETED, because a number that was acted on should stay visible after it is withdrawn. This claimed 10 cells + age<=20 was +2.0% -> +30.9% CAGR at 75.4% -> 34.2% drawdown and that the gate was 'no longer optional' with all instruments on. It did not reproduce and the 10-cell row reversed. Its run's inputs were never written down, so there is nothing to diff -- which is why measured_with is now recorded.",
+        "baseline": {
+          "cagr_pct": 2,
+          "max_dd_pct": 75.4,
+          "p_losing_year_pct": 46
+        },
+        "age_max_20": {
+          "cagr_pct": 30.9,
+          "max_dd_pct": 34.2,
+          "p_losing_year_pct": 17
+        }
+      }
+    },
+    "queue_note": "THE ACCOUNT HOLDS ONE POSITION, AND THAT IS THE BINDING CONSTRAINT. Every cell rests a pending order on nearly every bar, so the account is busy whenever the next ticket arrives: at stop 5.0, 4 cells take 1565 trades over 2017-2026 and 10 cells take 1567. TWO extra trades for six extra instruments. Enabling instruments cannot add throughput; it only changes which cell owns the account. (Same at stop 4.0: 2201 against 2203.) Two consequences. (1) WHO GETS THE SLOT was an accident -- simultaneous tickets were ordered by their position in this file, so XAUUSD.a 30m took 87% of the account for being listed first. Five priority rules were measured (arrival, random, age, expectation, slowest frame); none beats that accident on return, `expectation` and `slow` cut drawdown for about four points of CAGR, and preferring the FRESHEST trend is the worst of the five. (2) SLOT COUNT is the real lever: at stop 4.0, two concurrent positions at matched total risk measured +15.7% CAGR at 39.6% drawdown against +14.5% at 47.8%. NOT ADOPTED -- it wins in only two of four sub-eras, is worse in the 2017-19 range regime, and failed a pre-registered robustness battery 9 of 12 (drawdown fell in 11 of 12 arms, but the return gain vanished under random tie-breaking). Reproduce with `tools/scalp_portfolio.py --slot-grid`, `--queue-grid`, `--robust` and `--eras`.",
+    "measured_with": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none",
+    "measurement": {
+      "measured_on": "2026-09-14",
+      "stop_atr": 5,
+      "swing": 20,
+      "fast": 20,
+      "slow": 50,
+      "expire": 12,
+      "exit_tp": 1,
+      "session": "none",
+      "window": [
+        "2017-01-01",
+        "2026-09-14"
+      ],
+      "min_fills": 400,
+      "spread_stress_mult": 1.5,
+      "spread_stress_keep": 0.25,
+      "eras": [
+        "2017-19",
+        "2019-21",
+        "2021-23",
+        "2023-26"
+      ],
+      "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none"
+    },
+    "scored_to": "data/scalper_scored.jsonl",
+    "tradeable_override": "MANUAL, 2026-09-15, BY REQUEST: every 5m/15m/30m/1h/4h cell is marked tradeable, regardless of what tools/scalp_register.py measured. THIS FIELD IS THE ONLY RECORD OF THAT, because `tradeable` is a computed verdict -- scalp_register.py rewrites it from the four tests on every run, so a re-registration will silently revert all of the flips below unless this override is re-applied. What the measurement said about the cells that were flipped: XAUUSD.a 5m exp -0.0231 R/trade, -14.09 R/yr, n=8364; XAUUSD.a 15m exp +0.0125 R/trade, +7.70 R/yr, n=3109; XAUUSD.a 4h exp +0.0799 R/trade, +2.55 R/yr, n=159; USDJPY.a 5m exp -0.0349 R/trade, -37.00 R/yr, n=9767; USDJPY.a 15m exp -0.0157 R/trade, +0.75 R/yr, n=3525; USDJPY.a 4h exp +0.0169 R/trade, +1.48 R/yr, n=116; EURUSD.a 5m exp -0.0798 R/trade, -66.66 R/yr, n=8906; EURUSD.a 15m exp +0.0124 R/trade, +2.05 R/yr, n=3305; EURUSD.a 4h exp +0.0221 R/trade, +0.09 R/yr, n=118; GBPUSD.a 5m exp -0.0358 R/trade, -34.17 R/yr, n=8825; GBPUSD.a 15m exp +0.0081 R/trade, +1.61 R/yr, n=3269; GBPUSD.a 4h exp +0.2869 R/trade, +3.27 R/yr, n=103; AUDUSD.a 5m exp -0.0756 R/trade, -73.71 R/yr, n=9729; AUDUSD.a 15m exp -0.0346 R/trade, -12.61 R/yr, n=3434; AUDUSD.a 4h exp +0.0708 R/trade, +1.11 R/yr, n=110. AMENDED 2026-09-15: the 1m cells were added to the override as well -- XAUUSD.a 1m exp -0.0214 R/trade, -82.80 R/yr, n=51809; USDJPY.a 1m exp -0.1128 R/trade, -686.86 R/yr, n=62537; EURUSD.a 1m exp -0.1203 R/trade, -705.08 R/yr, n=60421; GBPUSD.a 1m exp -0.0801 R/trade, -578.90 R/yr, n=59562; AUDUSD.a 1m exp -0.1719 R/trade, -1032.15 R/yr, n=61858. Every one of these is the rule's own negative control: 1m was measured to lose money at every instrument, by the widest margin in the registry, and it is now marked tradeable by request.",
+    "zero_cost_measurement": {
+      "measured_on": "2026-09-17",
+      "stop_atr": 5.0,
+      "swing": 20,
+      "fast": 20,
+      "slow": 50,
+      "expire": 12,
+      "exit_tp": 1,
+      "session": "none",
+      "window": [
+        "2017-01-01",
+        "2026-09-14"
+      ],
+      "min_fills": 400,
+      "spread_stress_mult": 1.5,
+      "spread_stress_keep": 0.25,
+      "eras": [
+        "2017-19",
+        "2019-21",
+        "2021-23",
+        "2023-26"
+      ],
+      "command": "python tools/scalp_register.py --stop-atr 5 --from 2017-01-01 --to 2026-09-14 --session none --zero-cost",
+      "costs": "zero: no spread, no slippage, no swap; commission not charged"
+    }
+  },
+  "destinations": [
+    {
+      "id": "d1",
+      "channel": "telegram",
+      "label": "🙂 Nur",
+      "target": "686269315",
+      "enabled": true,
+      "kinds": []
+    },
+    {
+      "id": "d2",
+      "channel": "telegram",
+      "label": "Gold group (mine)",
+      "target": "-1004443429312",
+      "enabled": true,
+      "kinds": []
+    },
+    {
+      "id": "d3",
+      "channel": "telegram",
+      "label": "Trade like a Pro",
+      "target": "t.me/rayo_scalper",
+      "enabled": true,
+      "kinds": [
+        "scalper",
+        "signals",
+        "news"
+      ]
+    }
+  ],
+  "primary_rule": "scalper"
+}

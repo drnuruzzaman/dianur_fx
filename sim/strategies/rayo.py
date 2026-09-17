@@ -309,6 +309,24 @@ import pandas as pd
 #: the ladder, in R. TP1 under 1R is deliberate -- see the docstring.
 TPS = (0.9, 1.5, 2.4)
 
+#: BREAK-EVEN STOP, adopted 2026-09-17 by request, on the frames it measured
+#: better on. Once a filled trade's favourable excursion reaches `trigger_r`
+#: (in R), its stop moves to the ENTRY, effective from the next minute. Gold,
+#: 2017-2026, captured spread, no swap (tools/rayo_breakeven_eval.py,
+#: logs/rayo_breakeven_eval.txt), median-era net R / R/yr / drawdown R:
+#:     30m  +0.0321 -> +0.0330   +4.9 -> +8.9   23.2 -> 18.2   3/4 eras better
+#:     1h   +0.0120 -> +0.0268   +5.0 -> +6.4   22.9 -> 11.8   3/4 eras better
+#: It made 5m and 4h worse and 15m no better, so it is NOT applied there. +0.5R
+#: was the best of four triggers tried (0.3 / 0.5 / 0.7 / entry+cost).
+#: js/chart/scalper.js BREAKEVEN is the mirror; tests/test_rayo_parity.py
+#: checks the two agree.
+BREAKEVEN = {'trigger_r': 0.5, 'tfs': ('30m', '1h')}
+
+
+def breakeven_r(tf):
+    """The break-even trigger in R for a frame, or None where it is not used."""
+    return BREAKEVEN['trigger_r'] if tf in BREAKEVEN['tfs'] else None
+
 DEFAULTS = {
     'mode': 'break',
     'swing': 20,

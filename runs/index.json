@@ -1,6 +1,6 @@
 {
- "generated_utc": "2026-08-22T22:16:11+00:00",
- "code_hash": "5952d24fba8e",
+ "generated_utc": "2026-09-17T04:02:24+00:00",
+ "code_hash": "fabd01aac132",
  "runs": [
   {
    "created_utc": "2026-08-22T10:15:33+00:00",
@@ -16249,29 +16249,110 @@
  "data": {
   "bars": [
    {
+    "symbol": "AUDJPY.a",
+    "tf": "15m",
+    "years": 20,
+    "rows": 485247,
+    "first": "2007",
+    "last": "2026",
+    "mb": 7.0
+   },
+   {
+    "symbol": "AUDJPY.a",
+    "tf": "1h",
+    "years": 20,
+    "rows": 121451,
+    "first": "2007",
+    "last": "2026",
+    "mb": 1.9
+   },
+   {
+    "symbol": "AUDJPY.a",
+    "tf": "4h",
+    "years": 20,
+    "rows": 30706,
+    "first": "2007",
+    "last": "2026",
+    "mb": 0.5
+   },
+   {
+    "symbol": "AUDUSD.a",
+    "tf": "15m",
+    "years": 28,
+    "rows": 684022,
+    "first": "1999",
+    "last": "2026",
+    "mb": 8.8
+   },
+   {
     "symbol": "AUDUSD.a",
     "tf": "1d",
-    "years": 20,
-    "rows": 5336,
-    "first": "2007",
+    "years": 30,
+    "rows": 8306,
+    "first": "1997",
     "last": "2026",
     "mb": 0.1
    },
    {
     "symbol": "AUDUSD.a",
     "tf": "1h",
+    "years": 28,
+    "rows": 171488,
+    "first": "1999",
+    "last": "2026",
+    "mb": 2.5
+   },
+   {
+    "symbol": "AUDUSD.a",
+    "tf": "1m",
+    "years": 28,
+    "rows": 9613609,
+    "first": "1999",
+    "last": "2026",
+    "mb": 92.6
+   },
+   {
+    "symbol": "AUDUSD.a",
+    "tf": "1w",
     "years": 20,
-    "rows": 121721,
+    "rows": 1024,
     "first": "2007",
     "last": "2026",
-    "mb": 1.9
+    "mb": 0.0
+   },
+   {
+    "symbol": "AUDUSD.a",
+    "tf": "30m",
+    "years": 28,
+    "rows": 342721,
+    "first": "1999",
+    "last": "2026",
+    "mb": 4.7
+   },
+   {
+    "symbol": "AUDUSD.a",
+    "tf": "4h",
+    "years": 28,
+    "rows": 43636,
+    "first": "1999",
+    "last": "2026",
+    "mb": 0.7
+   },
+   {
+    "symbol": "AUDUSD.a",
+    "tf": "5m",
+    "years": 28,
+    "rows": 2035311,
+    "first": "1999",
+    "last": "2026",
+    "mb": 23.0
    },
    {
     "symbol": "EURUSD.a",
     "tf": "15m",
-    "years": 30,
-    "rows": 685633,
-    "first": "1997",
+    "years": 28,
+    "rows": 685113,
+    "first": "1999",
     "last": "2026",
     "mb": 9.2
    },
@@ -16287,45 +16368,162 @@
    {
     "symbol": "EURUSD.a",
     "tf": "1h",
-    "years": 30,
-    "rows": 172117,
-    "first": "1997",
+    "years": 28,
+    "rows": 171597,
+    "first": "1999",
     "last": "2026",
     "mb": 2.6
    },
    {
     "symbol": "EURUSD.a",
     "tf": "1m",
-    "years": 30,
-    "rows": 10008207,
-    "first": "1997",
+    "years": 28,
+    "rows": 10007687,
+    "first": "1999",
     "last": "2026",
     "mb": 99.7
    },
    {
     "symbol": "EURUSD.a",
+    "tf": "1w",
+    "years": 20,
+    "rows": 1024,
+    "first": "2007",
+    "last": "2026",
+    "mb": 0.0
+   },
+   {
+    "symbol": "EURUSD.a",
+    "tf": "30m",
+    "years": 28,
+    "rows": 343059,
+    "first": "1999",
+    "last": "2026",
+    "mb": 4.9
+   },
+   {
+    "symbol": "EURUSD.a",
     "tf": "4h",
-    "years": 30,
-    "rows": 44196,
-    "first": "1997",
+    "years": 28,
+    "rows": 43676,
+    "first": "1999",
     "last": "2026",
     "mb": 0.7
    },
    {
     "symbol": "EURUSD.a",
     "tf": "5m",
-    "years": 30,
-    "rows": 2049449,
-    "first": "1997",
+    "years": 28,
+    "rows": 2048929,
+    "first": "1999",
     "last": "2026",
     "mb": 24.2
    },
    {
+    "symbol": "GBPUSD.a",
+    "tf": "15m",
+    "years": 28,
+    "rows": 684474,
+    "first": "1999",
+    "last": "2026",
+    "mb": 9.7
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "1d",
+    "years": 30,
+    "rows": 8312,
+    "first": "1997",
+    "last": "2026",
+    "mb": 0.2
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "1h",
+    "years": 28,
+    "rows": 171574,
+    "first": "1999",
+    "last": "2026",
+    "mb": 2.7
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "1m",
+    "years": 28,
+    "rows": 9867665,
+    "first": "1999",
+    "last": "2026",
+    "mb": 105.9
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "1w",
+    "years": 20,
+    "rows": 1024,
+    "first": "2007",
+    "last": "2026",
+    "mb": 0.0
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "30m",
+    "years": 28,
+    "rows": 342748,
+    "first": "1999",
+    "last": "2026",
+    "mb": 5.1
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "4h",
+    "years": 28,
+    "rows": 43654,
+    "first": "1999",
+    "last": "2026",
+    "mb": 0.8
+   },
+   {
+    "symbol": "GBPUSD.a",
+    "tf": "5m",
+    "years": 28,
+    "rows": 2042412,
+    "first": "1999",
+    "last": "2026",
+    "mb": 25.7
+   },
+   {
+    "symbol": "USDCAD.a",
+    "tf": "15m",
+    "years": 20,
+    "rows": 486579,
+    "first": "2007",
+    "last": "2026",
+    "mb": 7.1
+   },
+   {
+    "symbol": "USDCAD.a",
+    "tf": "1h",
+    "years": 20,
+    "rows": 121852,
+    "first": "2007",
+    "last": "2026",
+    "mb": 2.0
+   },
+   {
+    "symbol": "USDCAD.a",
+    "tf": "4h",
+    "years": 20,
+    "rows": 30815,
+    "first": "2007",
+    "last": "2026",
+    "mb": 0.5
+   },
+   {
     "symbol": "USDJPY.a",
     "tf": "15m",
-    "years": 30,
-    "rows": 684871,
-    "first": "1997",
+    "years": 28,
+    "rows": 684351,
+    "first": "1999",
     "last": "2026",
     "mb": 8.9
    },
@@ -16341,47 +16539,83 @@
    {
     "symbol": "USDJPY.a",
     "tf": "1h",
-    "years": 30,
-    "rows": 171970,
-    "first": "1997",
+    "years": 28,
+    "rows": 171450,
+    "first": "1999",
     "last": "2026",
     "mb": 2.5
    },
    {
     "symbol": "USDJPY.a",
     "tf": "1m",
-    "years": 30,
-    "rows": 9963554,
-    "first": "1997",
+    "years": 28,
+    "rows": 9963034,
+    "first": "1999",
     "last": "2026",
     "mb": 97.3
    },
    {
     "symbol": "USDJPY.a",
-    "tf": "4h",
+    "tf": "1w",
+    "years": 20,
+    "rows": 1024,
+    "first": "2007",
+    "last": "2026",
+    "mb": 0.0
+   },
+   {
+    "symbol": "USDJPY.a",
+    "tf": "2h",
     "years": 30,
-    "rows": 44127,
+    "rows": 87312,
     "first": "1997",
+    "last": "2026",
+    "mb": 1.3
+   },
+   {
+    "symbol": "USDJPY.a",
+    "tf": "30m",
+    "years": 28,
+    "rows": 342687,
+    "first": "1999",
+    "last": "2026",
+    "mb": 4.7
+   },
+   {
+    "symbol": "USDJPY.a",
+    "tf": "3m",
+    "years": 30,
+    "rows": 3410434,
+    "first": "1997",
+    "last": "2026",
+    "mb": 38.5
+   },
+   {
+    "symbol": "USDJPY.a",
+    "tf": "4h",
+    "years": 28,
+    "rows": 43607,
+    "first": "1999",
     "last": "2026",
     "mb": 0.7
    },
    {
     "symbol": "USDJPY.a",
     "tf": "5m",
-    "years": 30,
-    "rows": 2047501,
-    "first": "1997",
+    "years": 28,
+    "rows": 2046981,
+    "first": "1999",
     "last": "2026",
     "mb": 23.5
    },
    {
     "symbol": "XAUUSD.a",
     "tf": "15m",
-    "years": 29,
-    "rows": 229518,
-    "first": "1998",
+    "years": 10,
+    "rows": 217157,
+    "first": "2017",
     "last": "2026",
-    "mb": 3.7
+    "mb": 3.5
    },
    {
     "symbol": "XAUUSD.a",
@@ -16395,38 +16629,74 @@
    {
     "symbol": "XAUUSD.a",
     "tf": "1h",
-    "years": 29,
-    "rows": 66685,
-    "first": "1998",
+    "years": 11,
+    "rows": 62005,
+    "first": "2016",
     "last": "2026",
-    "mb": 1.2
+    "mb": 1.1
    },
    {
     "symbol": "XAUUSD.a",
     "tf": "1m",
+    "years": 10,
+    "rows": 3251579,
+    "first": "2017",
+    "last": "2026",
+    "mb": 42.8
+   },
+   {
+    "symbol": "XAUUSD.a",
+    "tf": "1w",
+    "years": 20,
+    "rows": 1024,
+    "first": "2007",
+    "last": "2026",
+    "mb": 0.0
+   },
+   {
+    "symbol": "XAUUSD.a",
+    "tf": "2h",
     "years": 29,
-    "rows": 3263940,
+    "rows": 37234,
     "first": "1998",
     "last": "2026",
-    "mb": 43.0
+    "mb": 0.7
+   },
+   {
+    "symbol": "XAUUSD.a",
+    "tf": "30m",
+    "years": 10,
+    "rows": 108763,
+    "first": "2017",
+    "last": "2026",
+    "mb": 1.8
+   },
+   {
+    "symbol": "XAUUSD.a",
+    "tf": "3m",
+    "years": 29,
+    "rows": 1105866,
+    "first": "1998",
+    "last": "2026",
+    "mb": 16.2
    },
    {
     "symbol": "XAUUSD.a",
     "tf": "4h",
-    "years": 29,
-    "rows": 20920,
-    "first": "1998",
+    "years": 11,
+    "rows": 16244,
+    "first": "2016",
     "last": "2026",
-    "mb": 0.4
+    "mb": 0.3
    },
    {
     "symbol": "XAUUSD.a",
     "tf": "5m",
-    "years": 29,
-    "rows": 663346,
-    "first": "1998",
+    "years": 10,
+    "rows": 650985,
+    "first": "2017",
     "last": "2026",
-    "mb": 9.8
+    "mb": 9.6
    }
   ],
   "ticks": [
@@ -16453,16 +16723,16 @@
    }
   ],
   "manifest": {
-   "updated_utc": "2026-08-22T22:16:10+00:00",
+   "updated_utc": "2026-09-17T04:02:23+00:00",
    "broker_server": "Pepperstone-MT5-Live01",
    "server_utc_offset_ms": 10800000,
-   "terminal_build": 6140,
+   "terminal_build": 6182,
    "time_base": "broker server time as reported by MetaTrader (NOT UTC-corrected); bars in seconds, ticks in milliseconds",
    "on_disk": {
     "bars": {
-     "files": 574,
-     "bytes": 329921485,
-     "mb": 329.9
+     "files": 1221,
+     "bytes": 696779470,
+     "mb": 696.8
     },
     "ticks": {
      "files": 1273,

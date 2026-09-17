@@ -52,7 +52,7 @@ import { atrSeries } from '../chart/tlengine.js';
 import { replayAuto, openReplayAutoMenu } from './replayauto.js';
 import { swingEngineRows } from './swingreadout.js';
 
-const TFS = ['5m', '15m', '1h', '4h', '1d'];
+const TFS = ['3m', '5m', '15m', '1h', '2h', '4h', '1d'];
 
 /* THE HIERARCHY. Elliott is self-similar, so a count is only a claim once you
    say at what degree -- the same three bars are wave 5 of a 15m impulse and
@@ -61,7 +61,7 @@ const TFS = ['5m', '15m', '1h', '4h', '1d'];
    can actually speak to.
    `bars` is that horizon expressed in bars of that frame, which is what the
    scorer needs; the wall-clock column is what a person reads. */
-const TF_MS = { '5m': 3e5, '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5 };
+const TF_MS = { '3m': 18e4, '5m': 3e5, '15m': 9e5, '1h': 36e5, '2h': 72e5, '4h': 144e5, '1d': 864e5 };
 /* Enough bars for the counter to have something to read, plus the reach back to
    the cursor. Capped: past this the fetch costs more than the row is worth. */
 const MTF_WARMUP = 900;

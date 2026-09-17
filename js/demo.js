@@ -23,8 +23,8 @@ const SPEC = {
 };
 
 const TF_MS = {
-  '1m': 60e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3,
-  '1h': 3600e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3,
+  '1m': 60e3, '3m': 180e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3,
+  '1h': 3600e3, '2h': 7200e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3,
 };
 
 /* mulberry32 — a small deterministic PRNG so a symbol's history is stable

@@ -2,10 +2,11 @@
    right-hand tape and the contract spec block. All read-only views. */
 
 import { $, el, hhmmss, load, money, num, px, relTime, save, stamp,
-         stampTz, tzLabel, TZ_MODES } from '../util.js';
+         stampTz, tzLabel, TZ_MODES, TF_MS } from '../util.js';
 import { Backtest } from './backtest.js';
 import { SignalBoard } from './signalboard.js';
 import { closeMenu } from './menu.js';
+import { onRayoLedger, rayoFills, rayoRecordStart } from '../chart/rayoledger.js';
 
 const table = (cols, rows) => {
   const t = el('table', { class: 'grid' });
@@ -41,6 +42,49 @@ const sealed = (what) => el('div', { class: 'empty sealed' },
   `${what} are hidden with the account figures — press the eye in the status `
   + 'bar to reveal');
 
+/** Price decimals by instrument: gold 2, yen 3, the rest 5. */
+const digitsFor = (sym) => (/JPY/i.test(sym || '') ? 3 : /XAU|XAG/i.test(sym || '') ? 2 : 5);
+
+/**
+ * Which Rayo trade a broker position is: same symbol and side, opened within
+ * one bar of a fill the live scorer recorded (at least five minutes, for 1m).
+ * Read straight from data/scalper_scored.jsonl through rayoledger.js, so it
+ * needs neither the Signal Board nor any bars. Same side alone matched a
+ * week-old hand trade to today's 1m cell, which is why the time window.
+ *
+ * `extra` is the Signal Board's in-trade state when it has polled: it adds a
+ * trade the scorer (hourly) has not written yet.
+ */
+function ruleMatch(row, extra) {
+  const tMs = row.time_ms || 0;
+  const near = (x) => x.side === row.side && Number.isFinite(x.fillMs)
+    && Math.abs(tMs - x.fillMs) <= Math.max(TF_MS[x.tf] || 0, 300e3);
+  const fills = rayoFills(row.symbol).concat(extra || []);
+  const hit = fills.filter(near)
+    .sort((x, y) => Math.abs(tMs - x.fillMs) - Math.abs(tMs - y.fillMs));
+  if (!hit.length) {
+    const start = rayoRecordStart();
+    if (start === null) {
+      return el('td', { class: 'dim', text: '…', title: 'Loading the rule ledger' });
+    }
+    if (tMs < start - 3600e3) {
+      return el('td', { class: 'dim', text: 'before record',
+        title: `Opened before the rule's scored ledger begins (${stamp(start)}), `
+               + 'so it cannot be matched either way' });
+    }
+    return el('td', { class: 'dim', text: 'manual',
+      title: `No Rayo fill on ${row.symbol} ${String(row.side).toUpperCase()} within `
+             + 'one bar of this open time -- placed by hand, or by something else' });
+  }
+  const h = hit[0];
+  const label = `rule ${h.tf} ${String(h.side).toUpperCase()}`;
+  return el('td', { class: 'up', text: label,
+    title: `Opened ${Math.round(Math.abs(tMs - h.fillMs) / 1000)}s from the rule's ${h.tf} `
+           + `${String(h.side).toUpperCase()} fill`
+           + (h.id ? ` (${h.id}, ${h.outcome || 'open'}, stop ${h.stopAtr} ATR)` : '')
+           + (hit.length > 1 ? `; also near ${hit.slice(1).map((x) => x.tf).join(', ')}` : '') });
+}
+
 export class Panels {
   constructor() {
     this.host = $('#panel');
@@ -58,6 +102,8 @@ export class Panels {
     /* The Signal Board reads configs/alerts.json and asks the bridge; it owns
        its own poll timer, which is why it has to be told when it goes away. */
     this.signals = new SignalBoard();
+    /* Rule matching on Positions reads the live ledger; repaint when it lands. */
+    onRayoLedger(() => { if (this.tab === 'positions') this.render(); });
     this.tz = load('calendarTz', 'local');
     this.brokerOffsetMs = 0;          // handed over from /health by main.js
 
@@ -289,6 +335,11 @@ export class Panels {
     /* Only repaint if this is the tab on screen -- including when that is a
        hover-preview, so live rows keep ticking under the pointer. */
     if (this.tab === kind) this.render();
+    /* The Signal Board's stop-loss warning counts positions: keep it current
+       without rebuilding the board (which would restart its poll). */
+    else if (kind === 'positions' && this.tab === 'signals' && this.signals.repaint) {
+      this.signals.repaint();
+    }
   }
 
   /* The buttons follow `this.tab` wherever it points -- including at a preview,
@@ -346,64 +397,173 @@ export class Panels {
       return;
     }
 
+    /* BROKER POSITIONS, read only, with the checks that matter on one
+       screen: which rows have no stop, and which (if any) are the Rayo rule's
+       own trades rather than placed by hand. Moved here from the Signal Board,
+       which shows what the RULE says -- and which is not behind the account
+       eye, so a positions table there leaked what the eye hides. Pending
+       orders are on the Orders tab. */
     if (this.tab === 'positions') {
       if (covered()) return void h.append(sealed('positions'));
-      if (!d.positions.length) return void h.append(empty('no open positions'));
-      const rows = d.positions.map((p) => el('tr', {},
-        el('td', { class: 'sym', text: p.symbol }),
-        el('td', { class: p.side === 'buy' ? 'up' : 'down', text: p.side.toUpperCase() }),
-        el('td', { class: 'pv', text: num(p.volume, 2) }),
-        el('td', { class: 'pv', text: px(p.price_open, 5) }),
-        el('td', { class: 'pv', text: px(p.price_current, 5) }),
-        el('td', { class: 'pv', text: p.sl ? px(p.sl, 5) : '—' }),
-        el('td', { class: 'pv', text: p.tp ? px(p.tp, 5) : '—' }),
-        el('td', { class: 'pv', text: num(p.swap) }),
-        plCell(p.profit, 'pv'),
-        el('td', { text: stamp(p.time_ms) }),
-        el('td', { text: p.ticket })));
-      const total = d.positions.reduce((a, p) => a + (p.profit || 0), 0);
-      rows.push(el('tr', {},
-        el('td', { class: 'sym', text: 'TOTAL' }),
-        ...Array.from({ length: 7 }, () => el('td', { text: '' })),
-        plCell(total, 'pv'), el('td', { text: '' }), el('td', { text: '' })));
-      h.append(table(['Symbol', 'Side', 'Lots', 'Open', 'Current', 'SL', 'TP', 'Swap',
-        `P/L ${this.currency}`, 'Opened', 'Ticket'], rows));
+      /* The Signal Board's in-trade cells, if it has polled -- a fill the
+         hourly scorer has not written yet. Optional: the ledger does the rest. */
+      const boardFills = [];
+      const scalp = this.signals && this.signals.scalp;
+      for (const c of (this.signals && this.signals.scalpCells) || []) {
+        const t = scalp && scalp.get(`${c.symbol}|${c.tf}`);
+        if (t && t.held) boardFills.push({ tf: c.tf, side: t.side, fillMs: t.fillMs,
+                                           symbol: c.symbol });
+      }
+
+      /* ---- open positions ---- */
+      const P = d.positions.slice().sort((x, y) => (y.time_ms || 0) - (x.time_ms || 0));
+      let pl = 0, sw = 0;
+      const lots = { buy: 0, sell: 0 };
+      const noStop = P.filter((p) => !p.sl).length;
+      const prow = P.map((p) => {
+        const dg = digitsFor(p.symbol);
+        const buy = p.side === 'buy';
+        const mine = boardFills.filter((x) => x.symbol.toUpperCase() === String(p.symbol).toUpperCase());
+        pl += Number(p.profit) || 0;
+        sw += Number(p.swap) || 0;
+        lots[buy ? 'buy' : 'sell'] += Number(p.volume) || 0;
+        return el('tr', { title: p.comment ? `comment: ${p.comment}` : '' },
+          el('td', { text: stamp(p.time_ms) }),
+          el('td', { class: 'sym', text: p.symbol }),
+          el('td', { class: buy ? 'up' : 'down', text: String(p.side).toUpperCase() }),
+          el('td', { class: 'pv', text: num(p.volume, 2) }),
+          el('td', { class: 'pv', text: px(p.price_open, dg) }),
+          el('td', { class: 'pv', text: px(p.price_current, dg) }),
+          p.sl ? el('td', { class: 'pv down', text: px(p.sl, dg) })
+               : el('td', { class: 'down sl-warn', text: '⚠ none',
+                            title: 'No stop loss: this position has no protection at the broker' }),
+          el('td', { class: 'pv', text: p.tp ? px(p.tp, dg) : '—' }),
+          el('td', { class: 'pv', text: num(p.swap) }),
+          plCell(p.profit, 'pv'),
+          ruleMatch(p, mine),
+          el('td', { class: 'dim', text: p.ticket }));
+      });
+      /* THE STOP-LOSS WARNING, as on the Orders tab: a red count in the
+         header and `⚠ none` in the SL column. */
+      h.append(el('div', { class: 'sb-sub' }, `Positions ${P.length}`,
+        el('span', { class: 'sb-sub-note', text: P.length
+          ? `buy ${num(lots.buy, 2)} lots · sell ${num(lots.sell, 2)} lots · `
+            + `floating P/L ${num(pl)} ${this.currency} · swap ${num(sw)}`
+          : 'flat' }),
+        ...(noStop ? [el('span', { class: 'sb-sub-note down',
+          title: 'These positions carry no stop loss at the broker',
+          text: ` · ⚠ ${noStop} without a stop loss` })] : [])));
+      if (P.length) {
+        prow.push(el('tr', {},
+          el('td', { text: '' }), el('td', { class: 'sym', text: 'TOTAL' }),
+          ...Array.from({ length: 6 }, () => el('td', { text: '' })),
+          el('td', { class: 'pv', text: num(sw) }), plCell(pl, 'pv'),
+          el('td', { text: '' }), el('td', { text: '' })));
+        h.append(table(['Opened', 'Symbol', 'Side', 'Lots', 'Open', 'Now', 'SL', 'TP',
+          'Swap', `P/L ${this.currency}`, 'Rule', 'Ticket'], prow));
+      } else {
+        h.append(empty('no open positions'));
+      }
+
       return;
     }
 
+    /* PENDING ORDERS AT THE BROKER, read only: price decimals by instrument,
+       and a stop-loss warning -- a count in the header and a red `⚠ none` in
+       the SL column -- for any order that carries no stop. */
     if (this.tab === 'orders') {
       if (covered()) return void h.append(sealed('orders'));
-      if (!d.orders.length) return void h.append(empty('no pending orders'));
-      h.append(table(['Symbol', 'Type', 'Lots', 'Price', 'SL', 'TP', 'Placed', 'Ticket'],
-        d.orders.map((o) => el('tr', {},
-          el('td', { class: 'sym', text: o.symbol }),
-          el('td', { text: String(o.type || o.side || '').toUpperCase() }),
-          el('td', { class: 'pv', text: num(o.volume, 2) }),
-          el('td', { class: 'pv', text: px(o.price_open ?? o.price, 5) }),
-          el('td', { class: 'pv', text: o.sl ? px(o.sl, 5) : '—' }),
-          el('td', { class: 'pv', text: o.tp ? px(o.tp, 5) : '—' }),
-          el('td', { text: stamp(o.time_ms) }),
-          el('td', { text: o.ticket })))));
+      const O = d.orders.slice().sort((x, y) => (y.time_ms || 0) - (x.time_ms || 0));
+      /* THE STOP-LOSS WARNING. An order without a stop becomes a position
+         without one the moment it fills; say how many, before they do. */
+      const bare = O.filter((o) => !o.sl).length;
+      h.append(el('div', { class: 'sb-sub' }, `Pending orders ${O.length}`,
+        el('span', { class: 'sb-sub-note',
+                     text: O.length ? 'resting at the broker, not filled' : 'none resting' }),
+        ...(bare ? [el('span', { class: 'sb-sub-note down',
+          title: 'These orders carry no stop loss: if they fill, the position has no stop',
+          text: ` · ⚠ ${bare} without a stop loss` })] : [])));
+      if (!O.length) h.append(empty('no pending orders'));
+      else {
+        h.append(table(['Placed', 'Symbol', 'Type', 'Lots', 'Price', 'SL', 'TP', 'Ticket'],
+          O.map((o) => {
+            const dg = digitsFor(o.symbol);
+            const type = String(o.type || o.side || '');
+            const side = type.startsWith('buy') ? 'buy' : type.startsWith('sell') ? 'sell' : '';
+            return el('tr', { title: o.comment ? `comment: ${o.comment}` : '' },
+              el('td', { text: stamp(o.time_ms) }),
+              el('td', { class: 'sym', text: o.symbol }),
+              el('td', { class: side === 'buy' ? 'up' : side === 'sell' ? 'down' : '',
+                         text: type.replace('_', ' ').toUpperCase() }),
+              el('td', { class: 'pv', text: num(o.volume, 2) }),
+              el('td', { class: 'pv', text: px(o.price_open ?? o.price, dg) }),
+              o.sl ? el('td', { class: 'pv down', text: px(o.sl, dg) })
+                   : el('td', { class: 'down sl-warn', text: '⚠ none',
+                                title: 'No stop loss: if this order fills, the position has no stop' }),
+              el('td', { class: 'pv', text: o.tp ? px(o.tp, dg) : '—' }),
+              el('td', { class: 'dim', text: o.ticket }));
+          })));
+      }
       return;
     }
 
     if (this.tab === 'deals') {
       if (!d.deals.length) return void h.append(empty('no deals in the window'));
       const net = d.deals.reduce((a, x) => a + (x.profit || 0) + (x.commission || 0) + (x.swap || 0), 0);
+      /* THE STOP-LOSS WARNING, as on Positions and Orders -- per POSITION,
+         since a deal carries no stop of its own. The bridge sends the highest
+         stop any order of the position carried (`position_sl`) and why each
+         deal closed (`reason`: 4 stop loss, 5 take profit, 6 stop out). A stop
+         added later by modification leaves no order, so a position counts as
+         protected if it had an order stop, was closed by its stop, or is
+         still open with a stop now. */
+      const trade = (x) => x.side === 'buy' || x.side === 'sell';
+      const stopped = new Set(d.deals.filter((x) => x.reason === 4 || x.reason === 6)
+        .map((x) => x.position_id));
+      const openSl = new Map((d.positions || []).map((p) => [p.ticket, p.sl]));
+      const hasStop = (x) => (x.position_sl > 0) || stopped.has(x.position_id)
+        || (openSl.get(x.position_id) > 0);
+      const known = d.deals.some((x) => 'position_sl' in x);
+      const bare = new Set(d.deals.filter((x) => trade(x) && x.position_id && !hasStop(x))
+        .map((x) => x.position_id));
+      const slCell = (x) => {
+        if (!trade(x)) return el('td', { class: 'dim', text: '' });
+        if (!known) return el('td', { class: 'dim', text: '—',
+          title: 'Restart the bridge to read stops for history' });
+        const dg = digitsFor(x.symbol);
+        if (x.reason === 4 || x.reason === 6) {
+          return el('td', { class: 'down', text: x.reason === 6 ? 'stop out' : 'stop hit',
+            title: 'This deal was closed by the stop' });
+        }
+        if (x.position_sl > 0) return el('td', { class: 'pv down', text: px(x.position_sl, dg) });
+        if (hasStop(x)) return el('td', { class: 'dim', text: 'set later',
+          title: 'The stop was added after opening; its price is not in the order history' });
+        return el('td', { class: 'down sl-warn', text: '⚠ none',
+          title: 'No stop loss on this position' });
+      };
       const rows = d.deals.map((x) => el('tr', {},
         el('td', { class: 'sym', text: x.symbol || '—' }),
         el('td', { class: x.side === 'buy' ? 'up' : 'down', text: String(x.side || x.type || '').toUpperCase() }),
         el('td', { text: num(x.volume, 2) }),
-        el('td', { text: px(x.price, 5) }),
+        el('td', { text: px(x.price, digitsFor(x.symbol)) }),
+        slCell(x),
         el('td', { text: num(x.commission || 0) }),
         el('td', { text: num(x.swap || 0) }),
         plCell(x.profit || 0),
         el('td', { text: stamp(x.time_ms) })));
       rows.push(el('tr', {},
         el('td', { class: 'sym', text: 'NET' }),
-        ...Array.from({ length: 5 }, () => el('td', { text: '' })),
+        ...Array.from({ length: 6 }, () => el('td', { text: '' })),
         plCell(net), el('td', { text: '' })));
-      h.append(table(['Symbol', 'Side', 'Lots', 'Price', 'Comm', 'Swap', 'Profit', 'Time'], rows));
+      const positions = new Set(d.deals.filter((x) => trade(x) && x.position_id)
+        .map((x) => x.position_id));
+      h.append(el('div', { class: 'sb-sub' }, `History ${d.deals.length} deals`,
+        el('span', { class: 'sb-sub-note',
+                     text: `${positions.size} positions · net ${num(net)} ${this.currency}` }),
+        ...(known && bare.size ? [el('span', { class: 'sb-sub-note down',
+          title: 'Positions in this window that had no stop loss',
+          text: ` · ⚠ ${bare.size} without a stop loss` })] : [])));
+      h.append(table(['Symbol', 'Side', 'Lots', 'Price', 'SL', 'Comm', 'Swap', 'Profit', 'Time'], rows));
       return;
     }
 

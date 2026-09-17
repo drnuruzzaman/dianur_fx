@@ -37,7 +37,7 @@ export const REPLAY_AUTO_DEFAULTS = {
   ms: true,           // BOS / CHoCH
   zigzag: true,       // the ranked ZigZag polyline
   news: true,         // macro release marks
-  maxLines: 3,        // trendlines per side
+  maxLines: 2,        // trendlines per side
 };
 
 export function replayAuto() {

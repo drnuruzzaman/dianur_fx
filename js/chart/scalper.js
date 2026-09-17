@@ -35,6 +35,24 @@ const TPS = [0.9, 1.5, 2.4];
 export const STOP_ATR = 5.0;      // the ladder, matching tools/scalper.py
 
 /**
+ * Which rung the trade is scored on. 1 = TP1 (0.9R), mirroring `exit_tp` in
+ * rayo.py DEFAULTS and `scalper.measurement.exit_tp` in configs/alerts.json.
+ *
+ * IT WAS TP3 HERE AND TP1 EVERYWHERE ELSE, and that is not a cosmetic gap.
+ * `signals()` raced the stop against tp[2] -- 2.4R -- while the Python
+ * backtest, the registry and the live alerter all close at 0.9R. A trade that
+ * reached TP1 and then reversed into the stop counted as a WIN worth +0.9R in
+ * every measured number and was drawn on the chart as a LOSS, with its band
+ * running all the way down to the stop. The chart disagreed with the registry
+ * most often in exactly the chop where the difference decides the trade.
+ *
+ * Exported for the same reason STOP_ATR is: so the study that colours the
+ * outcome reads the rung from the rule instead of hard-coding a second
+ * opinion about it.
+ */
+export const EXIT_TP = 1;
+
+/**
  * The session window, or null for 24 hours — matching `DEFAULTS['session']` in
  * sim/strategies/rayo.py, which is the rule this file re-implements.
  *
@@ -192,13 +210,18 @@ export function signals(bars, {
     }
     if (fill < 0) { busy = i + expire; continue; }
 
-    // ---- then the stop against the top of the ladder ----
+    /* ---- then the stop against THE RUNG THE RULE EXITS ON ----
+       Not the top of the ladder. TP2 and TP3 are drawn because the ticket
+       carries them, and the registry says so in as many words -- "Drawn, not
+       measured as an exit" -- so scoring against TP3 invented an exit nobody
+       trades and nobody measured. */
+    const target = t.tp[Math.min(Math.max(EXIT_TP, 1), t.tp.length) - 1];
     let end = bars.length - 1, why = 'open';
     for (let k = fill; k < bars.length; k++) {
       const hitSl = side > 0 ? bars[k].l <= t.stop : bars[k].h >= t.stop;
-      const hitTp = side > 0 ? bars[k].h >= t.tp[2] : bars[k].l <= t.tp[2];
+      const hitTp = side > 0 ? bars[k].h >= target : bars[k].l <= target;
       if (hitSl) { end = k; why = 'stop'; break; }        // ties go to the loss
-      if (hitTp) { end = k; why = 'tp3'; break; }
+      if (hitTp) { end = k; why = `tp${EXIT_TP}`; break; }
     }
     out.push({ ...t, fillIndex: fill, endIndex: end, outcome: why });
     busy = end + 1;

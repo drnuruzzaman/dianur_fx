@@ -26,6 +26,9 @@ import { tip } from './tips.js';
 import * as regime from '../chart/regime.js';
 import * as structure from '../chart/structure.js';
 import { BEAR, BULL, NEUTRAL, WATCH, computeRead } from '../chart/read.js';
+import { heldReversal } from '../chart/heldreversal.js';
+import { reversalTag, WARN } from '../chart/reversal.js';
+import { scalpMode } from '../chart/scalpmode.js';
 
 /* How many frames to read: the chart's own, plus this many above it. Three is
    the useful number — execution, context, and the frame that decides whether
@@ -45,7 +48,7 @@ export const LADDER = 3;
    context. */
 const CONTEXT = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
-const RANK = { '1m': 0, '5m': 1, '15m': 2, '30m': 2.5, '1h': 3, '4h': 4, '1d': 5, '1w': 6 };
+const RANK = { '1m': 0, '3m': 0.5, '5m': 1, '15m': 2, '30m': 2.5, '1h': 3, '2h': 3.5, '4h': 4, '1d': 5, '1w': 6 };
 
 /**
  * The frames to read for a chart on `tf`: its own first, then upward.
@@ -224,6 +227,22 @@ export class TrendRead {
     const execRead = this.reads.find((r) => r.tf === this.execTf);
     const atr = execAtr(exec);
 
+    /* THE REVERSAL ON THIS CELL'S OPEN TRADE, from the SAME module the chart
+       study calls (js/chart/heldreversal.js). The panel derives nothing of its
+       own here: two surfaces on one screen disagreeing about whether a trade
+       has reversed would be worse than neither showing it. Null when the cell
+       is flat, or when there is nothing honest to say yet. */
+    this.rev = null;
+    try {
+      this.rev = heldReversal(exec, {
+        symbol, tf: this.execTf, mode: scalpMode(), exitIdx: 0 }).rev;
+    } catch (e) {
+      /* The ledger may not have loaded; the trend read must paint regardless.
+         Same contract opentrades.js states -- the chart paints whether or not
+         the scorer has ever run. */
+      this.rev = null;
+    }
+
     this._lines = lines;          // kept so repaint() can reuse them
     this.read = computeRead(this.reads, lines, close, atr);
     this.render();
@@ -314,6 +333,41 @@ export class TrendRead {
        explains. */
     const note = [v.theme, v.session].filter(Boolean).join(' · ');
     r.appendChild(el('div', { class: 'tr-note dim' }, note));
+
+    /* ---- the open trade has reversed --------------------------------------
+       ABOVE THE PER-TIMEFRAME ROWS, because it is about the position you are
+       ALREADY IN and those rows are about the market. A reader scanning for
+       "am I still right" should not have to get past three regime rows first.
+
+       ONLY AT `warn`. One witness is chop -- it fires on a fifth to a half of
+       all fills depending on frame -- and a rail panel that lights up that
+       often is one nobody reads. Same threshold the chart uses, from the same
+       object, so the two cannot disagree.
+
+       IT IS A READING, NOT AN INSTRUCTION. Closing on this was measured and
+       lost on every gold frame, and lost to a RANDOM exit on four of five; the
+       tooltip says so, because a red-looking banner with no context is an
+       instruction whether or not anyone meant it to be. */
+    if (this.rev && this.rev.level === WARN) {
+      const names = this.rev.fired.map((w) => w.label).join(', ');
+      r.appendChild(tip(
+        el('div', { class: 'tr-reversal' },
+           el('i', { class: 'tr-mark' }, '▲'),
+           document.createTextNode('REVERSAL CONFIRMED'),
+           el('span', { class: 'tr-rev-why mono' }, reversalTag(this.rev).split(' · ')[1] || '')),
+        'Reversal confirmed',
+        `Confirmed by ${(this.rev.confirmedBy || []).join(' and ') || names}`
+        + ` on the marked bar. It STAYS confirmed until the trade closes, even `
+        + `if the evidence thins -- right now ${this.rev.votes} of `
+        + `${this.rev.total} witnesses still point against it`
+        + `${this.rev.votes ? ` (${names})` : ''}.`,
+        'This is a READING, not a signal to close. Closing a filled trade on a '
+        + 'trend reversal was measured over 2017-2026 and beat holding on none '
+        + 'of five gold frames -- it also lost to closing at a RANDOM bar on '
+        + 'four of them, because "the trend flipped" and "price has already '
+        + 'moved against me" are the same event. The stop is still where it '
+        + 'was.'));
+    }
 
     /* ---- per-timeframe evidence ---------------------------------------- */
     const rows = el('div', { class: 'tr-rows' });

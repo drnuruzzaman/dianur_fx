@@ -5,15 +5,16 @@
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2026-01-01T00:20:00</StartBoundary>
+      <StartBoundary>2026-01-01T00:02:00</StartBoundary>
       <Repetition>
-        <!-- HOURLY, NOT EVERY FIVE MINUTES. Nothing here is time-critical: a
-             trade that closed at 09:05 is just as scorable at 10:20. The run
-             pulls 20,000 1m bars per instrument, so doing it twelve times an
-             hour would be twelve times the bridge traffic for an answer nobody
-             reads more than once a day. Offset to :20 so it does not land on
-             the same minute as the scalper and the news alerter. -->
-        <Interval>PT1H</Interval>
+        <!-- EVERY FIVE MINUTES, by request (2026-09-17). It was hourly on the
+             argument that nothing here is time-critical, but the Signal
+             Board's forward record lagged the live chart by up to an hour and
+             read as missing trades. A run takes about 3 seconds (20,000 1m
+             bars per instrument from the bridge), and IgnoreNew below means
+             a slow run is never stacked. Offset to :02 past each five so it
+             reads bars that have just closed. -->
+        <Interval>PT5M</Interval>
         <Duration>P1D</Duration>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
@@ -33,11 +34,11 @@
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable>
-    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT4M</ExecutionTimeLimit>
     <!-- NO RestartOnFailure. The one failure this task actually has is the
          bridge being down, which a retry a minute later will hit again; the
          scalper task restarts because a missed signal is gone, and a missed
-         SCORING run costs nothing because the next hourly pass scores the same
+         SCORING run costs nothing because the next pass, five minutes later, scores the same
          tickets. Retrying here would just fill the log. -->
     <Enabled>true</Enabled>
   </Settings>

@@ -1,6 +1,6 @@
 /* util.js — formatting, DOM and persistence helpers. */
 
-export const TF = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
+export const TF = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'];
 
 /* THE AUTO-TRENDLINE SETTINGS BOTH CHART SURFACES USE.
  *
@@ -16,8 +16,8 @@ export const TF = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
    finds -- the two surfaces matched on SETTINGS and still disagreed until they
    also matched on how much history each source got. */
 export const BAR_COUNT = {
-  '1m': 3000, '5m': 2500, '15m': 2000, '30m': 2000,
-  '1h': 1500, '4h': 1200, '1d': 1000, '1w': 800,
+  '1m': 3000, '3m': 2800, '5m': 2500, '15m': 2000, '30m': 2000,
+  '1h': 1500, '2h': 1400, '4h': 1200, '1d': 1000, '1w': 800,
 };
 
 export const AUTO_DEFAULTS = {
@@ -25,10 +25,44 @@ export const AUTO_DEFAULTS = {
   maxLines: 2,          // per side, per source timeframe
   own: true,
   minDraw: 70,
-  htf: ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'],
+  htf: ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'],
 };
 
 export const symKey = (sym) => `sym.${sym}`;
+
+/* WHAT EVERY PAGE LOAD RESETS THE AUTO TL MENU TO, by request: trendlines on,
+ * every overlay toggle under Sensitivity ticked, two lines per side. Applied
+ * to the global default AND to every saved per-instrument / per-timeframe
+ * override, because an override that says `on: false` would otherwise win over
+ * any default. Menu changes still hold for the session; a reload resets them.
+ * The sensitivity preset (`sens`) and the source frames are left alone. */
+export const AUTO_ON_LOAD = {
+  on: true, adaptive: true, zones: true, channels: true, segments: true,
+  sdZones: true, swings: true, ms: true, maxLines: 2,
+};
+
+/** Apply AUTO_ON_LOAD to saved state. Call once per page load, after the
+    workspace file has been hydrated into localStorage. */
+export function applyAutoOnLoad() {
+  save('auto', { ...(load('auto', {}) || {}), ...AUTO_ON_LOAD });
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (!k.startsWith(NS + 'sym.')) continue;
+      const key = k.slice(NS.length);
+      const v = load(key, null);
+      if (!v || typeof v !== 'object' || !v.auto || typeof v.auto !== 'object') continue;
+      const a = v.auto;
+      const byTf = ('sens' in a || 'on' in a || 'maxLines' in a) ? { [v.tf || '15m']: a } : a;
+      const next = {};
+      for (const [tf, s] of Object.entries(byTf)) next[tf] = { ...s, ...AUTO_ON_LOAD };
+      save(key, { ...v, auto: next });
+    }
+  } catch { /* private mode: nothing saved, so the defaults already apply */ }
+  /* The two replays share their own overlay settings (js/ui/replayauto.js). */
+  save('replay.auto', { ...(load('replay.auto', {}) || {}),
+    on: true, zones: true, channels: true, swings: true, ms: true,
+    zigzag: true, news: true, maxLines: 2 });
+}
 
 /**
  * The auto-trendline settings actually in force for a symbol and frame.
@@ -56,12 +90,12 @@ export function resolveAuto(symbol, tf, base) {
 }
 
 export const TF_MS = {
-  '1m': 60e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3,
-  '1h': 3600e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3,
+  '1m': 60e3, '3m': 180e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3,
+  '1h': 3600e3, '2h': 7200e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3,
 };
 export const TF_LABEL = {
-  '1m': 'M1', '5m': 'M5', '15m': 'M15', '30m': 'M30',
-  '1h': 'H1', '4h': 'H4', '1d': 'D1', '1w': 'W1',
+  '1m': 'M1', '3m': 'M3', '5m': 'M5', '15m': 'M15', '30m': 'M30',
+  '1h': 'H1', '2h': 'H2', '4h': 'H4', '1d': 'D1', '1w': 'W1',
 };
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -209,7 +243,7 @@ export function axisTime(ms, tf) {
       ? MONTHS[d.getUTCMonth()] + ' ' + String(d.getUTCFullYear()).slice(2)
       : pad(d.getUTCDate()) + ' ' + MONTHS[d.getUTCMonth()];
   }
-  if (tf === '4h' || tf === '1h') {
+  if (tf === '4h' || tf === '2h' || tf === '1h') {
     return d.getUTCHours() === 0 ? dmy(ms) : hhmm(ms);
   }
   return hhmm(ms);

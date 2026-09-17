@@ -10,9 +10,12 @@
  */
 
 import { findDivergences, rsiSeries } from './divergence.js';
-import { signals, ticket } from './scalper.js';
+import { EXIT_TP, ticket } from './scalper.js';
 import { rollingShifted } from './rules.js';
 import { zigzag } from './structure.js';
+import { scalpMode } from './scalpmode.js';
+import { heldReversal } from './heldreversal.js';
+import { reversalTag, WARN } from './reversal.js';
 
 const C = {
   pink: '#E31C79', navy: '#4959ff', green: '#93C90F', orange: '#FF9E1B',
@@ -174,18 +177,38 @@ export const INDICATORS = {
   },
   tpbands: {
     label: 'Rayo TP bands', pane: 'main',
-    /* `fade` is 0/1 because study inputs are numeric. `show` is how many past
-       trades to draw -- FIVE LINES EACH, so the default is deliberately small;
-       six trades was thirty plots and unreadable. `live` also draws the current
-       pending ticket, which has not filled and may never. */
-    inputs: { fade: 0, show: 2, live: 1 },
-    calc: (bars, o) => {
+    /* WHAT THIS DRAWS, in two layers that must never be confused.
+       (1) THE TRADE THIS CELL IS CURRENTLY IN -- the rule's own open trade
+           for the symbol and timeframe on screen, from the scored ledger:
+           entry, stop and the three rungs, solid, spanning from the bar it
+           filled on. This is a RECORD, and it is the same row the Signal
+           Board lists under `still open`.
+       (2) THE PENDING RAYO TICKET, dotted and fainter, expiring where the
+           order does. This is a PROPOSAL, and `live` turns it off.
+
+       IT USED TO DRAW A REPLAY instead of (1): the rule walked over the bars
+       the chart happened to have loaded, and whatever trades that walk picked
+       were drawn as though they were the ones taken. They were not -- on a busy
+       cell they were not even the same trades the scheduled run took. A `show`
+       input chose how many to draw; there is nothing to count now, because
+       what a cell is in is a fact rather than a setting. */
+    /* `warn` IS THE REVERSAL LAMP, and it is a LAMP. See reversal.js:
+       closing on a trend flip was measured and rejected on every gold
+       frame, so nothing here acts on it -- the ticket says what its
+       witnesses say and the decision stays yours. */
+    inputs: { live: 1, warn: 1 },
+    calc: (bars, o, ctx = {}) => {
       /* THE SAME MODULE THE RAIL PANEL USES, imported rather than
          reimplemented -- this is the third place the rule could have been
          retyped (Python, panel, chart) and a band disagreeing with the panel
          beside it is worse than no band. */
-      const mode = o.fade ? 'fade' : 'break';
-      const took = signals(bars, { mode, max: Math.max(1, o.show) });
+      /* THE MODE COMES FROM THE PANEL, and is no longer an input here.
+         `fade: 0` was the default, so a study added while the rail panel was
+         toggled to FADE drew BREAK trades beside a FADE ticket -- a stop order
+         on the chart against a limit order in the panel, different stops,
+         different ladder, and nothing saying so. Two controls for one decision
+         is how that happens; there is one now, and it is the panel's toggle. */
+      const mode = scalpMode();
       const n = bars.length;
       const plots = [];
       const seg = (from, to, v) => {
@@ -194,44 +217,227 @@ export const INDICATORS = {
         return a;
       };
 
-      /* THE WHOLE LADDER ON EVERY SIGNAL -- entry, stop and all three targets.
-         An earlier pass drew only entry/SL/TP3 to cut clutter, which quietly
-         removed two of the levels the panel lists and the trade is placed on.
-         Clutter is what `show` is for.
+      /* RISK BELOW, REWARD ABOVE, AS AREAS. Five hairlines said where the
+         levels were and nothing about their proportions; two filled zones say
+         what the trade actually is -- you can SEE that the green is slightly
+         shorter than the red, which is the whole reason a 0.9R target needs a
+         52.6% hit rate rather than 50%.
 
-         BANDS ONLY WHILE THE TRADE WAS LIVE: fill to exit, not a line running
-         to the right edge for something that closed hours ago. */
-      took.forEach((t, k) => {
-        const last = k === took.length - 1;
-        const won = t.outcome === 'tp3';
-        const L = (v, color, width, dash, label) => plots.push({
-          type: 'line', label: last ? label : '', color, width, dash,
-          data: seg(t.fillIndex, t.endIndex, v),
+         ONE REWARD BAND, NOT TWO. There was a second, fainter wash from the
+         exit up to TP3, meant to show the rest of the ladder without claiming
+         it. On the chart it read as a second band and the first question it
+         got was "why are there two?" -- which is the answer: a reader counts
+         shapes before they read opacities. TP2 and TP3 are dashed LINES now.
+         They are drawn because the ticket carries them and the registry says
+         of both, in as many words, "Drawn, not measured as an exit"; a line
+         says that and a filled area does not.
+
+         ONE BAND PLOT PER TRADE, never one plot holding every trade: the band
+         renderer skips nulls without lifting the pen, so two trades in one
+         pair of arrays fill as a single polygon bridging the gap between
+         them. */
+      /* Light enough that candles read THROUGH the zone. A trade overlay
+         that hides the price action it was drawn on has inverted its job. */
+      const RISK = 'rgba(227,28,121,.11)';
+      const REWARD = 'rgba(147,201,15,.13)';
+      const exitIdx = Math.min(Math.max(EXIT_TP, 1), 3) - 1;
+
+      /* WHAT THIS CELL IS CURRENTLY IN, from the rule's own ledger.
+         -----------------------------------------------------------------
+         ONE TRADE, FOR THE SYMBOL AND TIMEFRAME ON SCREEN. Switch the chart to
+         H1 and it draws the H1 trade; there is nothing to choose and no input
+         to set, because "which trade am I in on this cell" has exactly one
+         answer. See opentrades.js for where it comes from and for the two
+         things it deliberately is NOT: a replay of the rule over the loaded
+         window, and the broker's own positions. */
+      /* THE FIXED-12 WALKER, THE SAME ONE THE PANEL AND THE STRATEGY REPLAY
+         RUN (js/chart/rayorule.js restingRayo): the live journal and scored
+         ledger where they exist, the scorer's lifecycle simulated where they
+         do not. On a replay chart it is cut at the cursor (`ctx.asOf`), so it
+         never shows a trade or ticket the walk has not reached. */
+      const cutN = Number.isFinite(ctx.asOf) ? Math.min(n, ctx.asOf + 1) : n;
+      /* THE TRADE AND ITS REVERSAL COME FROM js/chart/heldreversal.js, which the
+         Trend read panel also calls. Both surfaces name the same trade and the
+         same reversal because there is one implementation, not two. */
+      const hr = heldReversal(bars, {
+        symbol: ctx.symbol, tf: ctx.tf, mode, cutN, exitIdx });
+      const held = hr.held;
+      if (held) {
+        /* FROM THE BAR IT FILLED ON. A line that starts where the trade did
+           says how long it has been held, which is most of what a reader wants
+           from it; running it to the left edge would say nothing. */
+        let from = 0;
+        for (let i = n - 1; i >= 0; i--) {
+          if (bars[i].t <= held.fillMs) { from = i; break; }
+        }
+        const flat = (v) => seg(from, cutN - 1, v);
+        const up = held.side === 'buy';
+        const exitAt = held.tp[exitIdx];
+
+        /* THE REVERSAL LAMP rides on the entry line's own tag, because that is
+           the one label already saying what this trade IS; a second line for it
+           would be a shape, and a reader counts shapes before they read them.
+
+           IT CLOSES NOTHING. reversal.js has the measurement; the short version
+           is that acting on this lamp lost on every gold frame, and lost to a
+           random exit on four of five. It is here to be READ. */
+        /* THE LAMP'S STATE comes back with the trade from heldreversal.js;
+           `warn: 0` simply declines to show it. */
+        const rev = o.warn ? hr.rev : null;
+        /* A CONFIRMED REVERSAL TAKES THE TARGETS OFF THE CHART.
+           -----------------------------------------------------------------
+           A target is a CLAIM: that the move which justified this entry has
+           further to run. Two witnesses against the trade is the chart saying
+           it no longer believes that claim, and drawing TP1/2/3 underneath the
+           warning asks the reader to hold both at once. So at `warn` the
+           reward band and all three rungs come off, and what is left is the
+           three things still TRUE: where you got in, where you get out if it
+           keeps going, and how far it has turned.
+
+           THE STOP GOES TOO, BY REQUEST (2026-09-17). Everything above argued
+           for keeping it -- a stop is not a claim, it is a resting order and
+           the real risk on the account -- and that argument was made and
+           overruled. What is drawn on a confirmed reversal is now the entry
+           line and the confirmation marker, nothing else. THE STOP IS STILL
+           LIVE AT THE BROKER; it is no longer drawn. Anyone restoring it should
+           know it was a deliberate choice and not an oversight.
+
+           `watch` -- one witness -- CHANGES NOTHING. A single EMA wobble is
+           chop, it fires on a fifth to a half of all fills depending on frame,
+           and a chart that rearranges itself that often is a chart nobody
+           trusts. Only a confirmed reversal redraws anything.
+
+           STILL NOT AN INSTRUCTION. Closing on this was measured and lost on
+           every gold frame; taking the targets off says the rule's own target
+           has stopped meaning anything, NOT that you should be flat. */
+        const confirmed = !!rev && rev.level === WARN;
+
+        if (!confirmed) {
+          plots.push({ type: 'band', label: '', color: RISK, noScale: true,
+                       upper: flat(up ? held.entry : held.sl),
+                       lower: flat(up ? held.sl : held.entry) });
+          if (typeof exitAt === 'number') {
+            plots.push({ type: 'band', label: '', color: REWARD, noScale: true,
+                         upper: flat(up ? exitAt : held.entry),
+                         lower: flat(up ? held.entry : exitAt) });
+          }
+        }
+
+        const L = (v, color, width, dash, tag, tagColor) => plots.push({
+          type: 'line', label: '', tag, color, width, dash,
+          data: flat(v), tagColor: tagColor || color, noScale: true, noLegend: true,
         });
-        L(t.entry, C.white, 1.5, null, `${t.side.toUpperCase()} ${t.outcome}`);
-        L(t.stop, C.pink, 1, [4, 3], 'SL');
-        L(t.tp[0], C.grey, 1, [2, 3], 'TP1');
-        L(t.tp[1], C.grey, 1, [2, 3], 'TP2');
-        /* TP3 is the only one the backtest exits on, so it carries the outcome:
-           solid green when it was reached, dashed when the stop got there first. */
-        L(t.tp[2], won ? C.green : C.grey, won ? 1.4 : 1, won ? null : [2, 3], 'TP3');
-      });
 
-      /* The pending ticket, its full ladder dotted from the bar that proposed
-         it, so a resting order is never mistaken for a trade that happened. */
-      if (o.live) {
-        const t = ticket(bars, { mode });
-        if (t) {
-          const from = t.barIndex ?? n - 2;
-          const P = (v, color, label) => plots.push({
-            type: 'line', label, color, width: 1, dash: [1, 4],
-            data: seg(from, n - 1, v),
+        const revTag = reversalTag(rev);
+        /* THE ENTRY LINE IS THE REVERSAL LINE once the reversal is confirmed:
+           the targets are gone, so there is nothing left for it to be mistaken
+           for, and amber is the only colour on the trade at that point. Below
+           `warn` it stays white and only the tag carries the state. */
+        /* ONCE CONFIRMED THE LABEL IS THE REVERSAL, NOT THE ENTRY. Everything
+           else about the trade has come off the chart, so a tag still leading
+           with "sell entry (open)" would be naming the least useful thing left
+           on the line. Below `warn` the entry label leads and the lamp
+           qualifies it. */
+        L(held.entry, confirmed ? C.orange : C.white, 1.5, null,
+          confirmed ? revTag
+            : `${held.side} entry (${mode === 'fade' ? 'fade sim' : 'open'})`
+              + (revTag ? ` · ${revTag}` : ''),
+          confirmed ? C.orange : undefined);
+        if (!confirmed) {
+          L(held.sl, C.pink, 1.2, null, 'SL');
+          held.tp.forEach((v, j) => {
+            const isExit = j === exitIdx;
+            /* THE EXIT RUNG IS THE ONLY ONE THE RULE TRADES. TP2 and TP3 are
+               dashed because the registry says of both, in as many words,
+               "Drawn, not measured as an exit". */
+            L(v, isExit ? C.green : C.grey, isExit ? 1.4 : 1,
+              isExit ? null : [2, 3], `TP${j + 1}${isExit ? ' ← exit' : ''}`);
           });
-          P(t.entry, C.orange, `pending ${t.side} ${t.order}`);
-          P(t.stop, C.pink, '');
-          P(t.tp[0], C.grey, '');
-          P(t.tp[1], C.grey, '');
-          P(t.tp[2], C.green, '');
+        }
+
+        /* THE CONFIRMATION BAR, marked where it happened and at the price it
+           happened at -- not at the entry, which is where the trade STARTED and
+           would put the marker somewhere price may not have been for days. The
+           triangle points the way the reversal goes, so it points against the
+           trade: up out of a sell, down out of a buy.
+
+           DRAWN WHENEVER THE CROSSING HAPPENED, not only while the lamp is
+           still lit. reversal.js pins it to the FIRST bar the vote ever reached
+           two, so it stays on that bar for the life of the trade even if the
+           reversal since de-escalated to `watch` and the targets came back. The
+           lamp says what is true now; this says when it turned.
+
+           NO MARKER WHEN THE BAR CANNOT BE PINNED -- a null `confirmedAt`, when
+           the crossing depended on a witness with no time of its own. A marker
+           guessed onto the wrong bar is worse than no marker. */
+        {
+          if (rev && Number.isFinite(rev.confirmedAt)
+              && Number.isFinite(rev.confirmedPrice)) {
+            /* CLEAR OF THE CANDLE, on the side the reversal is heading: above
+               the bar's HIGH when a sell is reversing upward, below its LOW
+               when a buy is reversing down. Sitting on the close buried the
+               triangle in the body of the very bar it is pointing at.
+
+               THE GAP IS IN THE TRADE'S OWN RISK, not points -- `entry - sl` is
+               5 ATR by construction, so 8% of it is about 0.4 ATR and means the
+               same distance on gold as on the yen. */
+            const gap = 0.08 * Math.abs(held.entry - held.sl);
+            const base = up
+              ? (Number.isFinite(rev.confirmedLow) ? rev.confirmedLow : rev.confirmedPrice)
+              : (Number.isFinite(rev.confirmedHigh) ? rev.confirmedHigh : rev.confirmedPrice);
+            plots.push({ type: 'mark', label: '', noScale: true, points: [{
+              t: rev.confirmedAt, v: up ? base - gap : base + gap,
+              up: !up, color: C.orange,
+              /* BIGGER THAN THE DEFAULT 3.4. This is one mark for one event on
+                 a chart that has just had four lines taken off it -- at the
+                 divergence study's size it read as a stray pixel. */
+              r: 7,
+            }] });
+          }
+        }
+      }
+
+      /* THE PENDING TICKET IS NOT A TRADE, and is drawn so it cannot be read
+         as one: dotted, fainter, and stopping at the bar the order expires on
+         rather than running to the right edge. An order that may never fill
+         has no business claiming the rest of the chart. */
+      /* NOT WHILE A TRADE PLAN IS ON THE CHART. The plan renderer already
+         draws ENTRY, SL and three targets, with position-sized money on each;
+         the pending ticket draws the same five levels from the rule. Two sets
+         a few points apart is not twice the information, it is a chart you
+         have to disentangle before you can read either. The plan is the one
+         you placed, so the plan wins; clear it and the pending ladder returns.
+         Past trades still draw -- they sit behind price and compete with
+         nothing. */
+      /* THE TICKET ACTUALLY RESTING under fixed 12, from its own bar to the
+         last bar it is live on -- not a fresh ticket every bar. */
+      if (o.live && !ctx.plan) {
+        /* `hr.pending` is already null while the cell is in a trade --
+           walkCell() only fills it when flat -- so the ladder cannot
+           appear beside an open position. `rest` used to be read here;
+           it stopped existing when this block moved to heldreversal.js
+           and the reference threw, silently blanking the whole study
+           whenever `live` was on. */
+        const t = hr.pending;
+        if (t) {
+          const from = t.barIndex;
+          const to = Math.min(n - 1, from + (t.expire || 12) - 1);
+          const span = (v) => seg(from, to, v);
+          plots.push({ type: 'band', label: '', color: 'rgba(227,28,121,.07)',
+                       noScale: true, upper: span(t.entry), lower: span(t.stop) });
+          plots.push({ type: 'band', label: '', color: 'rgba(147,201,15,.08)',
+                       noScale: true,
+                       upper: span(t.tp[exitIdx]), lower: span(t.entry) });
+          const P = (v, color, tag, label) => plots.push({
+            type: 'line', label: label || '', tag, tagColor: color, noScale: true,
+            noLegend: true, color, width: 1, dash: [1, 4], data: span(v),
+          });
+          P(t.entry, C.orange, `pending ${t.side} ${t.order} entry`,
+            `pending ${t.side} ${t.order}`);
+          /* THE PENDING STOP IS TAGGED TOO. It was the one unlabelled line on
+             a chart that can show two stops at different prices. */
+          P(t.stop, C.pink, 'pending stop');
+          t.tp.forEach((v) => P(v, C.grey, null));
         }
       }
       return plots;
@@ -444,14 +650,24 @@ export const INDICATORS = {
   },
 };
 
-/** Run one configured study, returning its plots plus display metadata. */
-export function runStudy(study, bars) {
+/**
+ * Run one configured study, returning its plots plus display metadata.
+ *
+ * `ctx` IS CHART STATE, NOT DATA. A study is a pure function of the bars and
+ * that is worth keeping: it is what makes them cheap to test and impossible to
+ * make stateful by accident. The one thing a study cannot answer from bars
+ * alone is what ELSE is already on the chart, and drawing a second set of
+ * ENTRY/SL/TP levels on top of the ones a trade plan is already showing is a
+ * legibility problem no amount of bar data can see. So chart state arrives as
+ * a separate, explicitly named argument rather than leaking into `bars`.
+ */
+export function runStudy(study, bars, ctx = {}) {
   const def = INDICATORS[study.kind];
   if (!def || !bars.length) return null;
   const opts = { ...def.inputs, ...(study.inputs || {}) };
   return {
     id: study.id, kind: study.kind, label: def.label, pane: def.pane, opts,
-    plots: def.calc(bars, opts),
+    plots: def.calc(bars, opts, ctx),
   };
 }
 

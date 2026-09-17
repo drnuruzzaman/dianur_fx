@@ -57,7 +57,7 @@ DEFAULT_ORIGINS = [
 ]
 
 # MT5 timeframe constants are resolved lazily so --mock works without the package
-TF_NAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+TF_NAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
 mt5 = None            # the MetaTrader5 module, imported on demand
 MT5_LOCK = threading.Lock()   # the MT5 API is not thread-safe
@@ -323,9 +323,9 @@ def _resolve_one(name):
 
 def tf_const(name):
     table = {
-        '1m': mt5.TIMEFRAME_M1, '5m': mt5.TIMEFRAME_M5,
+        '1m': mt5.TIMEFRAME_M1, '3m': mt5.TIMEFRAME_M3, '5m': mt5.TIMEFRAME_M5,
         '15m': mt5.TIMEFRAME_M15, '30m': mt5.TIMEFRAME_M30,
-        '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
+        '1h': mt5.TIMEFRAME_H1, '2h': mt5.TIMEFRAME_H2, '4h': mt5.TIMEFRAME_H4,
         '1d': mt5.TIMEFRAME_D1, '1w': mt5.TIMEFRAME_W1,
     }
     return table.get(name)
@@ -395,6 +395,15 @@ def read_deals(days):
     frm = base - timedelta(days=days)
     with MT5_LOCK:
         rows = mt5.history_deals_get(frm, to) or []
+        # THE STOP A POSITION CARRIED. A deal has no sl field; the orders of
+        # its position do. Asked per position rather than over the window,
+        # because a position closed today may have been opened weeks ago. A
+        # stop added later by modification is not an order, so it only shows
+        # up if the position was then closed BY that stop (reason SL).
+        pos_sl = {}
+        for pid in {d.position_id for d in rows if d.position_id}:
+            orders = mt5.history_orders_get(position=pid) or []
+            pos_sl[pid] = max([o.sl for o in orders if o.sl] or [0.0])
     out = []
     for d in rows:
         out.append({
@@ -407,6 +416,9 @@ def read_deals(days):
             # once and FIFO matching pairs the wrong legs together.
             # entry: 0 = opened, 1 = closed, 2 = reversed, 3 = closed by an opposite
             'position_id': d.position_id, 'entry': d.entry,
+            # 4 = closed by stop loss, 5 = by take profit, 6 = stop out
+            'reason': d.reason,
+            'position_sl': pos_sl.get(d.position_id, 0.0),
             'time_ms': int(d.time_msc) - STATE['time_offset_ms'],
         })
     out.sort(key=lambda r: r['time_ms'], reverse=True)
@@ -828,8 +840,8 @@ class Mock:
         if symbol not in self.SPEC:
             return {'symbol': None, 'bars': []}
         seed, digits, vol = self.SPEC[symbol]
-        step = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600,
-                '4h': 14400, '1d': 86400, '1w': 604800}.get(tf, 60) * 1000
+        step = {'1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600,
+                '2h': 7200, '4h': 14400, '1d': 86400, '1w': 604800}.get(tf, 60) * 1000
         sigma = vol * (step / 400.0) ** 0.35
         now = int(time.time() * 1000)
         start = (now - step * count) // step * step

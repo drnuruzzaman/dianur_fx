@@ -49,8 +49,9 @@ from sim.clock import resolve_offset      # noqa: E402  (needs ROOT on the path)
 DATA = os.path.join(ROOT, 'data')
 
 TF = {
-    '1m': mt5.TIMEFRAME_M1, '5m': mt5.TIMEFRAME_M5, '15m': mt5.TIMEFRAME_M15,
-    '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
+    '1m': mt5.TIMEFRAME_M1, '3m': mt5.TIMEFRAME_M3, '5m': mt5.TIMEFRAME_M5,
+    '15m': mt5.TIMEFRAME_M15, '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1,
+    '2h': mt5.TIMEFRAME_H2, '4h': mt5.TIMEFRAME_H4,
     '1d': mt5.TIMEFRAME_D1, '1w': mt5.TIMEFRAME_W1,
 }
 
@@ -58,8 +59,8 @@ TF = {
 # --symbols to widen; names are the broker's own tickers, suffix included.
 #: seconds per bar, for deciding whether a bar has actually CLOSED.
 #: MetaTrader hands over the forming bar as though it were finished.
-TF_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-              '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800}
+TF_SECONDS = {'1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
+              '1h': 3600, '2h': 7200, '4h': 14400, '1d': 86400, '1w': 604800}
 
 DEFAULT_SYMBOLS = ['XAUUSD.a', 'USDJPY.a']
 

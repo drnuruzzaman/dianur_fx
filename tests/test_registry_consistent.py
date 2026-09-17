@@ -29,6 +29,7 @@ exist.
 import io
 import json
 import os
+import re
 import statistics
 import sys
 
@@ -63,17 +64,45 @@ def test_headline_figures_come_from_the_eras(cfg):
         assert c['best_era_net_r'] == pytest.approx(max(v), abs=1e-9), where
 
 
-def test_tradeable_cells_pass_the_tests_that_define_tradeable(cfg):
+#: Frames the registry can carry, for the override's scope check below.
+FRAMES = ('1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w')
+
+
+def tradeable(cfg):
+    return [c for c in measured(cfg) if c.get('tradeable')]
+
+
+def by_measurement(c):
+    """Is this cell tradeable because the numbers said so?
+
+    `verdict_measured` is what tools/scalp_register.py COMPUTED on its last run,
+    written beside the flag whenever the two disagree. An explicit `False` is
+    the only thing that marks an override -- a MISSING key must never read as
+    one, or deleting a field would quietly exempt a cell from every test here.
+    """
+    return c.get('verdict_measured') is not False
+
+
+def test_tradeable_by_measurement_passes_the_tests_that_define_tradeable(cfg):
     """The four tests, re-read off the file rather than trusted as a flag.
 
     `tradeable` decides whether a cell is messaged to Telegram, so it is the one
-    field in here with a consequence. It must follow from the numbers stored
-    beside it -- never be a flag somebody set by hand and the measurement later
-    contradicted.
+    field in here with a consequence. Where it was EARNED it must follow from
+    the numbers stored beside it -- never be a flag somebody set by hand and the
+    measurement later contradicted.
+
+    CELLS MARKED BY REQUEST ARE NOT EXEMPT, THEY ARE MOVED -- to
+    `test_overridden_cells_declare_themselves`, which is the harder test to pass
+    quietly: it demands the override be written down, scoped to the frames it
+    touches, and carry what the measurement actually said. This test covered
+    both until 2026-09-15, when the flags became a policy rather than a verdict
+    (scalper.tradeable_override), and it has been red on all 30 cells since. A
+    suite with a permanently failing test is a suite nobody reads, and the
+    failure was reporting a decision rather than a defect.
     """
     from tools.scalp_register import MIN_FILLS, STRESS_KEEP
-    for c in measured(cfg):
-        if not c.get('tradeable'):
+    for c in tradeable(cfg):
+        if not by_measurement(c):
             continue
         where = '%s %s' % (c['symbol'], c['tf'])
         assert c['expected_net_r'] > 0, where
@@ -84,6 +113,63 @@ def test_tradeable_cells_pass_the_tests_that_define_tradeable(cfg):
         assert st >= STRESS_KEEP * c['expected_net_r'], (
             '%s keeps only %.0f%% of its edge at the stressed spread'
             % (where, 100.0 * st / c['expected_net_r']))
+
+
+def test_every_tradeable_cell_is_covered_by_one_of_the_two_paths(cfg):
+    """No cell is tradeable for a third reason, and neither path is empty by accident.
+
+    THE POINT OF THIS TEST IS VACUITY. Splitting the check in two opens two
+    holes at once: a cell messaged while no test looks at it, and -- worse --
+    the measurement test above passing because it examined nothing. Every
+    tradeable cell lands in exactly one bucket and the buckets must add up.
+    """
+    rows = tradeable(cfg)
+    assert rows, 'no tradeable cells at all -- the registry looks truncated'
+    earned = [c for c in rows if by_measurement(c)]
+    given = [c for c in rows if not by_measurement(c)]
+    assert len(earned) + len(given) == len(rows)
+    if not earned:
+        # TRUE TODAY, AND SAID OUT LOUD. Every tradeable cell is currently a
+        # by-request override, so the test above examines nothing. This is the
+        # line that makes that visible instead of letting a green tick imply
+        # the four tests were applied to something.
+        assert cfg['scalper'].get('tradeable_override'), (
+            'no cell is tradeable by measurement, and nothing declares why')
+
+
+def test_overridden_cells_declare_themselves(cfg):
+    """A flag set by hand has to say so, say which frames, and say what it overrode.
+
+    `tradeable` is a POLICY here, not a verdict (scalper.tradeable_override,
+    2026-09-15, by request), and scalp_register.py recomputes the field on every
+    run -- so the override block is the only thing between a re-registration and
+    the silent loss of that policy. These are the properties that let a reader
+    who was not in the room put it back.
+    """
+    sc = cfg['scalper']
+    given = [c for c in tradeable(cfg) if not by_measurement(c)]
+    if not given:
+        return
+    note = sc.get('tradeable_override')
+    assert note, ('%d cell(s) are tradeable against their own measurement with '
+                  'no scalper.tradeable_override to explain it' % len(given))
+    for c in given:
+        where = '%s %s' % (c['symbol'], c['tf'])
+        assert c.get('verdict_measured') is False, (
+            '%s: verdict_measured must be an explicit False on an override' % where)
+        assert 'TRADEABLE BY REQUEST' in (c.get('note') or ''), (
+            '%s is an override but its own note does not say so' % where)
+        # WHAT WAS OVERRIDDEN, KEPT BESIDE THE FLAG, so the cost of the decision
+        # is readable without re-running nine years of bars.
+        assert 'What was measured' in (c.get('note') or ''), (
+            '%s does not record what the measurement said' % where)
+        # SCOPE. A flag on a frame the override never names is exactly the
+        # silent re-registration this block exists to catch. The 1m cells pass
+        # because of its AMENDED clause, which names them.
+        assert c['tf'] in FRAMES, '%s: unknown frame' % c['tf']
+        assert re.search(r'\b%s\b' % re.escape(c['tf']), note), (
+            '%s is marked tradeable by request, but scalper.tradeable_override '
+            'never mentions the %s frame' % (where, c['tf']))
 
 
 def test_only_tradeable_cells_can_be_messaged(cfg):

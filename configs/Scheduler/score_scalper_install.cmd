@@ -1,5 +1,5 @@
 @echo off
-REM Register the live-ticket scorer. Runs hourly at :20, reads
+REM Register the live-ticket scorer. Runs every 5 minutes (:02, :07, ...), reads
 REM data\scalper_journal.jsonl, writes data\scalper_scored.jsonl. Sends nothing
 REM to anybody -- it is a ledger, not an alerter.
 setlocal

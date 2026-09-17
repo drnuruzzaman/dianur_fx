@@ -9,6 +9,8 @@
 import { api, status, setBase, base } from './api.js';
 import { CHART_TYPES, Chart, DRAW_TOOLS, defaultSpan } from './chart/engine.js';
 import { INDICATORS } from './chart/indicators.js';
+import { onScalpMode } from './chart/scalpmode.js';
+import { onOpenTrades } from './chart/opentrades.js';
 // The chart draws from the SAME lifecycle engine the backtest uses
 // (js/chart/tlengine.js is a port of sim/tl/engine.py, kept honest by
 // tests/test_tl_parity.py). It previously used the batch scorer in
@@ -25,7 +27,7 @@ import { SENSITIVITY } from './chart/trendlines.js';
 import { derived as derivedNews, loadSourced as loadNews, merge as mergeNews,
          within as newsWithin } from './chart/newsevents.js';
 import { build as buildSegments } from './chart/segments.js';
-import { $, $$, AUTO_DEFAULTS, BAR_COUNT, resolveAuto, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed, hydrateWorkspace } from './util.js';
+import { $, $$, AUTO_DEFAULTS, BAR_COUNT, resolveAuto, TF, TF_LABEL, TF_MS, drop, el, load, money, num, save, setZone, signed, hydrateWorkspace, applyAutoOnLoad, AUTO_ON_LOAD } from './util.js';
 import { closeMenu, openMenu, toast } from './ui/menu.js';
 import { SymbolSearch, registerSymbolSearch } from './ui/search.js';
 import { Watchlist } from './ui/watchlist.js';
@@ -99,12 +101,12 @@ const app = {
     /* Per-instrument calibration (js/chart/sensitivity.js). Measured at
        +0.85 pp placebo-adjusted over three eras -- which makes the detector
        less bad rather than good, so it is offered rather than imposed. */
-    adaptive: false,
+    adaptive: true,
     zones: true,           // horizontal support/resistance (pivot clusters)
-    sdZones: false,        // impulse-origin supply/demand zones
-    ms: false,             // BOS / CHoCH marks
+    sdZones: true,         // impulse-origin supply/demand zones
+    ms: true,              // BOS / CHoCH marks
     msMax: 12,             // most recent N events
-    swings: false,         // HH / HL / LH / LL markers
+    swings: true,          // HH / HL / LH / LL markers
     /* Both of these DREW UNCONDITIONALLY until now -- the flags existed in
        saved state but nothing read them, and there was no menu entry to change
        them either. On a 15m gold chart that put 6 channel rails and 12 regime
@@ -112,8 +114,8 @@ const app = {
        thing the line budget exists to prevent was happening anyway, just from
        two other sources. Off by default: they answer questions the reader has
        not asked yet. */
-    channels: false,       // parallel corridors around a line
-    segments: false,       // regime episodes, drawn as sloped runs
+    channels: true,        // parallel corridors around a line
+    segments: true,        // regime episodes, drawn as sloped runs
   }),
 };
 
@@ -582,6 +584,18 @@ const trendRead = new TrendRead($('#trendread'), $('#trSym'));
    about the next few bars of the chart you are on, not about context. */
 const signalPanel = new SignalPanel($('#signalpanel'), $('#sigSym'));
 const scalperPanel = new ScalperPanel($('#scalperpanel'), $('#scMode'));
+/* THE CHART FOLLOWS THE PANEL'S BREAK/FADE TOGGLE. The Rayo TP bands draw the
+   same rule the panel describes, so the two must move together -- they did not,
+   and the study quietly drew BREAK trades beside a FADE ticket. Every open
+   chart restudies, not just the active one: a split showing the other mode
+   would be the same disagreement one level up. */
+onScalpMode(() => { for (const c of app.charts) c.restudy(); });
+/* AND WHEN THE FORWARD LEDGER LANDS. The Rayo bands draw the trade the cell is
+   currently in, which is read from a file; studies are synchronous, so the
+   first paint after a reload always runs before the fetch resolves and draws
+   nothing. Without this the trade would appear only when something else
+   happened to trigger a restudy. */
+onOpenTrades(() => { for (const c of app.charts) c.restudy(); });
 const conditionsPanel = new ConditionsPanel($('#conditions'), $('#condTf'));
 let panelTick = 0;
 let panelReadTimer = null;
@@ -1634,7 +1648,7 @@ function buildTfGroup() {
   g.innerHTML = '';
   TF.forEach((tf, i) => {
     g.append(el('button', {
-      class: 'tb', dataset: { tf }, text: TF_LABEL[tf], title: `${tf} (${i + 1})`,
+      class: 'tb', dataset: { tf }, text: TF_LABEL[tf], title: `${tf} (${(i + 1) % 10})`,
       onclick: () => setTf(tf),
     }));
   });
@@ -2736,7 +2750,7 @@ function wireKeys() {
       if (app.active?.deleteSelected()) { persist(); e.preventDefault(); }
       return;
     }
-    if (e.key >= '1' && e.key <= '8') { setTf(TF[Number(e.key) - 1]); return; }
+    if (e.key >= '0' && e.key <= '9' && TF[(Number(e.key) + 9) % 10]) { setTf(TF[(Number(e.key) + 9) % 10]); return; }
     const tools = { h: 'hline', t: 'trend', y: 'ray', r: 'rect', g: 'fib' };
     if (tools[e.key.toLowerCase()]) { setTool(tools[e.key.toLowerCase()]); return; }
     if (e.key.toLowerCase() === 'f') { $('#indBtn').click(); return; }
@@ -2950,6 +2964,10 @@ window.dnfx = app;
    final contents -- which is why `app` is populated lazily by boot() rather
    than at module level. */
 hydrateWorkspace().then((n) => {
+  /* Auto TL on, every overlay ticked, two lines a side -- on every load, by
+     request. `app.auto` was read at module level, so it is patched too. */
+  applyAutoOnLoad();
+  Object.assign(app.auto, AUTO_ON_LOAD);
   if (n > 0) {
     // the module-level snapshot was taken from a pre-hydration localStorage
     BOOT_LOCKS.clear();

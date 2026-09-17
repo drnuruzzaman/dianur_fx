@@ -254,7 +254,14 @@ export class Chart {
     this.symbol = opts.symbol || 'EURUSD';
     this.tf = opts.tf || '15m';
     this.type = opts.type || 'candles';
-    this.studies = opts.studies ? structuredClone(opts.studies) : [];   // bare by default
+    this.studies = opts.studies ? structuredClone(opts.studies) : [];
+    /* RAYO TP BANDS ARE ON WHENEVER A CHART LOADS, by request -- live chart,
+       strategy replay and Elliott replay alike (these are the only three
+       places a Chart is built). Removing the study from the Indicators menu
+       still works for the session; the next load puts it back. */
+    if (!this.studies.some((s) => s.kind === 'tpbands')) {
+      this.studies.push({ id: nextId(), kind: 'tpbands', inputs: {} });
+    }
     this.drawings = opts.drawings ? structuredClone(opts.drawings) : [];
     this.tool = 'cursor';
     this.onChange = opts.onChange || (() => {});
@@ -418,7 +425,21 @@ export class Chart {
   /** Algorithmic trendlines, each tagged with the tf it was detected on. */
   setChannels(chs) { this.channels = chs || []; }
 
-  setZones(zs) { this.zones = zs || []; }
+  /* ZONES NO LONGER RE-RUN THE STUDIES. They used to, because `ctx.plan` was
+     read off this list -- see _recalc for why that was wrong. Auto zones are
+     not a plan, no study depends on them, and re-running every study when the
+     zone pass republishes is work nobody asked for. */
+  setZones(zs) {
+    this.zones = zs || [];
+  }
+
+  /* THE PLAN RENDERER'S PRESENCE IS WHAT STUDIES SEE (`ctx.plan`), so putting
+     one up or taking it down has to re-run them -- Rayo TP bands hides its
+     pending ladder behind a plan's levels. Only the PRESENCE matters, so a plan
+     that merely changes its numbers costs nothing. */
+  _planChanged(had) {
+    if (had !== !!(this.ruleZone || this.ruleTargets)) { this._recalc(); this.draw(); }
+  }
 
   /* The Elliott belief for the bar at the right edge; see js/ui/replay.js. */
   setElliott(b) { this.elliott = b || null; }
@@ -426,7 +447,13 @@ export class Chart {
   /* Where the replay cursor stands, for the lane that shows the future. Without
      it the two lanes are the same picture and the eye has to count columns to
      find the boundary between what was known and what followed. */
-  setAsOfMark(i) { this.asOfMark = Number.isFinite(i) ? i : null; }
+  setAsOfMark(i) {
+    const next = Number.isFinite(i) ? i : null;
+    if (next === this.asOfMark) return;
+    this.asOfMark = next;
+    /* Studies cut at the cursor (Rayo TP bands) must follow it. */
+    if (this.studies.length) this._recalc();
+  }
 
   /**
    * Draw nothing past the as-of mark, so the future ARRIVES as the cursor
@@ -491,7 +518,11 @@ export class Chart {
 
   /* The RULE's own risk picture, which is not a position and must never
      look like one. See _ruleZone. */
-  setRuleZone(z) { this.ruleZone = z || null; }
+  setRuleZone(z) {
+    const had = !!(this.ruleZone || this.ruleTargets);
+    this.ruleZone = z || null;
+    this._planChanged(had);
+  }
 
   /* THE RULE'S STRUCTURAL TARGETS. Not a ladder of R multiples -- those were
      the same three numbers on every chart, blind to what is actually in front
@@ -504,7 +535,9 @@ export class Chart {
      the contract spec; without them the tag still names the level and the axis
      still marks the price. */
   setRuleTargets(t) {
+    const had = !!(this.ruleZone || this.ruleTargets);
     this.ruleTargets = (t && t.levels && t.levels.length) ? t : null;
+    this._planChanged(had);
   }
 
   /* Scheduled macro releases, as vertical marks. See js/chart/newsevents.js
@@ -542,6 +575,16 @@ export class Chart {
     this.onChange(this);
   }
   setType(t) { this.type = t; this._recalc(); this.draw(); this.onChange(this); }
+
+  /**
+   * Recompute every study and repaint, without changing what is on the chart.
+   *
+   * FOR INPUTS THAT LIVE OUTSIDE THE STUDY -- today just the Rayo entry mode,
+   * which the rail panel owns (scalpmode.js). `_recalcIfNeeded` cannot serve:
+   * it compares study COUNT against run count, so a study whose answer changed
+   * while its identity did not looks up to date to it.
+   */
+  restudy() { this._recalc(); this.draw(); }
   setTool(t) { this.tool = t; this.pending = null; this.canvas.style.cursor = t === 'cursor' ? 'crosshair' : 'copy'; }
 
   addStudy(kind, inputs) {
@@ -566,7 +609,23 @@ export class Chart {
   /* --------------------------------------------------------- computation */
   _recalc() {
     this.plotBars = this.type === 'heikin' ? heikinAshi(this.bars) : this.bars;
-    this.runs = this.studies.map((s) => runStudy(s, this.plotBars)).filter(Boolean);
+    /* THE CELL THE CHART IS SHOWING. A study that draws per-cell state -- the
+       Rayo bands draw the trade this cell is in -- cannot find it from `bars`
+       alone, and threading it through every caller of `runStudy` would be a
+       parameter on four functions that do not otherwise care. */
+    /* `plan` MEANS THE PLAN RENDERER IS DRAWING, i.e. setRuleZone /
+       setRuleTargets -- ENTRY, SL and targets with position-sized money, which
+       only js/ui/strategyreplay.js puts up. It was wired to `this.zones`, the
+       AUTO support/resistance clusters, which nobody places and almost every
+       chart has: six of them on a live 15m gold chart. The Rayo pending ladder
+       hides behind a plan, so with that wiring the ladder was suppressed
+       everywhere and looked like it had simply stopped working. */
+    const ctx = { plan: !!(this.ruleZone || this.ruleTargets),
+                  symbol: this.symbol, tf: this.tf,
+                  /* A replay's cursor: studies that walk a rule cut there. */
+                  asOf: this.asOfMark };
+    this.runs = this.studies.map((s) => runStudy(s, this.plotBars, ctx))
+      .filter(Boolean);
   }
 
   rightPad() { return Math.max(2, Math.round(this.view.span * 0.06)); }
@@ -691,6 +750,15 @@ export class Chart {
         }
         for (const r of p.runs) {
           for (const pl of r.plots) {
+            /* `noScale` PUTS A STUDY ON THE SAME FOOTING AS A POSITION LINE.
+               The note below says position lines and drawings are kept out of
+               the fit because an SL 300 points away squashes the candles into
+               a band -- and a trade overlay is the same shape of thing: a
+               SELL's TP3 sits a hundred points under price, so fitting it
+               shrank the chart the moment the study was switched on. Studies
+               that live NEXT to price (moving averages, bands) still set the
+               scale, because for those the fit is the point. */
+            if (pl.noScale) continue;
             for (const key of ['data', 'upper', 'lower']) {
               const arr = pl[key];
               if (!Array.isArray(arr)) continue;
@@ -1050,7 +1118,12 @@ export class Chart {
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           if (x < pane.x - 10 || x > pane.x + pane.w + 10) continue;
           ctx.fillStyle = m.color || COL.text;
-          const r = 3.4;
+          /* PER-POINT RADIUS. 3.4 is the divergence study's size and stays its
+             default; the reversal-confirmation triangle asks for a bigger one
+             because it is a single mark carrying a single event, not one of a
+             scatter of them. Changing the constant would have grown every
+             divergence arrow on the RSI pane too. */
+          const r = Number.isFinite(m.r) ? m.r : 3.4;
           ctx.beginPath();
           if (m.up) {
             ctx.moveTo(x, y - r * 1.4); ctx.lineTo(x - r, y + r * 0.6);
@@ -1133,13 +1206,29 @@ export class Chart {
       if (pl.dash) ctx.setLineDash(pl.dash);
       ctx.beginPath();
       let pen = false;
+      let tagX = null;
+      let tagY = null;
       for (let i = Math.max(0, this.i0); i <= Math.min(pl.data.length - 1, this.i1); i++) {
         const v = pl.data[i];
         if (v === null || v === undefined || Number.isNaN(v)) { pen = false; continue; }
         const x = this.x(i), y = this.y(pane, v);
         pen ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), pen = true);
+        tagX = x; tagY = y;
       }
       ctx.stroke();
+      /* `tag` IS OPT-IN AND `label` IS NOT. Every study already passes a
+         `label` for the legend -- "EMA 21", "upper 20" -- so labelling on the
+         strength of that would write text along every moving average on the
+         chart. A tag is asked for by name, and it lands at the RIGHT end of
+         the last drawn segment, which for a trade overlay is where the trade
+         ended and where there is empty space to put it. */
+      if (pl.tag && tagX !== null) {
+        ctx.setLineDash([]);
+        ctx.font = '9px "Roboto Condensed", sans-serif';
+        ctx.fillStyle = pl.tagColor || pl.color;
+        ctx.textAlign = 'left';
+        ctx.fillText(pl.tag, Math.min(tagX + 4, pane.x + pane.w - 34), tagY + 3);
+      }
       ctx.restore();
     }
   }
@@ -3430,7 +3519,15 @@ export class Chart {
 
     const studies = this.runs.filter((r) => r.pane === 'main').map((r) => {
       const study = this.studies.find((s) => s.id === r.id);
-      const parts = r.plots.filter((p) => p.type === 'line').map((p) => {
+      /* `noLegend` PLOTS ARE LABELLED ON THE CHART ITSELF and must stay out
+         of here. The legend prints one number per line plot, which is right for
+         an EMA stack and wrong for a study that draws one line per open
+         position: twenty positions put forty prices across the top of the
+         chart, in a row whose job is to tell you the OHLC of the bar you are
+         hovering. Each of those lines already carries a tag at its right end
+         saying what it is. */
+      const parts = r.plots.filter((p) => p.type === 'line' && !p.noLegend)
+        .map((p) => {
         const v = p.data[i];
         return `<i style="color:${p.color}">${v === null || v === undefined ? '—' : Number(v).toFixed(d)}</i>`;
       }).join(' ');
