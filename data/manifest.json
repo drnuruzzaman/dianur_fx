@@ -1,7 +1,7 @@
 {
-  "updated_utc": "2026-08-22T22:16:10+00:00",
+  "updated_utc": "2026-09-17T04:02:23+00:00",
   "broker_server": "Pepperstone-MT5-Live01",
-  "terminal_build": 6140,
+  "terminal_build": 6182,
   "terminal_maxbars": 100000000,
   "server_utc_offset_ms": 10800000,
   "time_base": "broker server time as reported by MetaTrader (NOT UTC-corrected); bars in seconds, ticks in milliseconds",
@@ -54,9 +54,9 @@
   },
   "on_disk": {
     "bars": {
-      "files": 574,
-      "bytes": 329921485,
-      "mb": 329.9
+      "files": 1221,
+      "bytes": 696779470,
+      "mb": 696.8
     },
     "ticks": {
       "files": 1273,
